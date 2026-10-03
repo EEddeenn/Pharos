@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "description": "BDS observations at 10 s for 5 minutes with the ionosphere from the BDS Klobuchar model and the D1D2 coefficients of the RINEX 4 file: B1I and B3I, whose D1/D2 messages carry them.",
+  "name": "observation_bds_klobuchar",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 300,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "B1I",
+    "B3I"
+  ],
+  "elevationMask": 10,
+  "observation": {
+    "interval": 10
+  },
+  "ionosphere": {
+    "model": "bdsKlobuchar"
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

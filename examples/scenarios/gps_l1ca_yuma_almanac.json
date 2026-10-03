@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "description": "GPS L1 C/A whose LNAV subframes 4 and 5 carry the YUMA almanac of the day from the almanac file instead of the reduction of the ephemerides; static receiver, IQ4 at 4.092 MHz for 10 s.",
+  "name": "gps_l1ca_yuma_almanac",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 10,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "almanac": {
+    "name": "../data/yuma_2026232.alm"
+  },
+  "signals": [
+    "L1CA"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 4.092,
+    "centerFreq": 1575.42
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "description": "BDS B1I with the D2 augmentation of the GEO satellites C01-C04 (BDS-3 since the April 2026 restructuring): integrity and differential corrections for sixteen satellites and the ionospheric grid, every point monitored but three on the western border; from 17:59:40 UTC a second publication turns the correction check bad and C19-C23 not monitored. The run spans the BDS ephemeris change of 18:00:00 GPST (the records of 18:00 BDT go on air in that GPS minute), after which the equivalent clock corrections follow the 600 s transition, and grid pages 1-12. 4 MHz IQ2, 60 s from 17:59:32 UTC.",
+  "name": "bds_b1i_d2_augmentation",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 17,
+    "minute": 59,
+    "second": 32
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 60,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "B1I"
+  ],
+  "samples": {
+    "format": "IQ2",
+    "sampleFreq": 4,
+    "centerFreq": 1561.098
+  },
+  "messages": {
+    "bds": {
+      "d2": [
+        {
+          "from": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 17,
+            "minute": 0,
+            "second": 0
+          },
+          "until": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 17,
+            "minute": 59,
+            "second": 40
+          },
+          "integrity": {
+            "check": "good",
+            "satellites": [
+              {
+                "svid": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "rurai": 3,
+                "udrei": 4
+              },
+              {
+                "svid": [
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  13,
+                  16
+                ],
+                "rurai": 4,
+                "udrei": 5
+              },
+              {
+                "svid": [
+                  19,
+                  20,
+                  21,
+                  22,
+                  23
+                ],
+                "rurai": 2,
+                "udrei": 3
+              }
+            ]
+          },
+          "grid": {
+            "check": "good",
+            "givei": 9,
+            "notMonitored": [
+              1,
+              2,
+              161
+            ]
+          }
+        },
+        {
+          "from": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 17,
+            "minute": 59,
+            "second": 40
+          },
+          "until": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 19,
+            "minute": 0,
+            "second": 0
+          },
+          "integrity": {
+            "check": "bad",
+            "satellites": [
+              {
+                "svid": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "rurai": 3,
+                "udrei": 4
+              },
+              {
+                "svid": [
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  13,
+                  16
+                ],
+                "rurai": 4,
+                "udrei": 5
+              },
+              {
+                "svid": [
+                  19,
+                  20,
+                  21,
+                  22,
+                  23
+                ],
+                "rurai": 2,
+                "udrei": 14
+              }
+            ]
+          },
+          "grid": {
+            "check": "good",
+            "givei": 9,
+            "notMonitored": [
+              1,
+              2,
+              161
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

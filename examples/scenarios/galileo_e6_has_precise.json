@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "description": "Galileo E6 with HAS Message Type 1 on the C/NAV pages: the signals fly with the ESA final orbits and clocks at the igs20 antenna phase centre of the E6 band while the messages stay broadcast, so the HAS corrections carry the difference; test status, clock messages every 10 s, mask and orbit messages every 50 s; 12 MHz IQ4, 10 s.",
+  "name": "galileo_e6_has_precise",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 10,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "E6"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 12,
+    "centerFreq": 1278.75
+  },
+  "antenna": "../data/igs20_2026232.atx",
+  "precise": {
+    "orbit": "../data/esa_2026232.sp3",
+    "clock": "../data/esa_2026232.clk"
+  },
+  "has": {
+    "status": "test",
+    "clockInterval": 10,
+    "orbitInterval": 50
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

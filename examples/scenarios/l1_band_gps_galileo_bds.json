@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "description": "The L1 band from a driving receiver following a five-second trajectory plan between two points, starting and ending at rest: GPS L1 C/A and L1C, Galileo E1 and BDS B1C at 1575.42 MHz with BDS B1I at 1561.098 MHz in one 20 MHz IQ4 stream centred between them.",
+  "name": "l1_band_gps_galileo_bds",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_drive.pht",
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "L1CA",
+    "L1C",
+    "E1",
+    "B1C",
+    "B1I"
+  ],
+  "elevationMask": 10,
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 20,
+    "centerFreq": 1568.259
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

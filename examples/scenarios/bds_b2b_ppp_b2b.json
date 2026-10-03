@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "description": "BDS B2b with the PPP-B2b service on the BDS-3 GEO satellites (PRN 59 to 63) and B-CNAV3 on the others, over the broadcast orbits: the service corrects the B-CNAV1 message of every BDS-3 MEO and IGSO satellite, C19 to C21 by the centimetres between their CNV1 records and the D1 records they fly with, the others by the B-CNAV1 field resolution of their D1 records (under 2 cm); 20 MHz IQ2, 10 s. This scenario starts at 02:00 UTC on 2026-03-20 on the older window brd4_2026079_0200.rnx, the public broadcast files of 2026-08-20 carrying no records of PRN 59 to 63.",
+  "name": "bds_b2b_ppp_b2b",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 3,
+    "day": 20,
+    "hour": 2,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 10,
+  "ephemeris": {
+    "name": "../data/brd4_2026079_0200.rnx"
+  },
+  "signals": [
+    "B2b"
+  ],
+  "samples": {
+    "format": "IQ2",
+    "sampleFreq": 20,
+    "centerFreq": 1207.14
+  },
+  "pppB2b": {
+    "clockInterval": 6,
+    "orbitInterval": 48
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

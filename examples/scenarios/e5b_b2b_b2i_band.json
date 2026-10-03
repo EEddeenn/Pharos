@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "description": "The 1207.14 MHz band: Galileo E5b (I/NAV), BDS B2b (B-CNAV3, and PPP-B2b null messages on the GEO satellites) and BDS B2I (D1/D2 of the BDS-2 satellites) in a 25 MHz IQ4 stream; static receiver, 5 s. It starts at 02:12 UTC on 2026-03-20 on the older window brd4_2026079_0200.rnx, whose first Galileo data sets go on air at 02:11 GPST: since the April 2026 restructuring of the BDS PRNs no satellite transmits B2I.",
+  "name": "e5b_b2b_b2i_band",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 3,
+    "day": 20,
+    "hour": 2,
+    "minute": 12,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 5,
+  "ephemeris": {
+    "name": "../data/brd4_2026079_0200.rnx"
+  },
+  "signals": [
+    "E5b",
+    "B2b",
+    "B2I"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 25,
+    "centerFreq": 1207.14
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

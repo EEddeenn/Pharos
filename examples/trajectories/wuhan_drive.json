@@ -1,0 +1,109 @@
+{
+  "format": "pharos.trajectory-plan",
+  "version": 1,
+  "name": "wuhan_drive",
+  "coordinates": {
+    "datum": "WGS84",
+    "altitude": "EGM96"
+  },
+  "geometry": {
+    "points": [
+      {
+        "id": "A",
+        "position": {
+          "latitude": 30.5292,
+          "longitude": 114.3642,
+          "altitude": 40
+        }
+      },
+      {
+        "id": "B",
+        "position": {
+          "latitude": 30.5295,
+          "longitude": 114.36455,
+          "altitude": 40
+        }
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "start"
+    },
+    {
+      "id": "finish"
+    }
+  ],
+  "sections": [
+    {
+      "id": "drive",
+      "from": "start",
+      "to": "finish"
+    }
+  ],
+  "rules": [
+    {
+      "id": "start-position",
+      "kind": "hard",
+      "scope": {
+        "event": "start"
+      },
+      "quantity": "position",
+      "eq": {
+        "point": "A"
+      }
+    },
+    {
+      "id": "finish-position",
+      "kind": "hard",
+      "scope": {
+        "event": "finish"
+      },
+      "quantity": "position",
+      "eq": {
+        "point": "B"
+      }
+    },
+    {
+      "id": "finish-time",
+      "kind": "hard",
+      "scope": {
+        "event": "finish"
+      },
+      "quantity": "time",
+      "eq": 5
+    },
+    {
+      "id": "start-rest",
+      "kind": "hard",
+      "scope": {
+        "event": "start"
+      },
+      "quantity": "velocityEcef",
+      "eq": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "finish-rest",
+      "kind": "hard",
+      "scope": {
+        "event": "finish"
+      },
+      "quantity": "velocityEcef",
+      "eq": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "initialGuess": {
+    "eventTimes": {
+      "start": 0,
+      "finish": 5
+    }
+  }
+}

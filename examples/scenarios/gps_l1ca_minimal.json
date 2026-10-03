@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "The smallest scenario: GPS L1 C/A from a RINEX 3 file to a static receiver in Wuhan, IQ8 at 4.092 MHz for 8 s; every other key takes its default (5 degree mask, 47 dB-Hz).",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 8,
+  "ephemeris": {
+    "name": "../data/brdm_2026232.rnx"
+  },
+  "signals": [
+    "L1CA"
+  ],
+  "samples": {
+    "format": "IQ8",
+    "sampleFreq": 4.092,
+    "centerFreq": 1575.42
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "A trajectory solved from a plan with endpoint positions and a one-minute duration, written as latitude, longitude and height at one-second intervals.",
+  "name": "position_lla_plan",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_north.pht",
+  "ephemeris": {
+    "name": "../data/brdm_2026232.rnx"
+  },
+  "position": {
+    "interval": 1,
+    "format": "LLA"
+  }
+}

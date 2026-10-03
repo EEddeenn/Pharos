@@ -1,0 +1,134 @@
+{
+  "format": "pharos.trajectory-plan",
+  "version": 1,
+  "name": "wuhan_route",
+  "coordinates": {
+    "datum": "WGS84",
+    "altitude": "EGM96"
+  },
+  "geometry": {
+    "points": [
+      {
+        "id": "A",
+        "position": {
+          "latitude": 30.5292,
+          "longitude": 114.3642,
+          "altitude": 40
+        }
+      },
+      {
+        "id": "H1",
+        "position": {
+          "latitude": 30.5297,
+          "longitude": 114.3642,
+          "altitude": 40
+        }
+      },
+      {
+        "id": "H2",
+        "position": {
+          "latitude": 30.5302,
+          "longitude": 114.3647,
+          "altitude": 40
+        }
+      },
+      {
+        "id": "B",
+        "position": {
+          "latitude": 30.5302,
+          "longitude": 114.3652,
+          "altitude": 40
+        }
+      }
+    ],
+    "curves": [
+      {
+        "id": "guide",
+        "type": "bezier",
+        "points": [
+          "A",
+          "H1",
+          "H2",
+          "B"
+        ]
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "start"
+    },
+    {
+      "id": "finish"
+    }
+  ],
+  "sections": [
+    {
+      "id": "travel",
+      "from": "start",
+      "to": "finish"
+    }
+  ],
+  "rules": [
+    {
+      "id": "start-position",
+      "kind": "hard",
+      "scope": {
+        "event": "start"
+      },
+      "quantity": "position",
+      "eq": {
+        "point": "A"
+      }
+    },
+    {
+      "id": "finish-position",
+      "kind": "hard",
+      "scope": {
+        "event": "finish"
+      },
+      "quantity": "position",
+      "eq": {
+        "point": "B"
+      }
+    },
+    {
+      "id": "finish-time",
+      "kind": "hard",
+      "scope": {
+        "event": "finish"
+      },
+      "quantity": "time",
+      "eq": 40
+    },
+    {
+      "id": "guide",
+      "kind": "hard",
+      "scope": {
+        "section": "travel"
+      },
+      "relation": {
+        "type": "followCurve",
+        "curve": "guide",
+        "tolerance": 0.5
+      }
+    },
+    {
+      "id": "speed-limit",
+      "kind": "hard",
+      "scope": {
+        "all": true
+      },
+      "quantity": "speed3d",
+      "range": {
+        "max": 30
+      }
+    }
+  ],
+  "initialGuess": {
+    "eventTimes": {
+      "start": 0,
+      "finish": 40
+    }
+  }
+}

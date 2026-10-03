@@ -1,0 +1,12 @@
+.zig-cache/
+zig-out/
+
+.DS_Store
+*.swp
+examples/scenarios/*.bin
+examples/scenarios/*.tag
+examples/scenarios/*.obs
+examples/scenarios/*.kml
+examples/scenarios/*.lla
+examples/scenarios/*.phb
+examples/scenarios/*.ecef

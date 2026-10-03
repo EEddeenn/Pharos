@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "description": "Galileo E1 with explicit I/NAV integrity support messages: a horizontal service publication from 18:00 to 18:30 UTC over the satellites of mask bank 1, then a test message until 19:00; 12 MHz IQ4, 5 s.",
+  "name": "galileo_e1_inav_ism",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 5,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "E1"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 12,
+    "centerFreq": 1575.42
+  },
+  "messages": {
+    "galileo": {
+      "inav": [
+        {
+          "from": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 18,
+            "minute": 0,
+            "second": 0
+          },
+          "until": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 18,
+            "minute": 30,
+            "second": 0
+          },
+          "ism": {
+            "service": "horizontal",
+            "reference": {
+              "type": "Galileo",
+              "week": 1408,
+              "second": 408600
+            },
+            "satellites": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              18,
+              19,
+              21,
+              24,
+              25,
+              26,
+              27,
+              29,
+              30,
+              31
+            ],
+            "pConst": 5,
+            "pSat": 6,
+            "ura": 7,
+            "ure": 8,
+            "bNom": 9,
+            "tValidity": 10
+          }
+        },
+        {
+          "from": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 18,
+            "minute": 30,
+            "second": 0
+          },
+          "until": {
+            "type": "UTC",
+            "year": 2026,
+            "month": 8,
+            "day": 20,
+            "hour": 19,
+            "minute": 0,
+            "second": 0
+          },
+          "ism": {
+            "service": "test",
+            "testMessage": "0123456789ABCDEF012345"
+          }
+        }
+      ]
+    }
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

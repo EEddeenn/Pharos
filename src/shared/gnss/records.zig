@@ -1,0 +1,224 @@
+const std = @import("std");
+const types = @import("../core.zig").types;
+const time = @import("../core.zig").time;
+const ClockPoly = @import("../core.zig").clock.Poly;
+const kepler_parameters = @import("kepler_parameters.zig");
+const health = @import("health.zig");
+const gps = @import("gps/records.zig");
+const galileo = @import("galileo/records.zig");
+const bds = @import("bds/records.zig");
+const glonass = @import("glonass/records.zig");
+
+const SatId = types.SatId;
+const System = types.System;
+const Signal = types.Signal;
+const GpsTime = time.GpsTime;
+
+pub const NavSource = enum {
+    lnav,
+    cnav,
+    cnav2,
+    d1d2,
+    bcnav1,
+    bcnav2,
+    bcnav3,
+    inav,
+    fnav,
+
+    pub fn rinexName(self: NavSource, sat: SatId) []const u8 {
+        return switch (self) {
+            .lnav => "LNAV",
+            .cnav => "CNAV",
+            .cnav2 => "CNV2",
+            .d1d2 => if (bds.isGeo(sat.prn())) "D2" else "D1",
+            .bcnav1 => "CNV1",
+            .bcnav2 => "CNV2",
+            .bcnav3 => "CNV3",
+            .inav => "INAV",
+            .fnav => "FNAV",
+        };
+    }
+
+    pub fn family(self: NavSource) types.NavFamily {
+        return switch (self) {
+            inline else => |tag| @field(types.NavFamily, @tagName(tag)),
+        };
+    }
+
+    pub fn weekScale(self: NavSource) time.WeekScale {
+        return switch (self) {
+            .lnav, .cnav, .cnav2 => .gps,
+            .d1d2, .bcnav1, .bcnav2, .bcnav3 => .bds,
+            .inav, .fnav => .gal,
+        };
+    }
+
+    pub fn system(self: NavSource) types.System {
+        return switch (self.weekScale()) {
+            .gps => .gps,
+            .bds => .bds,
+            .gal => .gal,
+        };
+    }
+};
+
+pub const GroupDelayTerm = enum {
+    tgd_l1ca,
+    isc_l1ca,
+    isc_l1cd,
+    isc_l1cp,
+    isc_l2c,
+    isc_l5i5,
+    isc_l5q5,
+    tgd_b1cp,
+    isc_b1cd,
+    tgd_b2ap,
+    isc_b2ad,
+    tgd_b2bi,
+    tgd_b1i,
+    tgd_b2i,
+    bgd_e1e5a,
+    bgd_e1e5b,
+};
+
+pub const GroupDelays = std.EnumMap(GroupDelayTerm, f64);
+
+pub const SourceExtra = union(NavSource) {
+    lnav: gps.LnavExtra,
+    cnav: gps.CnavExtra,
+    cnav2: gps.Cnav2Extra,
+    d1d2: bds.D1d2Extra,
+    bcnav1: bds.BcnavExtra,
+    bcnav2: bds.BcnavExtra,
+    bcnav3: bds.BcnavExtra,
+    inav: galileo.InavExtra,
+    fnav: galileo.FnavExtra,
+
+    pub fn healthy(self: SourceExtra) bool {
+        return switch (self) {
+            inline else => |x| x.healthy(),
+        };
+    }
+
+    pub fn signalStatus(self: SourceExtra, signal: Signal) health.Status {
+        return switch (self) {
+            inline else => |x| x.signalStatus(signal),
+        };
+    }
+
+    pub fn servesSignal(self: SourceExtra, signal: Signal) bool {
+        return self.signalStatus(signal).flies();
+    }
+
+    pub fn transmissionLead(self: SourceExtra) ?f64 {
+        return switch (self) {
+            inline else => |x| @TypeOf(x).transmission_lead_s,
+        };
+    }
+
+    pub fn almanacHealth(self: SourceExtra) u9 {
+        return switch (self) {
+            inline else => |x| x.almanacHealth(),
+        };
+    }
+
+    pub fn almanacHealthBits(self: SourceExtra) u9 {
+        return switch (self) {
+            inline else => |x| @TypeOf(x).almanac_health_bits,
+        };
+    }
+};
+
+pub const epoch_step_ms = kepler_parameters.epoch_step_ms;
+pub const epoch_step_s = kepler_parameters.epoch_step_s;
+const issue_modulus = 256;
+
+pub const KeplerEphemeris = struct {
+    sat: SatId,
+    iode: u16,
+    iodc: u16,
+    toe: GpsTime,
+    toc: GpsTime,
+    top: ?GpsTime,
+    transmitted: ?GpsTime,
+    m0: f64,
+    delta_n: f64,
+    delta_n_dot: f64,
+    ecc: f64,
+    sqrt_a: f64,
+    a_dot: f64,
+    omega0: f64,
+    i0: f64,
+    w: f64,
+    omega_dot: f64,
+    idot: f64,
+    cuc: f64,
+    cus: f64,
+    crc: f64,
+    crs: f64,
+    cic: f64,
+    cis: f64,
+    af0: f64,
+    af1: f64,
+    af2: f64,
+    group_delay: GroupDelays,
+    extra: SourceExtra,
+
+    pub fn system(self: KeplerEphemeris) System {
+        return self.sat.system;
+    }
+
+    pub fn source(self: KeplerEphemeris) NavSource {
+        return self.extra;
+    }
+
+    pub fn weekScale(self: KeplerEphemeris) time.WeekScale {
+        return self.source().weekScale();
+    }
+
+    pub fn clock(self: *const KeplerEphemeris) ClockPoly {
+        return self.parameters().clock();
+    }
+
+    pub fn parameters(self: *const KeplerEphemeris) kepler_parameters.Parameters {
+        var out: kepler_parameters.Parameters = undefined;
+        inline for (std.meta.fields(kepler_parameters.Parameters)) |f| @field(out, f.name) = @field(self, f.name);
+        return out;
+    }
+};
+
+pub fn issueOfEpoch(t: GpsTime, scale: time.WeekScale) u16 {
+    return @intCast(@mod(@divFloor(t.inScale(scale).ms, epoch_step_ms), issue_modulus));
+}
+
+pub const GlonassEphemeris = glonass.GlonassEphemeris;
+pub const GlonassAlmanac = glonass.GlonassAlmanac;
+
+pub const KeplerAlmanac = struct {
+    sat: SatId,
+    toa: GpsTime,
+    health: u9,
+    iod: u8,
+    carriers: ?u3 = null,
+    ecc: f64,
+    sqrt_a: f64,
+    omega0: f64,
+    i0: f64,
+    w: f64,
+    omega_dot: f64,
+    m0: f64,
+    af0: f64,
+    af1: f64,
+};
+
+pub const Almanac = union(enum) {
+    kepler: KeplerAlmanac,
+    glonass: GlonassAlmanac,
+
+    pub fn sat(self: Almanac) SatId {
+        return switch (self) {
+            .kepler => |k| k.sat,
+            .glonass => |g| g.sat,
+        };
+    }
+};

@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "description": "GPS L1C with the GPS message publications for 18:00 to 19:00 UTC: an integrity declaration, so that the satellites without CNAV-2 records send their ephemeris, a text and an integrity support message for the GPS constellation; page 7 carries the configuration codes of the PRN allocation, which no publication declares; 12 MHz IQ4, 5 s.",
+  "name": "gps_l1c_cnav2_messages",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 5,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "L1C"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 12,
+    "centerFreq": 1575.42
+  },
+  "messages": {
+    "gps": [
+      {
+        "from": {
+          "type": "UTC",
+          "year": 2026,
+          "month": 8,
+          "day": 20,
+          "hour": 18,
+          "minute": 0,
+          "second": 0
+        },
+        "until": {
+          "type": "UTC",
+          "year": 2026,
+          "month": 8,
+          "day": 20,
+          "hour": 19,
+          "minute": 0,
+          "second": 0
+        },
+        "integrity": {
+          "isf": 0
+        },
+        "text": "PHAROS EXAMPLE 2026-08-20",
+        "ism": {
+          "reference": {
+            "type": "GPS",
+            "week": 2432,
+            "second": 403200
+          },
+          "constellation": "gps",
+          "service": "horizontal",
+          "satellites": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32
+          ],
+          "tCorrel": 3,
+          "bNom": 4,
+          "gammaNom": 5,
+          "rSat": 6,
+          "pConst": 7,
+          "mfd": 8
+        }
+      }
+    ]
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

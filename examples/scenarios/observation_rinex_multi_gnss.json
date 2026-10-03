@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "description": "A RINEX 3.04 observation file at 1 s for 5 minutes from the RINEX 3 navigation file: GPS L1 C/A, L2C and L5, Galileo E1, E5a and E5b, BDS B1I, B3I, B1C and B2a, GLONASS G1 and G2 above 7 degrees, with GPS PRN 1 and Galileo PRN 3 masked out.",
+  "name": "observation_rinex_multi_gnss",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 300,
+  "ephemeris": {
+    "name": "../data/brdm_2026232.rnx"
+  },
+  "signals": [
+    "L1CA",
+    "L2C",
+    "L5",
+    "E1",
+    "E5a",
+    "E5b",
+    "B1I",
+    "B3I",
+    "B1C",
+    "B2a",
+    "G1",
+    "G2"
+  ],
+  "elevationMask": 7,
+  "maskOut": [
+    {
+      "system": "GPS",
+      "svid": 1
+    },
+    {
+      "system": "Galileo",
+      "svid": 3
+    }
+  ],
+  "observation": {
+    "interval": 1
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

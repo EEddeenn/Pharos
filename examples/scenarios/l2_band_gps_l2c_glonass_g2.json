@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "description": "The L2 band: GPS L2C at 1227.6 MHz with CNAV from the native RINEX 4 records (L5 bit set, L2 bit clear; type 0 where a record lacks the flag word), and GLONASS G2 at 1246 MHz + k x 0.4375 MHz, in one 25 MHz IQ4 stream centred on 1238 MHz; static receiver, 5 s.",
+  "name": "l2_band_gps_l2c_glonass_g2",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 5,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "L2C",
+    "G2"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 25,
+    "centerFreq": 1238
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

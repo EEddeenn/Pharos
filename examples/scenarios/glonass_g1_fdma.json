@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "description": "GLONASS G1: the 14 FDMA channels of 1602 MHz + k x 0.5625 MHz in a 12 MHz IQ8 stream centred on 1602 MHz, GNAV from the RINEX 4 records with the GLUT and GLGP time offsets of its STO records; static receiver, 5 s.",
+  "name": "glonass_g1_fdma",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 5,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "G1"
+  ],
+  "samples": {
+    "format": "IQ8",
+    "sampleFreq": 12,
+    "centerFreq": 1602
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

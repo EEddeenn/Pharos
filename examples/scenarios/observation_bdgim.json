@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "description": "BDS observations at 10 s for 5 minutes with the ionosphere from BDGIM and the broadcast BDGIM coefficients of the RINEX 4 file: B1I, B3I, B1C, B2a and B2b.",
+  "name": "observation_bdgim",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 300,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "B1I",
+    "B3I",
+    "B1C",
+    "B2a",
+    "B2b"
+  ],
+  "elevationMask": 10,
+  "observation": {
+    "interval": 10
+  },
+  "ionosphere": {
+    "model": "bdgim"
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

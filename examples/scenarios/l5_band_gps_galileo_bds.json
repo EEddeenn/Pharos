@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "description": "The L5 band at 1176.45 MHz: GPS L5 (CNAV), Galileo E5a (F/NAV) and BDS B2a (B-CNAV2) in a 25 MHz IQ4 stream from the driving receiver, 5 s.",
+  "name": "l5_band_gps_galileo_bds",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_drive.pht",
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "L5",
+    "E5a",
+    "B2a"
+  ],
+  "samples": {
+    "format": "IQ4",
+    "sampleFreq": 25,
+    "centerFreq": 1176.45
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

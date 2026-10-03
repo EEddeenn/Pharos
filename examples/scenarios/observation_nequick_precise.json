@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "description": "Dual-frequency observations at 30 s for 10 minutes on the ESA final orbits and clocks with the igs20 phase centre of each band, the ionosphere from NeQuick G with the Galileo coefficients of the navigation data: GPS L1 C/A and L5 (L5 on the IIF and GPS III satellites), Galileo E1 and E5a.",
+  "name": "observation_nequick_precise",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 600,
+  "ephemeris": {
+    "name": "../data/brd4_2026232.rnx"
+  },
+  "signals": [
+    "L1CA",
+    "L5",
+    "E1",
+    "E5a"
+  ],
+  "elevationMask": 10,
+  "observation": {
+    "interval": 30
+  },
+  "antenna": "../data/igs20_2026232.atx",
+  "precise": {
+    "orbit": "../data/esa_2026232.sp3",
+    "clock": "../data/esa_2026232.clk"
+  },
+  "ionosphere": {
+    "model": "nequick"
+  },
+  "power": {
+    "noiseFloor": -172,
+    "initPower": {
+      "unit": "dBHz",
+      "value": 47
+    },
+    "elevationAdjust": true
+  }
+}

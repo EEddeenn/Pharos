@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "A trajectory plan with approach, a five-second stationary section, and departure, written as a KML line.",
+  "name": "position_kml_trajectory",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_segments.pht",
+  "ephemeris": {
+    "name": "../data/brdm_2026232.rnx"
+  },
+  "position": {
+    "interval": 0.5,
+    "format": "KML"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "description": "GPS L1 C/A with a power schedule: the noise floor at -171 dBm/Hz, the default C/N0 given in dBm, the elevation fade on, every satellite dropped to 40 dB-Hz at 3 s, PRN 5 and 13 raised to 50 dB-Hz at 5 s, the defaults restored at 8 s; IQ8 at 4.092 MHz for 10 s.",
+  "name": "gps_l1ca_power_schedule",
+  "time": {
+    "type": "UTC",
+    "year": 2026,
+    "month": 8,
+    "day": 20,
+    "hour": 18,
+    "minute": 0,
+    "second": 0
+  },
+  "trajectory": "../trajectories/wuhan_static.pht",
+  "duration": 10,
+  "ephemeris": {
+    "name": "../data/brdm_2026232.rnx"
+  },
+  "signals": [
+    "L1CA"
+  ],
+  "samples": {
+    "format": "IQ8",
+    "sampleFreq": 4.092,
+    "centerFreq": 1575.42
+  },
+  "power": {
+    "noiseFloor": -171,
+    "initPower": {
+      "unit": "dBm",
+      "value": -126
+    },
+    "elevationAdjust": true,
+    "signalPower": [
+      {
+        "system": "GPS",
+        "svid": 0,
+        "powerValue": {
+          "unit": "dBHz",
+          "value": 40,
+          "time": 3
+        }
+      },
+      {
+        "system": "GPS",
+        "svid": [
+          5,
+          13
+        ],
+        "powerValue": {
+          "unit": "dBHz",
+          "value": 50,
+          "time": 5
+        }
+      },
+      {
+        "system": "GPS",
+        "svid": 0,
+        "powerValue": {
+          "time": 8
+        }
+      }
+    ]
+  }
+}
