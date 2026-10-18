@@ -1,5 +1,6 @@
 const std = @import("std");
 const shared = @import("shared");
+const rest_speed = @import("kernel/domain.zig").rest_speed;
 const plan_module = @import("../plan.zig");
 const model = plan_module.model;
 const quantities = plan_module.quantities;
@@ -9,7 +10,7 @@ pub const Mode = enum { optimization, verification };
 pub const Operation = union(enum) {
     quantity: struct { rule: usize, comparison: Comparison, component: usize, split_norm: bool = false },
     /// Beside a hard course of a stated number at an event, which the optimiser holds as no velocity across it:
-    /// the velocity there is not against that course.
+    /// the velocity there goes along that course, at least as fast as a direction of travel needs (`rest_speed`).
     ahead: usize,
     curve: struct { rule: usize, component: usize },
     region: struct { rule: usize, edge: usize },
@@ -183,7 +184,7 @@ pub fn value(comptime K: type, prepared: *const Prepared, rhs: model.Value, samp
 pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampler: anytype, comptime mode: Mode) K.Number {
     const A = K.Arithmetic;
     return switch (check.operation) {
-        .ahead => |index| onCourse(K, sampler.point(), prepared.plan.rules[index].definition.quantity.comparison.eq.scalar).along,
+        .ahead => |index| A.sub(onCourse(K, sampler.point(), prepared.plan.rules[index].definition.quantity.comparison.eq.scalar).along, A.constant(rest_speed)),
         .coverage => |required| A.scale(A.sub(sampler.eventTime(prepared.plan.events.len - 1), A.constant(required)), 0.1),
         .maximum_duration => A.scale(A.sub(A.constant(shared.trajectory.max_duration_s), sampler.eventTime(prepared.plan.events.len - 1)), 0.1),
         .jump => |jump| blk: {

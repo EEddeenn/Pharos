@@ -4,10 +4,10 @@ const model = @import("../../plan.zig").model;
 const directed = @import("../../plan.zig").quantities.directed;
 const constants = core.constants;
 
-/// The horizontal speed, in m/s, at or under which the path is at rest and has no direction of travel. A hard
-/// rule of rest admits this much of each component of the velocity at the verifier's tolerance, and so up to
-/// 1.4e-5 m/s horizontally.
-pub const rest_speed: f64 = 1e-5;
+/// The horizontal speed, in m/s, at or under which the path is at rest and has no direction of travel: under it a
+/// heading read off the motion is noise. A hard rule of rest admits much less, each component of the velocity
+/// within the verifier's tolerance (up to 1.4e-5 m/s horizontally), so a path such a rule holds is at rest here.
+pub const rest_speed: f64 = 1e-3;
 
 pub const Requirements = struct {
     frame: ?u2,
