@@ -95,7 +95,8 @@ pub const Run = struct {
         out: []u8,
     } = .{ .first = .zero, .gain = .{ .factor = 1.0 }, .out = &.{} },
     segment: geometry.Segment = .{ .first = .zero, .count = 0 },
-    clipped: [gain.evaluation_epochs]u64 = undefined,
+    clipped: std.atomic.Value(u64) = .init(0),
+    ready: [gain.evaluation_epochs]std.atomic.Value(bool) = undefined,
     epoch: Epoch = .zero,
     gain: Gain,
     total_clipped: u64 = 0,
@@ -241,8 +242,7 @@ pub const Run = struct {
         var applied_count: usize = 0;
         const failed: ?StepError = while (produced < epochs) {
             const count = self.step(epochs - produced, out[produced * bpe ..], &applied_count) catch |e| break e;
-            var window_sum: u64 = 0;
-            for (self.clipped[0..count]) |c| window_sum += c;
+            const window_sum = self.clipped.swap(0, .monotonic);
             clipped += window_sum;
             self.total_clipped += window_sum;
             self.total_bytes += count * bpe;
@@ -327,11 +327,12 @@ pub const Run = struct {
     }
 
     fn runJob(self: *Run, job: Job) void {
-        const count = job.samples + job.rows;
+        const count = job.samples * (1 + kernel.subTiles(self.kernel_config)) + job.rows;
+        for (self.ready[0..job.samples]) |*r| r.store(false, .monotonic);
         if (self.pool) |p| {
-            p.dispatch(job, count);
-            p.join(job, count);
-            p.wait();
+            const gen = p.dispatch(job, count);
+            p.join(gen, job, count);
+            p.wait(count);
         } else {
             var i: u32 = 0;
             while (i < count) : (i += 1) self.runTask(0, job, i);
@@ -351,7 +352,12 @@ pub const Run = struct {
         var with = samples;
         while (self.geometry.nextSegment(&self.events)) |segment| {
             self.segment = segment;
-            self.runJob(.{ .samples = with, .rows = segment.count });
+            // A row or two alone are not worth waking the workers for.
+            if (with == 0 and segment.count <= 2) {
+                for (0..segment.count) |k| self.geometry.produceRows(segment.first.plus(k));
+            } else {
+                self.runJob(.{ .samples = with, .rows = segment.count });
+            }
             with = 0;
         }
         if (self.options.dumps.rows) |w| self.geometry.dumpRows(w, first) catch {};
@@ -368,10 +374,18 @@ pub const Run = struct {
     }
 
     pub fn runTask(self: *Run, worker_id: usize, job: Job, index: u32) void {
-        if (index >= job.samples) return self.geometry.produceRows(self.segment.first.plus(index - job.samples));
+        if (index < job.samples) {
+            self.channels.deriveEpoch(index, &self.power);
+            return self.ready[index].store(true, .release);
+        }
+        const tiles = kernel.subTiles(self.kernel_config);
+        const t = index - job.samples;
+        if (t >= job.samples * tiles) return self.geometry.produceRows(self.segment.first.plus(t - job.samples * tiles));
+        const e = t / tiles;
+        // The epoch's parameters come from a task given out before this one.
+        while (!self.ready[e].load(.acquire)) std.atomic.spinLoopHint();
         const bpe = self.info.bytes_per_epoch;
-        const epoch = self.window.first.plus(index);
-        const slot = self.window.out[index * bpe ..][0..bpe];
-        self.clipped[index] = kernel.synthEpoch(self.kernel_config, &self.channels.tables, self.channels.epochRows(index), epoch, self.window.gain.factor, &self.scratch[worker_id], slot);
+        const slot = self.window.out[e * bpe ..][0..bpe];
+        _ = self.clipped.fetchAdd(kernel.synthSubTile(self.kernel_config, &self.channels.tables, self.channels.epochRows(e), self.window.first.plus(e), t % tiles, self.window.gain.factor, &self.scratch[worker_id], slot), .monotonic);
     }
 };

@@ -15,8 +15,10 @@ pub fn Pool(comptime Ctx: type) type {
         quit: bool = false,
         job: Ctx.Job = undefined,
         count: u32 = 0,
-        next: std.atomic.Value(u32) = .init(0),
-        finished: u32 = 0,
+        // The job's generation in the high half and its next task in the low, so a worker that wakes late for a job
+        // takes nothing of a later one, and a job ends with its last task, however many workers have woken.
+        next: std.atomic.Value(u64) = .init(0),
+        completed: std.atomic.Value(u32) = .init(0),
 
         pub fn init(gpa: std.mem.Allocator, io: Io, ctx: *Ctx, n: u32) !*Self {
             const self = try gpa.create(Self);
@@ -51,32 +53,43 @@ pub fn Pool(comptime Ctx: type) type {
             gpa.destroy(self);
         }
 
-        pub fn dispatch(self: *Self, job: Ctx.Job, count: u32) void {
+        pub fn dispatch(self: *Self, job: Ctx.Job, count: u32) u32 {
             self.mutex.lockUncancelable(self.io);
             self.job = job;
             self.count = count;
-            self.next.store(0, .monotonic);
-            self.finished = 0;
             self.generation += 1;
+            const gen: u32 = @truncate(self.generation);
+            self.completed.store(0, .monotonic);
+            self.next.store(@as(u64, gen) << 32, .monotonic);
             self.wake.broadcast(self.io);
             self.mutex.unlock(self.io);
+            return gen;
         }
 
-        pub fn join(self: *Self, job: Ctx.Job, count: u32) void {
-            self.take(self.threads.len, job, count);
+        pub fn join(self: *Self, gen: u32, job: Ctx.Job, count: u32) void {
+            self.take(self.threads.len, gen, job, count);
         }
 
-        pub fn wait(self: *Self) void {
+        pub fn wait(self: *Self, count: u32) void {
             self.mutex.lockUncancelable(self.io);
-            while (self.finished < self.threads.len) self.done.waitUncancelable(self.io, &self.mutex);
+            while (self.completed.load(.acquire) < count) self.done.waitUncancelable(self.io, &self.mutex);
             self.mutex.unlock(self.io);
         }
 
-        fn take(self: *Self, id: usize, job: Ctx.Job, count: u32) void {
-            while (true) {
-                const i = self.next.fetchAdd(1, .monotonic);
-                if (i >= count) break;
-                self.ctx.runTask(id, job, i);
+        fn take(self: *Self, id: usize, gen: u32, job: Ctx.Job, count: u32) void {
+            var v = self.next.load(.monotonic);
+            while (@as(u32, @truncate(v >> 32)) == gen and @as(u32, @truncate(v)) < count) {
+                if (self.next.cmpxchgWeak(v, v + 1, .monotonic, .monotonic)) |actual| {
+                    v = actual;
+                    continue;
+                }
+                self.ctx.runTask(id, job, @truncate(v));
+                if (self.completed.fetchAdd(1, .acq_rel) + 1 == count) {
+                    self.mutex.lockUncancelable(self.io);
+                    self.done.signal(self.io);
+                    self.mutex.unlock(self.io);
+                }
+                v = self.next.load(.monotonic);
             }
         }
 
@@ -90,16 +103,12 @@ pub fn Pool(comptime Ctx: type) type {
                     return;
                 }
                 seen = self.generation;
+                const gen: u32 = @truncate(self.generation);
                 const job = self.job;
                 const count = self.count;
                 self.mutex.unlock(self.io);
 
-                self.take(id, job, count);
-
-                self.mutex.lockUncancelable(self.io);
-                self.finished += 1;
-                if (self.finished == self.threads.len) self.done.signal(self.io);
-                self.mutex.unlock(self.io);
+                self.take(id, gen, job, count);
             }
         }
     };

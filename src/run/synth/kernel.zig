@@ -425,23 +425,21 @@ inline fn expand(comptime shape: chip.Shape, comptime count: usize, comptime fix
     }
 }
 
-pub fn synthEpoch(cfg: Config, set: *const tables.TableSet, rows: []const ?params.EpochParams, epoch: Epoch, gain: f32, s: *Scratch, out: []u8) u64 {
-    const spe = cfg.samples_per_epoch;
-    var clipped: u64 = 0;
-    var n0: u32 = 0;
-    while (n0 < spe) : (n0 += cfg.sub_tile_len) {
-        const len = @min(cfg.sub_tile_len, spe - n0);
-        const strided = std.mem.alignForward(u32, len, rotor.stride);
-        @memset(s.acc_re[0..strided], 0);
-        @memset(s.acc_im[0..strided], 0);
-        for (rows) |*row| {
-            if (row.*) |*p| synthChannel(p, &set.tables[p.table], n0, len, s);
-        }
-        addNoise(cfg, epoch, n0, len, strided, s);
-        const offset = cfg.format.bytesFor(n0);
-        clipped += quantize.pack(cfg.format, s.acc_re[0..len], s.acc_im[0..len], gain, out[offset..]);
+pub fn subTiles(cfg: Config) u32 {
+    return (cfg.samples_per_epoch + cfg.sub_tile_len - 1) / cfg.sub_tile_len;
+}
+
+pub fn synthSubTile(cfg: Config, set: *const tables.TableSet, rows: []const ?params.EpochParams, epoch: Epoch, tile: u32, gain: f32, s: *Scratch, out: []u8) u64 {
+    const n0 = tile * cfg.sub_tile_len;
+    const len = @min(cfg.sub_tile_len, cfg.samples_per_epoch - n0);
+    const strided = std.mem.alignForward(u32, len, rotor.stride);
+    @memset(s.acc_re[0..strided], 0);
+    @memset(s.acc_im[0..strided], 0);
+    for (rows) |*row| {
+        if (row.*) |*p| synthChannel(p, &set.tables[p.table], n0, len, s);
     }
-    return clipped;
+    addNoise(cfg, epoch, n0, len, strided, s);
+    return quantize.pack(cfg.format, s.acc_re[0..len], s.acc_im[0..len], gain, out[cfg.format.bytesFor(n0)..]);
 }
 
 fn addNoise(cfg: Config, epoch: Epoch, n0: u32, len: u32, strided: u32, s: *Scratch) void {

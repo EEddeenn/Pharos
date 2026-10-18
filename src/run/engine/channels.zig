@@ -36,6 +36,11 @@ fn masksPerChannel(window_epochs: u32, code_ms: u32) usize {
 const PeriodSpan = struct {
     first: u64 = std.math.maxInt(u64),
     last: u64 = 0,
+
+    fn include(self: *PeriodSpan, p: params.EpochParams, samples_per_epoch: u32, entries_per_period: u32) void {
+        self.first = @min(self.first, p.period0);
+        self.last = @max(self.last, p.period0 + p.masksNeeded(samples_per_epoch, entries_per_period));
+    }
 };
 
 const ParamsDump = struct {
@@ -89,8 +94,10 @@ pub const Stage = struct {
     streams: msg.streams.Streams,
     rows: []?params.EpochParams,
     spans: []PeriodSpan,
+    derived: []bool,
     masks: []u8,
     masks_per_channel: usize,
+    window_rows: []const geometry.Row = &.{},
     window_first: Epoch = .zero,
     window_count: u32 = 0,
     window_channels: usize = 0,
@@ -139,6 +146,8 @@ pub const Stage = struct {
         errdefer if (dump_params) |dump| dump.deinit(gpa);
         const spans = try gpa.alloc(PeriodSpan, capacity);
         errdefer gpa.free(spans);
+        const derived = try gpa.alloc(bool, capacity);
+        errdefer gpa.free(derived);
         const masks_per_channel = masksPerChannel(window_epochs, min_code_ms);
         const masks = try gpa.alloc(u8, masks_per_channel * capacity);
         errdefer gpa.free(masks);
@@ -160,6 +169,7 @@ pub const Stage = struct {
             .rows = rows,
             .dump_params = dump_params,
             .spans = spans,
+            .derived = derived,
             .masks = masks,
             .masks_per_channel = masks_per_channel,
         };
@@ -176,6 +186,7 @@ pub const Stage = struct {
         self.table.deinit();
         self.gpa.free(self.masks);
         self.gpa.free(self.spans);
+        self.gpa.free(self.derived);
         if (self.dump_params) |dump| dump.deinit(self.gpa);
         self.gpa.free(self.rows);
         self.tables.deinit();
@@ -219,50 +230,60 @@ pub const Stage = struct {
         }
     }
 
-    fn deriveEpoch(self: *Stage, e: Epoch, offset: usize, channels: []const Channel, rows_a: []const geometry.Row, rows_b: []const geometry.Row, power: *const Power) void {
-        const out = self.rows[offset..][0..channels.len];
-        for (channels, out, self.spans[0..channels.len], 0..) |*c, *row, *span, ci| {
-            row.* = null;
-            if (!c.activeAt(e)) continue;
-            const a: *const geometry.Row.Seen = if (rows_a[c.track].seen) |*seen| seen else continue;
-            const b: *const geometry.Row.Seen = if (rows_b[c.track].seen) |*seen| seen else continue;
-            const signal = c.key.signal;
-            const gd = a.delays.code(signal, .data);
-            const gp = a.delays.code(signal, .pilot);
-            const code_s = @max(gd, gp);
-            const code_b = @max(b.delays.code(signal, .data), b.delays.code(signal, .pilot));
-            const endpoint_a = params.Endpoint{
-                .phase_cycles = geo.observation.channelPhase(a.epoch, signal, c.freq, a.delays.carrier(signal)),
-                .tx = geo.observation.transmitTime(a.epoch, signal, c.freq, code_s),
-            };
-            const endpoint_b = params.Endpoint{
-                .phase_cycles = geo.observation.channelPhase(b.epoch, signal, c.freq, b.delays.carrier(signal)),
-                .tx = geo.observation.transmitTime(b.epoch, signal, c.freq, code_b),
-            };
-            const cn0 = power.cn0(c.key.sat, a.epoch.el_rad);
-            if (self.dump_params) |dump| if (dump.enabled) {
-                dump.records[offset + ci] = .{ .phase_cycles = endpoint_a.phase_cycles, .tx = endpoint_a.tx, .cn0_dbhz = cn0 };
-            };
-            var p = params.derive(c.synth, self.b.plan.leap, endpoint_a, endpoint_b, core.time.atEpoch(self.start, e), self.samples_per_epoch, cn0) orelse continue;
-            if (gp != gd) {
-                p.lead_bits = gnss.spec.get(signal).stateBits(if (gp < gd) .pilot else .data);
-                p.lead_entries = params.leadEntries(c.synth, code_s, @min(gd, gp));
+    fn deriveOne(self: *const Stage, i: usize, c: *const Channel, ci: usize, power: *const Power) ?params.EpochParams {
+        const e = self.window_first.plus(i);
+        if (!c.activeAt(e)) return null;
+        const tracks = self.sats.len;
+        const a: *const geometry.Row.Seen = if (self.window_rows[i * tracks + c.track].seen) |*seen| seen else return null;
+        const b: *const geometry.Row.Seen = if (self.window_rows[(i + 1) * tracks + c.track].seen) |*seen| seen else return null;
+        const signal = c.key.signal;
+        const gd = a.delays.code(signal, .data);
+        const gp = a.delays.code(signal, .pilot);
+        const code_s = @max(gd, gp);
+        const code_b = @max(b.delays.code(signal, .data), b.delays.code(signal, .pilot));
+        const endpoint_a = params.Endpoint{
+            .phase_cycles = geo.observation.channelPhase(a.epoch, signal, c.freq, a.delays.carrier(signal)),
+            .tx = geo.observation.transmitTime(a.epoch, signal, c.freq, code_s),
+        };
+        const endpoint_b = params.Endpoint{
+            .phase_cycles = geo.observation.channelPhase(b.epoch, signal, c.freq, b.delays.carrier(signal)),
+            .tx = geo.observation.transmitTime(b.epoch, signal, c.freq, code_b),
+        };
+        const cn0 = power.cn0(c.key.sat, a.epoch.el_rad);
+        if (self.dump_params) |dump| if (dump.enabled) {
+            dump.records[i * self.window_channels + ci] = .{ .phase_cycles = endpoint_a.phase_cycles, .tx = endpoint_a.tx, .cn0_dbhz = cn0 };
+        };
+        var p = params.derive(c.synth, self.b.plan.leap, endpoint_a, endpoint_b, core.time.atEpoch(self.start, e), self.samples_per_epoch, cn0) orelse return null;
+        if (gp != gd) {
+            p.lead_bits = gnss.spec.get(signal).stateBits(if (gp < gd) .pilot else .data);
+            p.lead_entries = params.leadEntries(c.synth, code_s, @min(gd, gp));
+        }
+        return p;
+    }
+
+    pub fn deriveEpoch(self: *Stage, i: u32, power: *const Power) void {
+        const channels = self.table.channels.items;
+        const out = self.rows[i * channels.len ..][0..channels.len];
+        for (channels, out, self.spans[0..channels.len], self.derived[0..channels.len], 0..) |*c, *row, span, derived, ci| {
+            if (derived) continue;
+            row.* = self.deriveOne(i, c, ci, power);
+            if (row.*) |*p| {
+                std.debug.assert(p.period0 >= span.first and p.period0 + p.masksNeeded(self.samples_per_epoch, self.tables.tables[c.synth.table].entries_per_period) <= span.last);
+                self.bind(p, ci, span);
             }
-            const needed = p.masksNeeded(self.samples_per_epoch, self.tables.tables[c.synth.table].entries_per_period);
-            span.first = @min(span.first, p.period0);
-            span.last = @max(span.last, p.period0 + needed);
-            row.* = p;
         }
     }
 
-    fn bindMasks(self: *Stage, c: *Channel, ci: usize, span: PeriodSpan) error{Internal}!void {
+    fn bind(self: *const Stage, p: *params.EpochParams, ci: usize, span: PeriodSpan) void {
+        const slot = self.masks[ci * self.masks_per_channel ..];
+        p.masks = slot[@intCast(p.period0 - span.first)..@intCast(span.last - span.first)];
+    }
+
+    fn fillMasks(self: *Stage, c: *Channel, ci: usize, span: PeriodSpan) error{Internal}!void {
         const slot = self.masks[ci * self.masks_per_channel ..][0..self.masks_per_channel];
         const len: usize = @intCast(span.last - span.first);
         if (len > slot.len) return error.Internal;
         c.symbols.fill(span.first, slot[0..len]);
-        for (0..self.window_count) |i| {
-            if (self.rows[i * self.window_channels + ci]) |*row| row.masks = slot[@intCast(row.period0 - span.first)..len];
-        }
     }
 
     pub fn prepare(self: *Stage, first: Epoch, count: u32, geom: *const geometry.Stage, power: *const Power, ring: *events.Ring) Error!void {
@@ -274,16 +295,31 @@ pub const Stage = struct {
         self.window_first = first;
         self.window_count = count;
         self.window_channels = channels.len;
+        self.window_rows = geom.rowsFrom(first, count) orelse return error.Internal;
         std.debug.assert(self.rows.len >= count * channels.len);
-        @memset(self.spans[0..channels.len], .{});
-        for (0..count) |i| {
-            const e = first.plus(i);
-            const rows_a = geom.rowsAt(e) orelse return error.Internal;
-            const rows_b = geom.rowsAt(e.plus(1)) orelse return error.Internal;
-            self.deriveEpoch(e, i * channels.len, channels, rows_a, rows_b, power);
-        }
-        for (channels, self.spans[0..channels.len], 0..) |*c, span, ci| {
-            if (span.last != 0) try self.bindMasks(c, ci, span);
+        const dumping = if (self.dump_params) |dump| dump.enabled else false;
+        const here = dumping or count <= 2;
+        for (channels, self.spans[0..channels.len], self.derived[0..channels.len], 0..) |*c, *span, *derived, ci| {
+            const per = self.tables.tables[c.synth.table].entries_per_period;
+            span.* = .{};
+            derived.* = here;
+            // A channel's periods only grow, so its first and last epochs give the window's span; the job derives every epoch.
+            if (!here) for ([_]u32{ 0, count - 1 }) |i| {
+                if (self.deriveOne(i, c, ci, power)) |p| span.include(p, self.samples_per_epoch, per) else derived.* = true;
+            };
+            if (derived.*) {
+                span.* = .{};
+                for (0..count) |i| {
+                    const row = &self.rows[i * channels.len + ci];
+                    row.* = self.deriveOne(i, c, ci, power);
+                    if (row.*) |p| span.include(p, self.samples_per_epoch, per);
+                }
+            }
+            if (span.last == 0) continue;
+            try self.fillMasks(c, ci, span.*);
+            if (derived.*) for (0..count) |i| {
+                if (self.rows[i * channels.len + ci]) |*p| self.bind(p, ci, span.*);
+            };
         }
         if (self.dump_params) |dump| if (dump.enabled) dump.write(self) catch {};
     }

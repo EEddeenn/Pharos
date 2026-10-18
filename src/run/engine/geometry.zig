@@ -166,6 +166,16 @@ pub const Stage = struct {
         return null;
     }
 
+    pub fn rowsFrom(self: *const Stage, first: Epoch, count: u32) ?[]const Row {
+        for (self.buffers) |b| {
+            if (b.valid and first.ms >= b.first.ms and first.ms + count <= b.first.ms + b.count) {
+                const slot: usize = @intCast(first.ms - b.first.ms);
+                return b.rows[slot * self.rows_per_epoch ..][0 .. (count + 1) * self.rows_per_epoch];
+            }
+        }
+        return null;
+    }
+
     pub fn dumpRows(self: *const Stage, w: *std.Io.Writer, first: Epoch) std.Io.Writer.Error!void {
         for (self.buffers) |b| {
             if (!b.valid or b.first.ms != first.ms) continue;
