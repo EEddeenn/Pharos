@@ -123,6 +123,33 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
         }
         first = end;
     }
+    // A section whose two ends and whose duration are fixed is no slower, on average, than its chord over its
+    // duration: a hard maximum of speed3d below that has no solution, whatever the path. The test is the
+    // verifier's own (rules.residual): the normalised violation of that mean speed against its tolerance.
+    for (plan.rules) |rule| {
+        if (rule.kind() != .hard or rule.definition != .quantity) continue;
+        const q = rule.definition.quantity;
+        if (q.quantity != .speed3d or q.comparison != .range) continue;
+        const bound = q.comparison.range.max orelse continue;
+        if (bound != .scalar or !(bound.scalar >= 0)) continue;
+        const span = sectionSpan(rule.scope, plan.sections.len) orelse continue;
+        for (span[0]..span[1]) |section| {
+            const duration = built.mesh.durations[section];
+            if (lower[duration] != upper[duration]) continue;
+            const a = nodes[built.mesh.event_out[section]].variables;
+            const b = nodes[built.mesh.event_in[section + 1]].variables;
+            var squared: f64 = 0;
+            var fixed = true;
+            for (0..3) |axis| {
+                if (lower[a[axis]] != upper[a[axis]] or lower[b[axis]] != upper[b[axis]]) fixed = false;
+                const delta = (lower[b[axis]] - lower[a[axis]]) * built.mesh.scales[axis];
+                squared += delta * delta;
+            }
+            const seconds = lower[duration] * time_scale;
+            const excess = (squared / (seconds * seconds) - bound.scalar * bound.scalar) / @max(rule.scale, bound.scalar) / rule.scale;
+            if (fixed and excess > 1e-5) built.inconsistent = true;
+        }
+    }
     const columns = try arena.alloc(usize, aliases.len);
     var count: usize = 0;
     for (aliases, 0..) |parent, column| {

@@ -31,7 +31,7 @@ const Error = error{OutOfMemory};
 fn build(allocator: std.mem.Allocator, arena: std.mem.Allocator, io: Io, args: args_mod.Build, console: Console) Error!u8 {
     const text = try cli.readFile(io, arena, args.input, cli.max_input_bytes, console) orelse return 1;
     var diags: Diagnostics = .{ .arena = arena, .source = args.input };
-    const built = pharos_traj.source.build(allocator, arena, text, &diags) catch |e| {
+    const built = pharos_traj.source.build(allocator, arena, text, .{}, &diags) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory;
         cli.printDiagnostics(console, &diags);
         return 1;

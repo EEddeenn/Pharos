@@ -42,7 +42,13 @@ pub fn check(arena: std.mem.Allocator, prepared: *const rules.Prepared, candidat
     context.domainBounds();
     context.continuity();
     context.curveProgress();
-    for (prepared.checks) |term| {
+    for (prepared.checks) |check_of_rule| {
+        var term = check_of_rule;
+        // A soft norm is split for the optimiser alone: it is reported whole, once.
+        if (term.operation == .quantity and term.operation.quantity.split_norm and prepared.isObjective(term)) {
+            if (term.operation.quantity.component != 0) continue;
+            term.operation.quantity.split_norm = false;
+        }
         switch (term.scope) {
             .event => |event| context.point(term, candidate.path.eventLocation(event)),
             .time => |time| context.point(term, timeLocation(&candidate.path, time)),
@@ -63,6 +69,7 @@ pub fn check(arena: std.mem.Allocator, prepared: *const rules.Prepared, candidat
 }
 
 const Sampler = struct {
+    prepared: *const rules.Prepared,
     candidate: *const candidate_module.Candidate,
     location: candidate_module.Location,
     cached: ?Scalar.Point = null,
@@ -89,12 +96,55 @@ const Sampler = struct {
     }
 
     pub fn eventQuantity(self: *const Sampler, event: model.EventRef, q: model.Quantity) [3]f64 {
-        var sampler: Sampler = .{ .candidate = self.candidate, .location = self.candidate.path.eventLocation(event) };
+        var sampler: Sampler = .{ .prepared = self.prepared, .candidate = self.candidate, .location = self.candidate.path.eventLocation(event) };
         return sampler.quantity(q, .{ .event = event });
     }
 
-    pub fn progress(self: *const Sampler, rule: usize) f64 {
-        return self.candidate.progress(rule, self.candidate.path.timeAt(self.location.index, self.location.u));
+    /// A guide is held against the curve, not against the one point of it that the candidate names at this time:
+    /// the progress is that of the curve's nearest point, sought by golden section from the candidate's own two
+    /// samples around this time to as far again on either side of them, within the rule's stretch of the curve.
+    pub fn progress(self: *Sampler, rule: usize) f64 {
+        const time = self.candidate.path.timeAt(self.location.index, self.location.u);
+        const around = self.candidate.progressAround(rule, time) orelse return std.math.nan(f64);
+        const named = if (around[1].time == time or around[0].time == around[1].time) around[1].value else around[0].value + (around[1].value - around[0].value) * (time - around[0].time) / (around[1].time - around[0].time);
+        if (!std.math.isFinite(named)) return named;
+        const follow = self.prepared.plan.rules[rule].definition.relation.value.follow_curve;
+        const span = @abs(around[1].value - around[0].value);
+        var low = @max(@min(follow.from, follow.to), @min(around[0].value, around[1].value) - span);
+        var high = @min(@max(follow.from, follow.to), @max(around[0].value, around[1].value) + span);
+        if (!(high > low)) return named;
+        const curve = self.prepared.curves[follow.curve];
+        const position = self.point().state.position;
+        const golden = 0.3819660112501051;
+        var a = low + (high - low) * golden;
+        var b = high - (high - low) * golden;
+        var fa = separation(curve, position, a);
+        var fb = separation(curve, position, b);
+        // Forty-eight steps leave 1e-10 of the window, a micrometre of ten kilometres of guide: an exact follow is
+        // held to ten micrometres, and the search must not be what it fails by.
+        for (0..48) |_| {
+            if (fa < fb) {
+                high = b;
+                b = a;
+                fb = fa;
+                a = low + (high - low) * golden;
+                fa = separation(curve, position, a);
+            } else {
+                low = a;
+                a = b;
+                fa = fb;
+                b = high - (high - low) * golden;
+                fb = separation(curve, position, b);
+            }
+        }
+        return if (@min(fa, fb) <= separation(curve, position, named)) (if (fa < fb) a else b) else named;
+    }
+
+    fn separation(curve: rules.Curve, position: [3]f64, progress_value: f64) f64 {
+        const reference = rules.curveAt(Scalar, curve, progress_value);
+        var sum: f64 = 0;
+        for (position, reference) |p, q| sum += (p - q) * (p - q);
+        return sum;
     }
 };
 
@@ -139,7 +189,7 @@ const Context = struct {
     }
 
     fn residualAt(self: *const Context, term: rules.Check, location: candidate_module.Location) f64 {
-        var sampler: Sampler = .{ .candidate = self.candidate, .location = location, .requested_time = if (term.scope == .time) term.scope.time else null };
+        var sampler: Sampler = .{ .prepared = self.prepared, .candidate = self.candidate, .location = location, .requested_time = if (term.scope == .time) term.scope.time else null };
         return rules.residual(Scalar, self.prepared, term, &sampler, .verification);
     }
 
@@ -398,7 +448,7 @@ const Context = struct {
                 const location = self.path.locate(sample.time, false);
                 self.record(auxiliary, sample.value - low, location.index);
                 self.record(auxiliary, high - sample.value, location.index);
-                if (i == 0) self.record(auxiliary, -@abs(sample.value - definition.from), location.index);
+                if (i == 0 and samples.len > 1) self.record(auxiliary, -@abs(sample.value - definition.from), location.index);
                 if (i + 1 == samples.len and i != 0) self.record(auxiliary, -@abs(sample.value - definition.to), location.index);
                 if (i == 0) continue;
                 const previous = samples[i - 1];
@@ -426,7 +476,7 @@ const Context = struct {
         for (0..derivatives) |_| for (&vector) |*p| {
             p.* = p.derivative().scaled(1 / jets.duration);
         };
-        if (operation.zero_norm) return switch (definition.quantity) {
+        if (operation.split_norm) return switch (definition.quantity) {
             .speed3d, .acceleration3d, .jerk3d => vector[operation.component].scaled(1 / rule.scale),
             else => null,
         };
@@ -458,7 +508,7 @@ const Context = struct {
     }
 
     fn rightHand(self: *const Context, value: model.Value, component: usize) f64 {
-        var sampler: Sampler = .{ .candidate = self.candidate, .location = .{ .index = 0, .u = 0 } };
+        var sampler: Sampler = .{ .prepared = self.prepared, .candidate = self.candidate, .location = .{ .index = 0, .u = 0 } };
         return rules.value(Scalar, self.prepared, value, &sampler)[component];
     }
 

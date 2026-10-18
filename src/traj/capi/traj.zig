@@ -89,6 +89,14 @@ fn finish(h: *Handle, diags: *const Diagnostics, status: Status, out: *?*Handle)
 }
 
 pub fn pharos_traj_build(json: ?[*]const u8, len: usize, out: ?*?*Handle) callconv(.c) Status {
+    return build(json, len, .{}, out);
+}
+
+pub fn pharos_traj_build_within(json: ?[*]const u8, len: usize, max_work: usize, out: ?*?*Handle) callconv(.c) Status {
+    return build(json, len, .{ .max_work = max_work }, out);
+}
+
+fn build(json: ?[*]const u8, len: usize, options: source.Options, out: ?*?*Handle) Status {
     common.thread_error.begin();
     const o = out orelse return .arg;
     o.* = null;
@@ -96,7 +104,7 @@ pub fn pharos_traj_build(json: ?[*]const u8, len: usize, out: ?*?*Handle) callco
     const h = create() orelse return nomem(&common.thread_error);
     const arena = h.arena.allocator();
     var diags = Diagnostics.init(arena);
-    const built = source.build(allocator, arena, bytes, &diags) catch |e| {
+    const built = source.build(allocator, arena, bytes, options, &diags) catch |e| {
         if (e == error.OutOfMemory) return nomemDestroy(h);
         return finish(h, &diags, .input, o);
     };

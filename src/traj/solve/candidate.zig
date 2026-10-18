@@ -36,25 +36,23 @@ pub const Candidate = struct {
     path: Path,
     curves: []const CurveProgress = &.{},
 
-    pub fn progress(self: *const Candidate, rule: usize, time: f64) f64 {
+    /// The two samples of a rule's progress around a time: the same one twice before the first and after the last.
+    pub fn progressAround(self: *const Candidate, rule: usize, time: f64) ?[2]Progress {
         for (self.curves) |curve| {
             if (curve.rule != rule) continue;
             const samples = curve.samples;
-            if (samples.len == 0) return std.math.nan(f64);
+            if (samples.len == 0) return null;
             var low: usize = 0;
             var high = samples.len;
             while (low < high) {
                 const middle = low + (high - low) / 2;
                 if (samples[middle].time < time) low = middle + 1 else high = middle;
             }
-            if (low == 0) return samples[0].value;
-            if (low == samples.len) return samples[samples.len - 1].value;
-            if (samples[low].time == time) return samples[low].value;
-            const left = samples[low - 1];
-            const right = samples[low];
-            return left.value + (right.value - left.value) * (time - left.time) / (right.time - left.time);
+            if (low == 0) return .{ samples[0], samples[0] };
+            if (low == samples.len) return .{ samples[low - 1], samples[low - 1] };
+            return .{ samples[low - 1], samples[low] };
         }
-        return std.math.nan(f64);
+        return null;
     }
 };
 

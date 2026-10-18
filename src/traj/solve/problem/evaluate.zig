@@ -30,12 +30,18 @@ pub const Workspace = struct {
     cell_slots: []usize,
     active_cells: []usize,
     seeds: []u8,
+    time_only: []bool,
+    relevant: []bool,
 
     pub fn init(allocator: std.mem.Allocator, layout: *const problem.Layout) std.mem.Allocator.Error!Workspace {
         const seeds = try allocator.alloc(u8, layout.lower.len);
         @memset(seeds, unseeded);
         const cell_slots = try allocator.alloc(usize, layout.mesh.cells.len);
         @memset(cell_slots, no_slot);
+        const relevant = try allocator.alloc(bool, layout.lower.len);
+        @memset(relevant, false);
+        const time_only = try allocator.alloc(bool, layout.batches.len);
+        for (time_only, layout.batches) |*flag, batch| flag.* = timeOnly(layout, batch);
         return .{
             .layout = layout,
             .times = try allocator.alloc(f64, layout.mesh.durations.len + 1),
@@ -52,6 +58,8 @@ pub const Workspace = struct {
             .cell_slots = cell_slots,
             .active_cells = try allocator.alloc(usize, layout.max_batch_points),
             .seeds = seeds,
+            .time_only = time_only,
+            .relevant = relevant,
         };
     }
 
@@ -93,7 +101,7 @@ pub const Workspace = struct {
         }
         out.objective.* = 0;
         for (self.layout.objectives) |term| {
-            const result = objective(Scalar, &context, term);
+            const result = objective(Scalar, &context, term).value;
             if (!std.math.isFinite(result)) return error.Domain;
             out.objective.* += result;
         }
@@ -103,9 +111,14 @@ pub const Workspace = struct {
     pub fn derivatives(self: *Workspace, x: []const f64, out: nlp.Derivatives) nlp.EvalError!void {
         self.reset(x);
         @memset(out.gradient, 0);
+        @memset(out.soft, 0);
+        @memset(out.curved, 0);
         var context: Context(Differential) = .{ .workspace = self, .x = x, .points = self.derivative_points, .ready = self.derivative_ready, .cells = self.derivative_cells, .cell_ready = self.derivative_cell_ready };
-        for (self.layout.batches) |batch| {
+        for (self.layout.batches, self.time_only) |batch, time_only| {
             if (batch.columns.len == 0) continue;
+            const located = self.layout.mesh.cells[self.places[batch.points[0]].cell];
+            if (time_only) self.mark(located, true);
+            defer if (time_only) self.mark(located, false);
             var cell_count: usize = 0;
             for (batch.points, 0..) |point, slot| {
                 self.point_slots[point] = slot;
@@ -123,6 +136,19 @@ pub const Workspace = struct {
             var duration_offset: usize = 0;
             while (offset < batch.columns.len) : (offset += Dual.lanes) {
                 const active = batch.columns[offset..@min(offset + Dual.lanes, batch.columns.len)];
+                if (time_only) {
+                    var any = false;
+                    for (active) |column| any = any or self.relevant[column];
+                    if (!any) {
+                        for (batch.constraints) |row| {
+                            for (self.layout.constraints[row].slots, 0..) |slot, i| {
+                                if (slot >= offset and slot < offset + active.len) out.jacobian[self.layout.row_offsets[row] + i] = 0;
+                            }
+                        }
+                        while (duration_offset < batch.durations.len and batch.durations[duration_offset].slot < offset + active.len) duration_offset += 1;
+                        continue;
+                    }
+                }
                 for (active, 0..) |column, slot| self.seeds[column] = @intCast(slot);
                 defer for (active) |column| {
                     self.seeds[column] = unseeded;
@@ -140,17 +166,37 @@ pub const Workspace = struct {
                     for (term.slots, 0..) |slot, i| {
                         if (slot >= offset and slot < offset + active.len) out.jacobian[self.layout.row_offsets[row] + i] = result.derivatives[slot - offset];
                     }
+                    const group = out.curved[self.layout.curved_offsets[row]..self.layout.curved_offsets[row + 1]];
+                    if (group.len == 0) continue;
+                    const check = self.layout.rules.checks[term.check().?];
+                    const root = @sqrt(rules.bend(self.layout.rules, check).factor);
+                    const vector = rules.bent(Differential, self.layout.rules, check, Sampler(Differential){ .context = &context, .term = term });
+                    for (0..group.len / term.slots.len) |k| for (term.slots, group[k * term.slots.len ..][0..term.slots.len]) |slot, *entry| {
+                        if (slot >= offset and slot < offset + active.len) entry.* = root * vector[k].derivatives[slot - offset];
+                    };
                 }
                 for (batch.objectives) |index| {
                     const term = self.layout.objectives[index];
                     const result = objective(Differential, &context, term);
-                    if (!result.isFinite()) return error.Domain;
-                    for (term.columns, term.slots) |column, slot| {
-                        if (slot >= offset and slot < offset + active.len) out.gradient[column] += result.derivatives[slot - offset];
+                    if (!result.value.isFinite()) return error.Domain;
+                    const root = @sqrt(result.curvature);
+                    for (term.columns, term.slots, self.layout.soft_offsets[index]..) |column, slot, entry| {
+                        if (slot < offset or slot >= offset + active.len) continue;
+                        out.gradient[column] += result.value.derivatives[slot - offset];
+                        out.soft[entry] = root * result.residual.derivatives[slot - offset];
                     }
                 }
             }
         }
+    }
+
+    /// The columns the state at a fixed time depends on, at the current variables: the two nodes of its cell
+    /// and the durations up to its section.
+    fn mark(self: *Workspace, cell: mesh_module.Cell, value: bool) void {
+        const mesh = self.layout.mesh;
+        for (mesh.nodes[cell.left].variables) |column| self.relevant[column] = value;
+        for (mesh.nodes[cell.right].variables) |column| self.relevant[column] = value;
+        for (mesh.durations[0 .. cell.section + 1]) |column| self.relevant[column] = value;
     }
 
     pub fn candidateOf(self: *Workspace, allocator: std.mem.Allocator, x: []const f64) std.mem.Allocator.Error!candidate.Candidate {
@@ -174,6 +220,25 @@ pub const Workspace = struct {
         return .{ .path = path, .curves = curves };
     }
 };
+
+/// Whether a batch is one point at a fixed time whose terms depend on the state there alone.
+fn timeOnly(layout: *const problem.Layout, batch: problem.Batch) bool {
+    if (batch.points.len != 1 or layout.locations[batch.points[0]] != .time) return false;
+    for ([_][]const usize{ batch.constraints, batch.objectives }, [_][]const problem.Term{ layout.constraints, layout.objectives }) |indices, terms| for (indices) |index| {
+        const check = layout.rules.checks[terms[index].check() orelse return false];
+        switch (check.operation) {
+            .region, .alignment => {},
+            .quantity => |operation| {
+                const rule = layout.rules.plan.rules[operation.rule];
+                const quantity = rule.definition.quantity.quantity;
+                if (quantity == .time or quantity == .duration) return false;
+                if (!operation.split_norm) if (rules.rightHand(rule, operation.comparison)) |rhs| if (rhs == .event) return false;
+            },
+            else => return false,
+        }
+    };
+    return true;
+}
 
 fn Context(comptime K: type) type {
     const N = K.Number;
@@ -318,16 +383,25 @@ fn residual(comptime K: type, context: *Context(K), term: problem.Term) K.Number
         return K.Arithmetic.scale(K.Arithmetic.sub(context.variable(progress.to), context.variable(progress.from)), progress.sign);
     }
     const prepared = context.workspace.layout.rules;
-    return rules.residual(K, prepared, prepared.checks[term.check().?], Sampler(K){ .context = context, .term = term }, .optimization);
+    const value = rules.residual(K, prepared, prepared.checks[term.check().?], Sampler(K){ .context = context, .term = term }, .optimization);
+    return if (term.margin == 0) value else K.Arithmetic.sub(value, K.Arithmetic.constant(term.margin));
 }
 
-fn objective(comptime K: type, context: *Context(K), term: problem.Term) K.Number {
+/// A soft term: its value, and what its Gauss-Newton row is made of. The term is `curvature / 2` times the square
+/// of `residual` where it is a weighted square (the weight taken as it stands), and `curvature` is zero elsewhere.
+fn Soft(comptime K: type) type {
+    return struct { value: K.Number, residual: K.Number, curvature: f64 };
+}
+
+fn objective(comptime K: type, context: *Context(K), term: problem.Term) Soft(K) {
     const A = K.Arithmetic;
     const layout = context.workspace.layout;
     const check = layout.rules.checks[term.check().?];
-    var result = residual(K, context, term);
-    if (check.operation == .region and A.value(result) >= 0) return A.constant(0);
+    const base = residual(K, context, term);
+    var result = base;
+    if (check.operation == .region and A.value(result) >= 0) return .{ .value = A.constant(0), .residual = base, .curvature = 0 };
     if (check.square) result = A.mul(result, result);
+    var curvature: f64 = if (check.square) 2 * term.weight else 0;
     if (check.average_scope) |scope| {
         const duration_quantity = check.operation == .quantity and layout.rules.plan.rules[check.operation.quantity.rule].definition.quantity.quantity == .duration;
         const measure = if (duration_quantity) context.scopeDuration(scope) else switch (layout.locations[term.point]) {
@@ -338,7 +412,12 @@ fn objective(comptime K: type, context: *Context(K), term: problem.Term) K.Numbe
             else => context.scopeDuration(scope),
         };
         result = A.mul(result, measure);
-        if (!check.integral) result = A.div(result, context.scopeDuration(scope));
+        curvature *= A.value(measure);
+        if (!check.integral) {
+            const whole = context.scopeDuration(scope);
+            result = A.div(result, whole);
+            curvature /= A.value(whole);
+        }
     }
-    return A.scale(result, term.weight);
+    return .{ .value = A.scale(result, term.weight), .residual = base, .curvature = @max(0, curvature) };
 }

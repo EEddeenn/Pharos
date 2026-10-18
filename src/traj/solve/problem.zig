@@ -22,6 +22,7 @@ pub const Term = struct {
     point: usize,
     equality: bool,
     weight: f64 = 1,
+    margin: f64 = 0,
     columns: []const usize = &.{},
     slots: []const usize = &.{},
 
@@ -62,6 +63,10 @@ pub const Layout = struct {
     batches: []const Batch,
     row_offsets: []const usize,
     columns: []const usize,
+    soft_offsets: []const usize,
+    soft_columns: []const usize,
+    curved_offsets: []const usize,
+    order: []const usize,
     equality_count: usize,
     max_batch_points: usize,
 
@@ -71,6 +76,10 @@ pub const Layout = struct {
             .equality_count = self.equality_count,
             .row_offsets = self.row_offsets,
             .columns = self.columns,
+            .soft_offsets = self.soft_offsets,
+            .soft_columns = self.soft_columns,
+            .curved_offsets = self.curved_offsets,
+            .order = self.order,
             .lower = self.lower,
             .upper = self.upper,
         };

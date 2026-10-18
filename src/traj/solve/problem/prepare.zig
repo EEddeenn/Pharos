@@ -17,13 +17,15 @@ const Batch = struct {
     points: std.ArrayList(usize) = .empty,
 };
 
-pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, prepared_rules: *const rules.Prepared, built: mesh_module.Build) std.mem.Allocator.Error!problem.Prepared {
+/// `margins` holds, for each rule, how far inside its range the rule's rows keep the path (see `solve.zig`).
+pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, prepared_rules: *const rules.Prepared, margins: []const f64, built: mesh_module.Build) std.mem.Allocator.Error!problem.Prepared {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     const temporary = scratch.allocator();
     var compiler: Compiler = .{
         .allocator = temporary,
         .rules = prepared_rules,
+        .margins = margins,
         .mesh = &built.mesh,
         .base_variables = built.x.len,
         .curve_indices = try temporary.alloc(?usize, prepared_rules.plan.rules.len),
@@ -69,18 +71,25 @@ pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
         term.columns = try temporary.dupe(usize, columns.items.items);
         constraint_column_count += term.columns.len;
     }
+    var soft_column_count: usize = 0;
     for (objectives) |*term| {
         try columns.term(&compiler, term.*, true);
-        term.columns = try result_allocator.dupe(usize, columns.items.items);
+        term.columns = try temporary.dupe(usize, columns.items.items);
+        soft_column_count += term.columns.len;
     }
     const row_offsets = try result_allocator.alloc(usize, constraints.len + 1);
     const constraint_columns = try result_allocator.alloc(usize, constraint_column_count);
-    row_offsets[0] = 0;
-    for (constraints, 0..) |*term, row| {
-        const end = row_offsets[row] + term.columns.len;
-        @memcpy(constraint_columns[row_offsets[row]..end], term.columns);
-        term.columns = constraint_columns[row_offsets[row]..end];
-        row_offsets[row + 1] = end;
+    gather(constraints, row_offsets, constraint_columns);
+    const soft_offsets = try result_allocator.alloc(usize, objectives.len + 1);
+    const soft_columns = try result_allocator.alloc(usize, soft_column_count);
+    gather(objectives, soft_offsets, soft_columns);
+    const curved_offsets = try result_allocator.alloc(usize, constraints.len + 1);
+    curved_offsets[0] = 0;
+    for (constraints, 0..) |term, row| {
+        // A row at a fixed time has every variable for a column: it gets no curvature rows, which would cost
+        // three times that.
+        const count = if (compiler.locations.items[term.point] == .time) 0 else if (term.check()) |index| rules.bend(prepared_rules, prepared_rules.checks[index]).count else 0;
+        curved_offsets[row + 1] = curved_offsets[row] + count * term.columns.len;
     }
 
     const location_batches = try temporary.alloc(usize, compiler.locations.items.len);
@@ -161,15 +170,73 @@ pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
             .batches = batches,
             .row_offsets = row_offsets,
             .columns = constraint_columns,
+            .soft_offsets = soft_offsets,
+            .soft_columns = soft_columns,
+            .curved_offsets = curved_offsets,
+            .order = try pathOrder(result_allocator, temporary, &compiler, lower, upper),
             .equality_count = equality_count,
             .max_batch_points = max_batch_points,
         },
     };
 }
 
+fn gather(terms: []problem.Term, offsets: []usize, columns: []usize) void {
+    offsets[0] = 0;
+    for (terms, 0..) |*term, row| {
+        const end = offsets[row] + term.columns.len;
+        @memcpy(columns[offsets[row]..end], term.columns);
+        term.columns = columns[offsets[row]..end];
+        offsets[row + 1] = end;
+    }
+}
+
+/// The free variables in the order of the path, each where the path last uses it: a node shared by two cells with
+/// the later one, the progress along a guide with its cell, a section's duration after its cells. Rows couple
+/// variables that are near in this order, so the solver's matrix has a narrow profile.
+fn pathOrder(allocator: std.mem.Allocator, temporary: std.mem.Allocator, compiler: *const Compiler, lower: []const f64, upper: []const f64) std.mem.Allocator.Error![]const usize {
+    const mesh = compiler.mesh;
+    const placed = try temporary.alloc(bool, lower.len);
+    for (placed, lower, upper) |*done, low, high| done.* = low == high;
+    var order = try std.ArrayList(usize).initCapacity(allocator, lower.len);
+    const cursors = try temporary.alloc(usize, compiler.curves.items.len);
+    for (cursors, compiler.curves.items) |*cursor, curve| {
+        cursor.* = curve.samples.len;
+        while (cursor.* > 0 and compiler.locations.items[curve.samples[cursor.* - 1].point] == .time) cursor.* -= 1;
+        for (curve.samples[cursor.*..]) |sample| place(&order, placed, sample.variable);
+    }
+    var section = mesh.sections.len;
+    while (section > 0) {
+        section -= 1;
+        place(&order, placed, mesh.durations[section]);
+        var cell = mesh.sections[section].end_cell;
+        while (cell > mesh.sections[section].first_cell) {
+            cell -= 1;
+            for (mesh.nodes[mesh.cells[cell].right].variables) |column| place(&order, placed, column);
+            for (cursors, compiler.curves.items) |*cursor, curve| while (cursor.* > 0) {
+                const sample = curve.samples[cursor.* - 1];
+                const location = compiler.locations.items[sample.point];
+                if (location != .time and cellIndex(mesh, location) < cell) break;
+                place(&order, placed, sample.variable);
+                cursor.* -= 1;
+            };
+        }
+        for (mesh.nodes[mesh.cells[cell].left].variables) |column| place(&order, placed, column);
+    }
+    for (placed, 0..) |done, column| if (!done) order.appendAssumeCapacity(column);
+    std.mem.reverse(usize, order.items);
+    return order.items;
+}
+
+fn place(order: *std.ArrayList(usize), placed: []bool, column: usize) void {
+    if (placed[column]) return;
+    placed[column] = true;
+    order.appendAssumeCapacity(column);
+}
+
 const Compiler = struct {
     allocator: std.mem.Allocator,
     rules: *const rules.Prepared,
+    margins: []const f64,
     mesh: *const mesh_module.Mesh,
     base_variables: usize,
     curve_indices: []?usize,
@@ -240,6 +307,7 @@ const Compiler = struct {
                 .point = point_index,
                 .equality = descriptor.equality,
                 .weight = descriptor.weight * (if (duration) @as(f64, 1) else quadrature(self.locations.items[point_index], sample, points.len)),
+                .margin = if (objective or descriptor.equality) 0 else if (descriptor.ruleIndex()) |rule| self.margins[rule] else 0,
             };
             if (objective) try self.objectives.append(self.allocator, term) else try self.constraints.append(self.allocator, term);
             self.checkQuantities(point_index, descriptor);
@@ -255,7 +323,7 @@ const Compiler = struct {
             const variable = self.base_variables + self.variables.items.len;
             const fraction = if (points.len <= 1) 0 else @as(f64, @floatFromInt(offset)) / @as(f64, @floatFromInt(points.len - 1));
             const value = relation.from + (relation.to - relation.from) * fraction;
-            const endpoint = offset == 0 or offset + 1 == points.len;
+            const endpoint = points.len > 1 and (offset == 0 or offset + 1 == points.len);
             try self.variables.append(self.allocator, .{
                 .value = value,
                 .lower = if (endpoint) value else @min(relation.from, relation.to),
@@ -283,7 +351,7 @@ const Compiler = struct {
             .quantity => |operation| {
                 const rule = self.rules.plan.rules[operation.rule];
                 const value = rule.definition.quantity.quantity;
-                if (operation.zero_norm) {
+                if (operation.split_norm) {
                     switch (value) {
                         .speed3d => self.quantity(point_index, .velocity_ecef),
                         .acceleration3d => self.quantity(point_index, .acceleration_ecef),
@@ -315,7 +383,7 @@ const Compiler = struct {
         const index = term.check() orelse return;
         switch (self.rules.checks[index].operation) {
             .quantity => |operation| {
-                if (operation.zero_norm) return;
+                if (operation.split_norm) return;
                 if (rules.rightHand(self.rules.plan.rules[operation.rule], operation.comparison)) |rhs| if (rhs == .event) {
                     try appendPoint(self.allocator, &batch.points, problem.Layout.eventPoint(.{ .index = rhs.event.event, .side = rhs.event.side }));
                 };
@@ -415,7 +483,7 @@ const Columns = struct {
                 .quantity => |operation| {
                     const rule = compiler.rules.plan.rules[operation.rule];
                     try self.quantity(location, rule.definition.quantity.quantity, descriptor.scope);
-                    if (!operation.zero_norm) {
+                    if (!operation.split_norm) {
                         if (rules.rightHand(rule, operation.comparison)) |rhs| if (rhs == .event) {
                             const event: model.EventRef = .{ .index = rhs.event.event, .side = rhs.event.side };
                             try self.quantity(.{ .event = event }, rhs.event.quantity, .{ .event = event });

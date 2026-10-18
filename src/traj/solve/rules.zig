@@ -8,7 +8,7 @@ pub const Comparison = enum { eq, min, max, target, objective };
 pub const Mode = enum { optimization, verification };
 pub const Operation = union(enum) {
     alignment,
-    quantity: struct { rule: usize, comparison: Comparison, component: usize, zero_norm: bool = false },
+    quantity: struct { rule: usize, comparison: Comparison, component: usize, split_norm: bool = false },
     curve: struct { rule: usize, component: usize },
     region: struct { rule: usize, edge: usize },
     coverage: f64,
@@ -114,9 +114,13 @@ pub fn prepare(arena: std.mem.Allocator, plan: *const model.Plan) std.mem.Alloca
                     const objective = definition.comparison == .objective;
                     const reduce = if (objective) definition.comparison.objective.reduce else model.Reduce.mean_square;
                     const direction: f64 = if (objective and definition.comparison.objective.sense == .maximize) -1 else 1;
-                    for (0..quantities.components(definition.quantity)) |component| try checks.append(arena, .{
+                    // The square of a norm is the sum of the squares of its components. Written so, each term is the
+                    // square of a quantity that is linear in the path, which is what the solver's step models.
+                    const split = objective and reduce != .value and isNorm(definition.quantity);
+                    const count: usize = if (split) (if (definition.quantity == .horizontal_speed) 2 else 3) else quantities.components(definition.quantity);
+                    for (0..count) |component| try checks.append(arena, .{
                         .scope = rule.scope,
-                        .operation = .{ .quantity = .{ .rule = index, .comparison = if (objective) .objective else .target, .component = component } },
+                        .operation = .{ .quantity = .{ .rule = index, .comparison = if (objective) .objective else .target, .component = component, .split_norm = split } },
                         .weight = direction * rule.weight,
                         .square = !objective or reduce != .value,
                         .integral = reduce == .integral_square,
@@ -192,7 +196,7 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
         .quantity => |operation| blk: {
             const rule = prepared.plan.rules[operation.rule];
             const definition = rule.definition.quantity;
-            if (operation.zero_norm) {
+            if (operation.split_norm) {
                 const point = sampler.point();
                 const state = point.state;
                 const component = switch (definition.quantity) {
@@ -259,7 +263,73 @@ pub fn isNorm(quantity: model.Quantity) bool {
     return quantity == .speed3d or quantity == .horizontal_speed or quantity == .acceleration3d or quantity == .jerk3d;
 }
 
-fn curveAt(comptime K: type, curve: Curve, progress: K.Number) [3]K.Number {
+/// A constraint row that is a bound less the squared norm of a vector (a maximum of a norm, a corridor about a
+/// guide, a circle) curves: its second derivative is minus `factor` times the square of that vector's Jacobian.
+/// `count` is the vector's length, zero for every other constraint row.
+pub const Bend = struct { count: usize = 0, factor: f64 = 0 };
+
+pub fn bend(prepared: *const Prepared, check: Check) Bend {
+    switch (check.operation) {
+        .quantity => |operation| {
+            const rule = prepared.plan.rules[operation.rule];
+            const quantity = rule.definition.quantity.quantity;
+            if (operation.split_norm or operation.comparison != .max or !isNorm(quantity)) return .{};
+            const bound = switch (rightHand(rule, .max).?) {
+                .scalar => |v| v,
+                else => return .{},
+            };
+            if (!(bound >= 0)) return .{};
+            return .{ .count = if (quantity == .horizontal_speed) 2 else 3, .factor = 2 / (@max(rule.scale, bound) * rule.scale) };
+        },
+        .curve => |operation| {
+            const rule = prepared.plan.rules[operation.rule];
+            const tolerance = rule.definition.relation.value.follow_curve.tolerance;
+            if (tolerance <= 0) return .{};
+            return .{ .count = 3, .factor = 2 / (rule.scale * @max(rule.scale, tolerance)) };
+        },
+        .region => |operation| {
+            const rule = prepared.plan.rules[operation.rule];
+            return switch (prepared.regions[rule.definition.relation.value.inside_region].shape) {
+                .circle => |radius| .{ .count = 2, .factor = 2 / (@max(1, radius) * rule.scale) },
+                .polygon => .{},
+            };
+        },
+        else => return .{},
+    }
+}
+
+/// The vector of a row that curves (see `bend`).
+pub fn bent(comptime K: type, prepared: *const Prepared, check: Check, sampler: anytype) [3]K.Number {
+    const A = K.Arithmetic;
+    const point = sampler.point();
+    switch (check.operation) {
+        .quantity => |operation| switch (prepared.plan.rules[operation.rule].definition.quantity.quantity) {
+            .speed3d => return point.state.velocity,
+            .acceleration3d => return point.state.acceleration,
+            .jerk3d => return point.state.jerk,
+            else => {
+                const horizontal = point.horizontalVelocity();
+                return .{ horizontal[0], horizontal[1], A.constant(0) };
+            },
+        },
+        .curve => |operation| {
+            const curve = prepared.plan.rules[operation.rule].definition.relation.value.follow_curve;
+            const reference = curveAt(K, prepared.curves[curve.curve], sampler.progress(operation.rule));
+            var delta: [3]K.Number = undefined;
+            for (&delta, point.state.position, reference) |*d, p, r| d.* = A.sub(p, r);
+            return delta;
+        },
+        .region => |operation| {
+            const region = prepared.regions[prepared.plan.rules[operation.rule].definition.relation.value.inside_region];
+            var delta: [3]K.Number = undefined;
+            for (&delta, point.state.position, region.origin) |*d, p, origin| d.* = A.sub(p, A.constant(origin));
+            return .{ K.dot(K.vector(region.east), delta), K.dot(K.vector(region.north), delta), A.constant(0) };
+        },
+        else => unreachable,
+    }
+}
+
+pub fn curveAt(comptime K: type, curve: Curve, progress: K.Number) [3]K.Number {
     const A = K.Arithmetic;
     const count = if (curve.kind == .bezier) (curve.points.len - 1) / 3 else curve.points.len - 1;
     const scaled = A.scale(progress, @floatFromInt(count));
@@ -295,11 +365,10 @@ fn appendQuantity(arena: std.mem.Allocator, checks: *std.ArrayList(Check), index
     const quantity = rule.definition.quantity.quantity;
     const zero = isNorm(quantity) and (comparison == .eq or comparison == .max) and rhs == .scalar and rhs.scalar == 0;
     const count = if (zero) (if (quantity == .horizontal_speed) @as(usize, 2) else 3) else quantities.components(quantity);
-    for (0..count) |component| try checks.append(arena, .{ .scope = rule.scope, .operation = .{ .quantity = .{ .rule = index, .comparison = comparison, .component = component, .zero_norm = zero } }, .equality = comparison == .eq or zero });
+    for (0..count) |component| try checks.append(arena, .{ .scope = rule.scope, .operation = .{ .quantity = .{ .rule = index, .comparison = comparison, .component = component, .split_norm = zero } }, .equality = comparison == .eq or zero });
 }
 
 fn hasDirection(plan: *const model.Plan) bool {
-    for (plan.initial_guess.states) |state| if (state.course != null) return true;
     for (plan.rules) |rule| {
         if (rule.definition != .quantity) continue;
         const q = rule.definition.quantity;

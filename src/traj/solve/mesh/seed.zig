@@ -1,6 +1,7 @@
 const std = @import("std");
 const shared = @import("shared");
 const model = @import("../../plan.zig").model;
+const geometry = @import("../../plan.zig").geometry;
 const mesh = @import("../mesh.zig");
 const Vector = model.Vector;
 const trajectory = shared.trajectory;
@@ -181,6 +182,17 @@ pub fn initial(arena: std.mem.Allocator, plan: *const model.Plan, incoming: []Je
         }
         mergeRestPositions(positions, priority, resting);
     }
+    for (plan.rules) |rule| {
+        if (rule.definition != .relation or rule.definition.relation.value != .follow_curve) continue;
+        const span = sectionSpan(rule.scope, plan.sections.len) orelse continue;
+        const follow = rule.definition.relation.value.follow_curve;
+        const rank: u8 = if (rule.kind() == .hard) 3 else 1;
+        for ([_]usize{ span[0], span[1] }, [_]f64{ follow.from, follow.to }) |index, parameter| {
+            if (priority[index] >= rank) continue;
+            positions[index] = geometry.curve(plan.geometry, follow.curve, parameter).position;
+            priority[index] = rank;
+        }
+    }
     var first: ?usize = null;
     for (positions, 0..) |p, i| if (p != null) {
         first = i;
@@ -312,7 +324,10 @@ fn seedTimes(arena: std.mem.Allocator, plan: *const model.Plan, durations: []f64
         durations[rule.scope.section] = boundedDuration(value);
         locked[rule.scope.section] = true;
     }
+    try applyAnchors(arena, plan, durations, locked);
+    const before = try arena.alloc(f64, durations.len);
     for (0..plan.events.len + 1) |_| {
+        @memcpy(before, durations);
         for ([_]model.RuleKind{ .target, .hard }) |kind| for (plan.rules) |rule| {
             if (rule.kind() != kind or rule.definition != .quantity) continue;
             const q = rule.definition.quantity;
@@ -337,7 +352,14 @@ fn seedTimes(arena: std.mem.Allocator, plan: *const model.Plan, durations: []f64
                 adjustSpan(durations, locked, 0, index, value);
             }
         };
+        for (before, durations) |old, new| {
+            if (@abs(new - old) > 1e-13 * @max(1, @abs(old))) break;
+        } else break;
     }
+    try applyAnchors(arena, plan, durations, locked);
+}
+
+fn applyAnchors(arena: std.mem.Allocator, plan: *const model.Plan, durations: []f64, locked: []const bool) std.mem.Allocator.Error!void {
     const anchors = try arena.alloc(?f64, plan.events.len);
     const priority = try arena.alloc(u8, plan.events.len);
     @memset(anchors, null);
@@ -372,8 +394,8 @@ fn seedTimes(arena: std.mem.Allocator, plan: *const model.Plan, durations: []f64
             else => {},
         }
     };
-    previous_event = 0;
-    previous_time = 0;
+    var previous_event: usize = 0;
+    var previous_time: f64 = 0;
     for (anchors[1..], 1..) |anchor, i| {
         const time = anchor orelse continue;
         if (time <= previous_time) continue;
