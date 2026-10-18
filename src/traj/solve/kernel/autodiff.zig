@@ -87,14 +87,6 @@ pub const Dual = struct {
         return a.unary(value, 0.5 / value);
     }
 
-    pub fn sin(a: Dual) Dual {
-        return a.unary(@sin(a.value), @cos(a.value));
-    }
-
-    pub fn cos(a: Dual) Dual {
-        return a.unary(@cos(a.value), -@sin(a.value));
-    }
-
     pub fn sinCos(a: Dual) struct { sine: Dual, cosine: Dual } {
         const sine = @sin(a.value);
         const cosine = @cos(a.value);

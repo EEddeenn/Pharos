@@ -151,7 +151,7 @@ pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
         var iterator = set.iterator();
         var index: usize = 0;
         while (iterator.next()) |quantity| : (index += 1) values[index] = quantity;
-        out.* = .init(values, false);
+        out.* = .init(values);
     }
     const curves = try result_allocator.alloc(problem.Curve, compiler.curves.items.len);
     for (compiler.curves.items, curves) |curve, *out| out.* = .{ .rule = curve.rule, .samples = try result_allocator.dupe(CurveSample, curve.samples) };
@@ -347,7 +347,7 @@ const Compiler = struct {
 
     fn checkQuantities(self: *Compiler, point_index: usize, descriptor: rules.Check) void {
         switch (descriptor.operation) {
-            .alignment => self.quantity(point_index, .horizontal_speed),
+            .ahead => self.quantity(point_index, .horizontal_speed),
             .quantity => |operation| {
                 const rule = self.rules.plan.rules[operation.rule];
                 const value = rule.definition.quantity.quantity;
@@ -369,7 +369,7 @@ const Compiler = struct {
                     self.quantity(problem.Layout.eventPoint(.{ .index = rhs.event.event, .side = rhs.event.side }), rhs.event.quantity);
                 };
             },
-            .jump => |jump| {
+            .jump, .corner => |jump| {
                 self.quantity(problem.Layout.eventPoint(.{ .index = jump.event, .side = .in }), jump.quantity);
                 self.quantity(problem.Layout.eventPoint(.{ .index = jump.event, .side = .out }), jump.quantity);
             },
@@ -388,7 +388,7 @@ const Compiler = struct {
                     try appendPoint(self.allocator, &batch.points, problem.Layout.eventPoint(.{ .index = rhs.event.event, .side = rhs.event.side }));
                 };
             },
-            .jump => |jump| {
+            .jump, .corner => |jump| {
                 try appendPoint(self.allocator, &batch.points, problem.Layout.eventPoint(.{ .index = jump.event, .side = .in }));
                 try appendPoint(self.allocator, &batch.points, problem.Layout.eventPoint(.{ .index = jump.event, .side = .out }));
             },
@@ -467,13 +467,13 @@ const Columns = struct {
         } else {
             const descriptor = compiler.rules.checks[value.check().?];
             switch (descriptor.operation) {
-                .alignment, .region => try self.physical(location),
+                .ahead, .region => try self.physical(location),
                 .curve => {
                     try self.physical(location);
                     try self.add(value.operation.curve.variable);
                 },
                 .coverage, .maximum_duration => try self.durations(0, self.mesh.durations.len),
-                .jump => |jump| {
+                .jump, .corner => |jump| {
                     const incoming: model.EventRef = .{ .index = jump.event, .side = .in };
                     const outgoing: model.EventRef = .{ .index = jump.event, .side = .out };
                     try self.quantity(.{ .event = incoming }, jump.quantity, .{ .event = incoming });

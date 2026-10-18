@@ -21,6 +21,14 @@ pub fn dimension(quantity: model.Quantity) Dimension {
     };
 }
 
+/// The quantities that hang on the direction of travel: they have no value where the path is at rest.
+pub fn directed(quantity: model.Quantity) bool {
+    return switch (quantity) {
+        .course, .turn_rate, .turn_radius, .forward_acceleration, .forward_jerk, .lateral_acceleration => true,
+        else => false,
+    };
+}
+
 pub fn interval(scope: model.Scope) bool {
     return switch (scope) {
         .section, .between, .time_range, .all => true,

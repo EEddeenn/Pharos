@@ -132,6 +132,9 @@ pub fn build(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
             },
         };
         if (!verified) {
+            for (validation.rests, 0..) |rest, index| if (rest) |time| {
+                try diagnostics.err(.invalid_segment, try diagnostics.arena.print("rules[{d}]", .{index}), "the path is at rest at {d} s, where this rule asks for a direction of travel: a path at rest has none", .{time});
+            };
             if (invalid) |issue| try diagnostics.err(.invalid_segment, "rules", "candidate cannot be stored as a trajectory: {f}", .{issue});
             if (result.report.status == .workLimit) {
                 try diagnostics.err(.invalid_segment, "rules", "trajectory solve reached its work bound of {d} before a candidate passed every check: maximum normalized violation {d}", .{ options.max_work, result.report.max_violation });

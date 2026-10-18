@@ -33,7 +33,6 @@ pub fn Interpolation(comptime Number: type, comptime Arithmetic: type) type {
         const A = Arithmetic;
 
         pub const Quintic = [6]Number;
-        pub const Cubic = [4]Number;
 
         pub const CubicBasis = struct {
             h: Number,
@@ -75,12 +74,6 @@ pub fn Interpolation(comptime Number: type, comptime Arithmetic: type) type {
             jerk: Number,
         };
 
-        pub const Rotation = struct {
-            position: Number,
-            velocity: Number,
-            acceleration: Number,
-        };
-
         pub fn quintic(p0: Number, v0: Number, a0: Number, p1: Number, v1: Number, a1: Number, h: Number) Quintic {
             const h2 = A.mul(h, h);
             const delta = A.sub(p1, p0);
@@ -95,18 +88,6 @@ pub fn Interpolation(comptime Number: type, comptime Arithmetic: type) type {
                 A.add(A.sub(A.sub(A.sub(A.scale(delta, 10), A.scale(left_v, 6)), A.scale(right_v, 4)), A.scale(left_a, 1.5)), A.scale(right_a, 0.5)),
                 A.sub(A.add(A.add(A.add(A.scale(delta, -15), A.scale(left_v, 8)), A.scale(right_v, 7)), A.scale(left_a, 1.5)), right_a),
                 A.add(A.sub(A.sub(A.sub(A.scale(delta, 6), A.scale(left_v, 3)), A.scale(right_v, 3)), A.scale(left_a, 0.5)), A.scale(right_a, 0.5)),
-            };
-        }
-
-        pub fn cubic(p0: Number, v0: Number, p1: Number, v1: Number, h: Number) Cubic {
-            const delta = A.sub(p1, p0);
-            const left_v = A.mul(v0, h);
-            const right_v = A.mul(v1, h);
-            return .{
-                p0,
-                left_v,
-                A.sub(A.sub(A.scale(delta, 3), A.scale(left_v, 2)), right_v),
-                A.add(A.add(A.scale(delta, -2), left_v), right_v),
             };
         }
 
@@ -128,14 +109,6 @@ pub fn Interpolation(comptime Number: type, comptime Arithmetic: type) type {
                 .velocity = A.div(evaluate(1, coefficients, u), h),
                 .acceleration = A.div(evaluate(2, coefficients, u), h2),
                 .jerk = A.div(evaluate(3, coefficients, u), A.mul(h2, h)),
-            };
-        }
-
-        pub fn rotation(coefficients: Cubic, h: Number, u: Number) Rotation {
-            return .{
-                .position = evaluate(0, coefficients, u),
-                .velocity = A.div(evaluate(1, coefficients, u), h),
-                .acceleration = A.div(evaluate(2, coefficients, u), A.mul(h, h)),
             };
         }
 

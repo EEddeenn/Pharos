@@ -60,6 +60,7 @@ pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
     }
     const rules = try ctx.arena.alloc(model.Rule, raw.rules.len);
     for (raw.rules, rules, 0..) |given, *out, i| out.* = try rule(c, given, try node.element(ctx, "rules", i));
+    try directions(ctx, events, rules);
     return .{
         .name = raw.name,
         .coordinates = .{ .altitude = raw.coordinates.altitude },
@@ -202,7 +203,7 @@ fn value(c: Context, raw: read.RawValue, quantity: model.Quantity) Error!model.V
             const q = reference.quantity orelse return fail(c.ctx, .missing_field, try obj.childPath("quantity"), "an event reference requires quantity", .{});
             if (q == .duration) return fail(c.ctx, .out_of_range, try obj.childPath("quantity"), "duration is not defined at one event", .{});
             if (!quantities.compatible(quantity, q)) return fail(c.ctx, .wrong_type, try obj.childPath("quantity"), "{s} and {s} have different dimensions or component counts", .{ model.Quantity.words.get(quantity), model.Quantity.words.get(q) });
-            return .{ .event = .{ .event = try c.index(c.events, event, try obj.childPath("event")), .quantity = q, .side = reference.side orelse .out, .factor = reference.factor orelse 1, .offset = reference.offset orelse 0 } };
+            return .{ .event = .{ .event = try c.index(c.events, event, try obj.childPath("event")), .quantity = if (q == .forward_speed) .horizontal_speed else q, .side = reference.side orelse .out, .factor = reference.factor orelse 1, .offset = reference.offset orelse 0 } };
         },
         else => return fail(c.ctx, .wrong_type, n.path, "expected a number, three-component vector, point reference or event reference", .{}),
     }
@@ -271,8 +272,100 @@ fn rule(c: Context, raw: read.RawRule, path: []const u8) Error!model.Rule {
             q.comparison = .{ .objective = .{ .reduce = reduction, .sense = raw.sense orelse .minimize } };
         },
     }
+    // Directions are the path's own: the speed along the course is the horizontal speed, and is never negative.
+    if (quantity == .forward_speed) {
+        const most: ?model.Value = switch (q.comparison) {
+            .eq, .target => |v| v,
+            .range => |range| range.max,
+            .objective => null,
+        };
+        if (most) |v| if (v == .scalar and v.scalar < 0) return fail(c.ctx, .out_of_range, path, "forwardSpeed below zero is reverse motion, which is not supported: the course is the path's own", .{});
+        q.quantity = .horizontal_speed;
+    }
     out.definition = .{ .quantity = q };
     return out;
+}
+
+/// Whether a rule holds the speed at zero wherever it applies.
+fn rests(given: model.Rule) bool {
+    if (given.definition != .quantity) return false;
+    const q = given.definition.quantity;
+    const most: model.Value = switch (q.comparison) {
+        .eq => |v| v,
+        .range => |range| range.max orelse return false,
+        .target, .objective => return false,
+    };
+    return switch (q.quantity) {
+        .speed3d, .horizontal_speed => most == .scalar and most.scalar == 0,
+        .velocity_ecef => q.comparison == .eq and most == .vector and most.vector.x == 0 and most.vector.y == 0 and most.vector.z == 0,
+        .position => q.comparison == .eq and most != .event and quantities.interval(given.scope),
+        else => false,
+    };
+}
+
+/// Whether some rule holds the speed at zero from one fixed time to another.
+fn restsBetween(rules: []const model.Rule, from: f64, to: f64) bool {
+    for (rules) |given| {
+        if (!rests(given)) continue;
+        const held: [2]f64 = switch (given.scope) {
+            .time => |time| .{ time, time },
+            .time_range => |range| range,
+            else => continue,
+        };
+        if (held[0] <= from and to <= held[1]) return true;
+    }
+    return false;
+}
+
+/// A direction of travel has no value where the path is at rest. Where the plan's own rules hold the speed at zero,
+/// an equality, a target or an objective at that very event or time, and an equality over the whole of such a
+/// stretch, ask for what is not there: they are refused. A limit holds there, whatever its value, and so does a
+/// soft rule over such a stretch, and any rule over a journey that only sets out from rest or comes to rest.
+fn directions(ctx: *const node.Ctx, events: []const model.Event, rules: []const model.Rule) Error!void {
+    const in = try ctx.arena.alloc(bool, events.len);
+    const out = try ctx.arena.alloc(bool, events.len);
+    const sections = try ctx.arena.alloc(bool, events.len - 1);
+    @memset(in, false);
+    @memset(out, false);
+    @memset(sections, false);
+    for (rules) |given| if (rests(given)) switch (given.scope) {
+        .event => |event| (if (event.side == .in) in else out)[event.index] = true,
+        .section => |index| sections[index] = true,
+        .between => |ends| @memset(sections[ends[0]..ends[1]], true),
+        .all => @memset(sections, true),
+        .time, .time_range => {},
+    };
+    for (sections, 0..) |rest, i| if (rest) {
+        out[i] = true;
+        in[i + 1] = true;
+    };
+    for (events, in, out, 0..) |event, *before, *after, i| if (i == 0 or i + 1 == events.len or event.continuity != .c0) {
+        before.* = before.* or after.*;
+        after.* = before.*;
+    };
+    const whole = std.mem.allEqual(bool, sections, true);
+    for (rules, 0..) |given, i| {
+        if (given.definition != .quantity) continue;
+        const q = given.definition.quantity;
+        const still = quantities.directed(q.quantity) and switch (given.scope) {
+            .event => |event| (if (event.side == .in) in else out)[event.index],
+            .section => |index| sections[index],
+            .between => |ends| std.mem.allEqual(bool, sections[ends[0]..ends[1]], true),
+            .all => whole,
+            .time => |time| whole or restsBetween(rules, time, time),
+            .time_range => |range| whole or restsBetween(rules, range[0], range[1]),
+        };
+        var asked = still and (q.comparison == .eq or (q.comparison != .range and !quantities.interval(given.scope)));
+        const sides: [2]?model.Value = switch (q.comparison) {
+            .eq, .target => |v| .{ v, null },
+            .range => |range| .{ range.min, range.max },
+            .objective => .{ null, null },
+        };
+        for (sides) |side| if (side) |v| {
+            if (!still and v == .event and quantities.directed(v.event.quantity) and (if (v.event.side == .in) in else out)[v.event.event]) asked = true;
+        };
+        if (asked) return fail(ctx, .out_of_range, try node.element(ctx, "rules", i), "a direction of travel is asked where the plan holds the path at rest: a path at rest has none", .{});
+    }
 }
 
 fn guess(c: Context, raw: ?read.RawGuess, altitude: model.Altitude, event_count: usize) Error!model.InitialGuess {
@@ -301,7 +394,7 @@ fn guess(c: Context, raw: ?read.RawGuess, altitude: model.Altitude, event_count:
         seen[event] = true;
         const ecef = if (entry.position) |v| geometry.toEcef(v.position(), altitude) else null;
         if (ecef) |v| if (!shared.trajectory.positionInRange(v)) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "position"), "position lies outside the trajectory geocentre-radius domain", .{});
-        out.* = .{ .event = event, .ecef = ecef, .velocity_ecef = if (entry.velocity_ecef) |v| v.value else null, .acceleration_ecef = if (entry.acceleration_ecef) |v| v.value else null, .course = entry.course };
+        out.* = .{ .event = event, .ecef = ecef, .velocity_ecef = if (entry.velocity_ecef) |v| v.value else null, .acceleration_ecef = if (entry.acceleration_ecef) |v| v.value else null };
     }
     return .{ .event_times = times, .states = states };
 }

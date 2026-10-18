@@ -25,7 +25,7 @@ pub const Event = struct {
     longitude: f64,
     altitude: f64,
     speed: f64,
-    course: f64,
+    course: ?f64,
     velocityEcef: [3]f64,
     accelerationEcef: [3]f64,
 };
@@ -49,12 +49,12 @@ pub const Sample = struct {
     forwardSpeed: f64,
     up: f64,
     acceleration: f64,
-    forwardAcceleration: f64,
+    forwardAcceleration: ?f64,
     jerk: f64,
-    forwardJerk: f64,
-    course: f64,
-    turnRate: f64,
-    lateralAcceleration: f64,
+    forwardJerk: ?f64,
+    course: ?f64,
+    turnRate: ?f64,
+    lateralAcceleration: ?f64,
 
     fn of(state: solve.SampleState) Sample {
         return .{

@@ -4,8 +4,9 @@ const model = @import("../plan.zig").model;
 const kernel = @import("kernel.zig");
 const Scalar = kernel.Scalar;
 const sample_quantities: []const model.Quantity = &.{ .altitude, .speed3d, .horizontal_speed, .forward_speed, .climb_rate, .acceleration3d, .forward_acceleration, .jerk3d, .forward_jerk, .course, .turn_rate, .lateral_acceleration };
-const sample_requirements = [_]kernel.Requirements{ .init(sample_quantities, false), .init(sample_quantities, true) };
+const sample_requirements: kernel.Requirements = .init(sample_quantities);
 
+/// The five that hang on the direction of travel are null where the path is at rest.
 pub const SampleState = struct {
     time_s: f64,
     distance_m: f64,
@@ -17,12 +18,12 @@ pub const SampleState = struct {
     forward_speed_mps: f64,
     up_mps: f64,
     acceleration_mps2: f64,
-    forward_acceleration_mps2: f64,
+    forward_acceleration_mps2: ?f64,
     jerk_mps3: f64,
-    forward_jerk_mps3: f64,
-    course_deg: f64,
-    turn_rate_degps: f64,
-    lateral_acceleration_mps2: f64,
+    forward_jerk_mps3: ?f64,
+    course_deg: ?f64,
+    turn_rate_degps: ?f64,
+    lateral_acceleration_mps2: ?f64,
     velocity_ecef: [3]f64,
     acceleration_ecef: [3]f64,
 };
@@ -59,7 +60,6 @@ pub const Candidate = struct {
 pub const Path = struct {
     name: []const u8,
     datum: model.Altitude,
-    oriented: bool,
     nodes: []const Scalar.Jet,
     cells: []const Cell,
     event_times: []const f64,
@@ -68,7 +68,7 @@ pub const Path = struct {
     distances: []const f64,
     evaluators: []const Scalar.Cell,
 
-    pub fn init(arena: std.mem.Allocator, name: []const u8, datum: model.Altitude, oriented: bool, nodes: []const Scalar.Jet, cells: []const Cell, durations: []const f64) std.mem.Allocator.Error!Path {
+    pub fn init(arena: std.mem.Allocator, name: []const u8, datum: model.Altitude, nodes: []const Scalar.Jet, cells: []const Cell, durations: []const f64) std.mem.Allocator.Error!Path {
         const event_times = try arena.alloc(f64, durations.len + 1);
         event_times[0] = 0;
         for (durations, 0..) |span, i| event_times[i + 1] = event_times[i] + span;
@@ -82,7 +82,7 @@ pub const Path = struct {
         const evaluators = try arena.alloc(Scalar.Cell, cells.len);
         for (evaluators, cells) |*evaluator, cell| evaluator.* = Scalar.Cell.init(nodes[cell.left], nodes[cell.right], durations[cell.section] * (cell.end - cell.start));
         const distances = try arena.alloc(f64, cells.len + 1);
-        const result: Path = .{ .name = name, .datum = datum, .oriented = oriented, .nodes = nodes, .cells = cells, .event_times = event_times, .durations = durations, .sections = sections, .distances = distances, .evaluators = evaluators };
+        const result: Path = .{ .name = name, .datum = datum, .nodes = nodes, .cells = cells, .event_times = event_times, .durations = durations, .sections = sections, .distances = distances, .evaluators = evaluators };
         distances[0] = 0;
         for (cells, 0..) |_, cell| distances[cell + 1] = distances[cell] + result.distance(cell, 1);
         return result;
@@ -145,7 +145,7 @@ pub const Path = struct {
         const index = @min(low, span.end_cell - 1);
         const cell = self.cells[index];
         const s = self.state(index, (fraction - cell.start) / (cell.end - cell.start));
-        return .{ .position = s.position, .velocity = s.velocity, .acceleration = s.acceleration, .course = s.course, .turn_rate = s.turn_rate };
+        return .{ .position = s.position, .velocity = s.velocity, .acceleration = s.acceleration };
     }
 
     pub fn scopeDuration(self: *const Path, scope: model.Scope) f64 {
@@ -174,9 +174,10 @@ pub const Path = struct {
     }
 
     fn sampleAt(self: *const Path, time: f64, location: Location) SampleState {
-        var point = Scalar.Point.init(self.state(location.index, location.u), self.datum, !self.oriented);
-        point.prepareRequirements(sample_requirements[@intFromBool(!self.oriented)]);
-        const sampled = point.alignedState();
+        const sampled = self.state(location.index, location.u);
+        var point = Scalar.Point.init(sampled, self.datum);
+        point.prepareRequirements(sample_requirements);
+        const moving = !point.atRest();
         const lla = shared.core.coord.ecefToLla(.fromArray(sampled.position));
         return .{
             .time_s = time,
@@ -189,12 +190,12 @@ pub const Path = struct {
             .forward_speed_mps = point.quantity(.forward_speed)[0],
             .up_mps = point.quantity(.climb_rate)[0],
             .acceleration_mps2 = point.quantity(.acceleration3d)[0],
-            .forward_acceleration_mps2 = point.quantity(.forward_acceleration)[0],
+            .forward_acceleration_mps2 = if (moving) point.quantity(.forward_acceleration)[0] else null,
             .jerk_mps3 = point.quantity(.jerk3d)[0],
-            .forward_jerk_mps3 = point.quantity(.forward_jerk)[0],
-            .course_deg = point.quantity(.course)[0],
-            .turn_rate_degps = point.quantity(.turn_rate)[0],
-            .lateral_acceleration_mps2 = point.quantity(.lateral_acceleration)[0],
+            .forward_jerk_mps3 = if (moving) point.quantity(.forward_jerk)[0] else null,
+            .course_deg = if (moving) point.quantity(.course)[0] else null,
+            .turn_rate_degps = if (moving) point.quantity(.turn_rate)[0] else null,
+            .lateral_acceleration_mps2 = if (moving) point.quantity(.lateral_acceleration)[0] else null,
             .velocity_ecef = sampled.velocity,
             .acceleration_ecef = sampled.acceleration,
         };
@@ -218,7 +219,6 @@ pub const Path = struct {
         return .{
             .name = try arena.dupe(u8, self.name),
             .datum = self.datum,
-            .oriented = self.oriented,
             .nodes = try arena.dupe(Scalar.Jet, self.nodes),
             .cells = try arena.dupe(Cell, self.cells),
             .event_times = try arena.dupe(f64, self.event_times),

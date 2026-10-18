@@ -210,7 +210,7 @@ pub const Workspace = struct {
         const durations = try allocator.alloc(f64, self.layout.mesh.durations.len);
         for (durations, 0..) |*duration, section| duration.* = context.duration(section);
         const prepared = self.layout.rules;
-        const path = try candidate.Path.init(allocator, prepared.plan.name, prepared.plan.coordinates.altitude, prepared.oriented, nodes, self.layout.mesh.cells, durations);
+        const path = try candidate.Path.init(allocator, prepared.plan.name, prepared.plan.coordinates.altitude, nodes, self.layout.mesh.cells, durations);
         const curves = try allocator.alloc(candidate.CurveProgress, self.layout.curves.len);
         for (curves, self.layout.curves) |*curve, source| {
             const samples = try allocator.alloc(candidate.Progress, source.samples.len);
@@ -227,7 +227,7 @@ fn timeOnly(layout: *const problem.Layout, batch: problem.Batch) bool {
     for ([_][]const usize{ batch.constraints, batch.objectives }, [_][]const problem.Term{ layout.constraints, layout.objectives }) |indices, terms| for (indices) |index| {
         const check = layout.rules.checks[terms[index].check() orelse return false];
         switch (check.operation) {
-            .region, .alignment => {},
+            .region => {},
             .quantity => |operation| {
                 const rule = layout.rules.plan.rules[operation.rule];
                 const quantity = rule.definition.quantity.quantity;
@@ -282,8 +282,6 @@ fn Context(comptime K: type) type {
                 result.velocity[axis] = A.scale(self.variable(indices[axis + 3]), mesh.scales[axis + 3]);
                 result.acceleration[axis] = A.scale(self.variable(indices[axis + 6]), mesh.scales[axis + 6]);
             }
-            result.course = A.scale(self.variable(indices[9]), mesh.scales[9]);
-            result.turn_rate = A.scale(self.variable(indices[10]), mesh.scales[10]);
             return result;
         }
 
@@ -310,7 +308,7 @@ fn Context(comptime K: type) type {
                 };
                 var state = self.cell(place.cell).at(u);
                 for (&state.position, layout.mesh.origin.toArray()) |*position, origin| position.* = A.add(position.*, A.constant(origin));
-                self.points[slot] = K.Point.init(state, layout.rules.plan.coordinates.altitude, false);
+                self.points[slot] = K.Point.init(state, layout.rules.plan.coordinates.altitude);
                 self.points[slot].prepareRequirements(layout.requirements[index]);
                 self.ready[slot] = true;
             }
@@ -369,6 +367,10 @@ fn Sampler(comptime K: type) type {
 
         pub fn eventQuantity(self: Self, event: model.EventRef, requested: model.Quantity) K.Vector {
             return self.context.quantity(problem.Layout.eventPoint(event), requested, .{ .event = event });
+        }
+
+        pub fn atRest(self: Self, event: model.EventRef) bool {
+            return self.context.point(problem.Layout.eventPoint(event)).atRest();
         }
 
         pub fn progress(self: Self, _: usize) K.Number {

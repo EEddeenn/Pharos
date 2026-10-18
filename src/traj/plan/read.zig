@@ -378,7 +378,7 @@ pub const RawRule = struct {
         .{ .name = "id", .required = true, .doc = "stable rule identifier" },
         .{ .name = "kind", .required = true, .doc = "hard constraint, target or objective" },
         .{ .name = "scope", .required = true, .doc = "where the rule applies" },
-        .{ .name = "quantity", .doc = "physical quantity to constrain or optimize" },
+        .{ .name = "quantity", .doc = "physical quantity to constrain or optimize; forwardSpeed is the horizontal speed, along the path's own course and never negative" },
         .{ .name = "eq", .doc = "hard equality value" },
         .{ .name = "range", .doc = "hard inclusive bounds; at least one bound is required" },
         .{ .name = "value", .doc = "soft target value" },
@@ -473,13 +473,11 @@ pub const RawGuessState = struct {
     position: ?RawPosition = null,
     velocity_ecef: ?RawVector = null,
     acceleration_ecef: ?RawVector = null,
-    course: ?f64 = null,
     pub const table = [_]Key{
         .{ .name = "event", .required = true, .doc = "event identifier" },
         .{ .name = "position", .doc = "initial position" },
         .{ .name = "velocityEcef", .unit = "m/s", .doc = "initial ECEF velocity" },
         .{ .name = "accelerationEcef", .unit = "m/s^2", .doc = "initial ECEF acceleration" },
-        .{ .name = "course", .range = .{}, .unit = "deg", .doc = "initial course clockwise from north" },
     };
 };
 

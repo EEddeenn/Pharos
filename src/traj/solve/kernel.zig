@@ -29,19 +29,16 @@ fn Evaluation(comptime N: type) type {
             position: Vector,
             velocity: Vector,
             acceleration: Vector,
-            course: N,
-            turn_rate: N,
         };
 
         pub const Cell = struct {
             position: [3]Hermite.Quintic,
-            course: Hermite.Cubic,
             duration: N,
 
             pub fn init(a: Jet, b: Jet, h: N) Cell {
                 var coefficients: [3]Hermite.Quintic = undefined;
                 for (0..3) |axis| coefficients[axis] = Hermite.quintic(a.position[axis], a.velocity[axis], a.acceleration[axis], b.position[axis], b.velocity[axis], b.acceleration[axis], h);
-                return .{ .position = coefficients, .course = Hermite.cubic(a.course, a.turn_rate, b.course, b.turn_rate, h), .duration = h };
+                return .{ .position = coefficients, .duration = h };
             }
 
             pub fn at(self: Cell, u: N) State {
@@ -53,10 +50,6 @@ fn Evaluation(comptime N: type) type {
                     result.acceleration[axis] = motion.acceleration;
                     result.jerk[axis] = motion.jerk;
                 }
-                const orientation = Hermite.rotation(self.course, self.duration, u);
-                result.course = orientation.position;
-                result.turn_rate = orientation.velocity;
-                result.turn_acceleration = orientation.acceleration;
                 return result;
             }
         };
@@ -103,14 +96,6 @@ fn Operations(comptime N: type) type {
 
         pub fn sqrt(a: N) N {
             return if (N == f64) @sqrt(a) else a.sqrt();
-        }
-
-        pub fn sin(a: N) N {
-            return if (N == f64) @sin(a) else a.sin();
-        }
-
-        pub fn cos(a: N) N {
-            return if (N == f64) @cos(a) else a.cos();
         }
 
         pub fn atan2(y: N, x: N) N {
@@ -164,14 +149,6 @@ const Float = struct {
 
     pub fn sqrt(a: Float) Float {
         return .constant(@sqrt(a.value));
-    }
-
-    pub fn sin(a: Float) Float {
-        return .constant(@sin(a.value));
-    }
-
-    pub fn cos(a: Float) Float {
-        return .constant(@cos(a.value));
     }
 
     pub fn sinCos(a: Float) struct { sine: Float, cosine: Float } {

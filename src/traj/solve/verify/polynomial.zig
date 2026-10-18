@@ -48,11 +48,16 @@ pub const Polynomial = struct {
         };
         return result;
     }
+
+    pub fn at(self: Polynomial, u: f64) f64 {
+        var value: f64 = 0;
+        for (0..self.degree + 1) |i| value = value * u + self.coefficients[self.degree - i];
+        return value;
+    }
 };
 
 pub const CellPolynomials = struct {
     position: [3]Polynomial,
-    course: Polynomial,
     duration: f64,
 
     pub fn init(path: *const candidate.Path, index: usize) CellPolynomials {
@@ -61,7 +66,7 @@ pub const CellPolynomials = struct {
         const b = path.nodes[cell.right];
         const evaluator = path.evaluators[index];
         const h = evaluator.duration;
-        var result: CellPolynomials = .{ .position = undefined, .course = .{ .degree = 3 }, .duration = h };
+        var result: CellPolynomials = .{ .position = undefined, .duration = h };
         for (&result.position, 0..) |*p, axis| {
             const delta = b.position[axis] - a.position[axis];
             const v0 = a.velocity[axis] * h;
@@ -71,8 +76,6 @@ pub const CellPolynomials = struct {
             p.* = .{ .degree = 5, .roundoff = 64 * epsilon * (@abs(delta) + @abs(v0) + @abs(v1) + @abs(a0) + @abs(a1)) };
             @memcpy(p.coefficients[0..6], &evaluator.position[axis]);
         }
-        @memcpy(result.course.coefficients[0..4], &evaluator.course);
-        result.course.roundoff = 32 * epsilon * (@abs(a.course) + @abs(b.course) + @abs(a.turn_rate * h) + @abs(b.turn_rate * h));
         return result;
     }
 };

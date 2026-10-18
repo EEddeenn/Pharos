@@ -1,7 +1,13 @@
 const std = @import("std");
 const core = @import("shared").core;
 const model = @import("../../plan.zig").model;
+const directed = @import("../../plan.zig").quantities.directed;
 const constants = core.constants;
+
+/// The horizontal speed, in m/s, at or under which the path is at rest and has no direction of travel. A hard
+/// rule of rest admits this much of each component of the velocity at the verifier's tolerance, and so up to
+/// 1.4e-5 m/s horizontally.
+pub const rest_speed: f64 = 1e-5;
 
 pub const Requirements = struct {
     frame: ?u2,
@@ -10,7 +16,7 @@ pub const Requirements = struct {
     heading: ?u2,
     forward: ?u2,
 
-    pub fn init(quantities: []const model.Quantity, align_heading: bool) Requirements {
+    pub fn init(quantities: []const model.Quantity) Requirements {
         var frame_need: ?u2 = null;
         var horizontal_need: ?u2 = null;
         var height_need: ?u2 = null;
@@ -21,10 +27,9 @@ pub const Requirements = struct {
                 .altitude => require(&height_need, 0),
                 .climb_rate => require(&height_need, 1),
                 .vertical_acceleration => require(&height_need, 2),
-                .horizontal_speed => require(&horizontal_need, 0),
+                .horizontal_speed, .forward_speed => require(&horizontal_need, 0),
                 .course => require(&heading_need, 0),
                 .turn_rate => require(&heading_need, 1),
-                .forward_speed => require(&forward_need, 0),
                 .forward_acceleration => require(&forward_need, 1),
                 .forward_jerk => require(&forward_need, 2),
                 .lateral_acceleration => {
@@ -42,9 +47,7 @@ pub const Requirements = struct {
             require(&horizontal_need, order);
             require(&heading_need, order);
         }
-        if (heading_need) |order| if (align_heading) {
-            require(&horizontal_need, order);
-        };
+        if (heading_need) |order| require(&horizontal_need, order);
         if (horizontal_need) |order| require(&frame_need, order);
         if (height_need) |order| require(&frame_need, order);
         return .{ .frame = frame_need, .horizontal = horizontal_need, .height = height_need, .heading = heading_need, .forward = forward_need };
@@ -66,9 +69,6 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
             velocity: Vector,
             acceleration: Vector,
             jerk: Vector,
-            course: N,
-            turn_rate: N,
-            turn_acceleration: N,
         };
 
         pub const Frame = struct {
@@ -109,7 +109,6 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
         pub const Point = struct {
             state: State,
             datum: model.Altitude,
-            align_heading: bool,
             frame_order: ?u2 = null,
             frame_cache: MovingFrame(2) = undefined,
             height_order: ?u2 = null,
@@ -124,12 +123,8 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
             forward_order: ?u2 = null,
             forward_cache: Motion(2) = undefined,
 
-            pub fn init(state: State, datum: model.Altitude, align_heading: bool) Point {
-                return .{ .state = state, .datum = datum, .align_heading = align_heading };
-            }
-
-            pub fn prepare(self: *Point, quantities: []const model.Quantity) void {
-                self.prepareRequirements(.init(quantities, self.align_heading));
+            pub fn init(state: State, datum: model.Altitude) Point {
+                return .{ .state = state, .datum = datum };
             }
 
             pub fn prepareRequirements(self: *Point, requirements: Requirements) void {
@@ -165,20 +160,9 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
                 };
             }
 
-            pub fn alignedState(self: *Point) State {
-                var result = self.state;
-                if (self.align_heading) {
-                    const orientation = self.heading(2);
-                    result.course = give(orientation.value);
-                    result.turn_rate = give(orientation.first);
-                    result.turn_acceleration = give(orientation.second);
-                }
-                return result;
-            }
-
-            pub fn localFrame(self: *Point) Frame {
-                const local_frame = self.local(0);
-                return .{ .east = values(0, local_frame.east), .north = values(0, local_frame.north), .up = values(0, local_frame.up), .height = give(local_frame.height.value) };
+            pub fn atRest(self: *Point) bool {
+                const velocity = self.horizontalVelocity();
+                return std.math.hypot(Ops.value(velocity[0]), Ops.value(velocity[1])) <= rest_speed;
             }
 
             pub fn horizontalVelocity(self: *Point) [2]N {
@@ -186,7 +170,9 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
                 return .{ give(components[0].value), give(components[1].value) };
             }
 
+            /// A quantity that hangs on the direction of travel is NaN where the path is at rest.
             pub fn quantity(self: *Point, requested: model.Quantity) Vector {
+                if (directed(requested) and self.atRest()) return scalar(Ops.constant(std.math.nan(f64)));
                 return switch (requested) {
                     .position => self.state.position,
                     .velocity_ecef => self.state.velocity,
@@ -200,11 +186,10 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
                     .altitude => scalar(give(self.height(0).value)),
                     .climb_rate => scalar(give(self.height(1).first)),
                     .vertical_acceleration => scalar(give(self.height(2).second)),
-                    .horizontal_speed => blk: {
+                    .horizontal_speed, .forward_speed => blk: {
                         const components = self.horizontalVelocity();
                         break :blk scalar(norm(.{ components[0], components[1], Ops.constant(0) }));
                     },
-                    .forward_speed => scalar(give(self.forward(0).value)),
                     .forward_acceleration => scalar(give(self.forward(1).first)),
                     .forward_jerk => scalar(give(self.forward(2).second)),
                     .lateral_acceleration => blk: {
@@ -269,16 +254,8 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
 
             fn heading(self: *Point, comptime order: u2) Motion(order) {
                 if (self.heading_order == null or self.heading_order.? < order) {
-                    var computed: Motion(order) = .{
-                        .value = take(self.state.course),
-                        .first = if (order >= 1) take(self.state.turn_rate) else {},
-                        .second = if (order >= 2) take(self.state.turn_acceleration) else {},
-                    };
-                    if (self.align_heading) {
-                        const components = self.horizontal(order);
-                        if (components[0].value.value != 0 or components[1].value.value != 0) computed = components[0].atan2(components[1]);
-                    }
-                    self.heading_cache = computedField(order, computed);
+                    const components = self.horizontal(order);
+                    self.heading_cache = computedField(order, components[0].atan2(components[1]));
                     self.heading_order = order;
                 }
                 return select(order, self.heading_cache);

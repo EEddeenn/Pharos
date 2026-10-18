@@ -7,14 +7,22 @@ const quantities = plan_module.quantities;
 pub const Comparison = enum { eq, min, max, target, objective };
 pub const Mode = enum { optimization, verification };
 pub const Operation = union(enum) {
-    alignment,
     quantity: struct { rule: usize, comparison: Comparison, component: usize, split_norm: bool = false },
+    /// Beside a hard course of a stated number at an event, which the optimiser holds as no velocity across it:
+    /// the velocity there is not against that course.
+    ahead: usize,
     curve: struct { rule: usize, component: usize },
     region: struct { rule: usize, edge: usize },
     coverage: f64,
     maximum_duration,
-    jump: struct { event: usize, quantity: model.Quantity, component: usize, range: ?[2]f64 = null },
+    jump: Step,
+    /// Under a rule of turning, at an event where the velocity may step: of the horizontal velocities of its two
+    /// sides nothing of one across the other (`component` 0), and the two not opposed (1). The direction of travel
+    /// then steps by no angle; the speed may step. `quantity` is the velocity, which is what the two rows read.
+    corner: Step,
 };
+
+pub const Step = struct { event: usize, quantity: model.Quantity, component: usize, range: ?[2]f64 = null };
 
 pub const Check = struct {
     scope: model.Scope,
@@ -28,6 +36,7 @@ pub const Check = struct {
     pub fn ruleIndex(self: Check) ?usize {
         return switch (self.operation) {
             .quantity => |q| q.rule,
+            .ahead => |rule| rule,
             .curve => |c| c.rule,
             .region => |r| r.rule,
             else => null,
@@ -46,7 +55,6 @@ pub const Region = struct {
 
 pub const Prepared = struct {
     plan: *const model.Plan,
-    oriented: bool,
     checks: []const Check,
     regions: []const Region,
     curves: []const Curve,
@@ -92,9 +100,7 @@ pub fn prepare(arena: std.mem.Allocator, plan: *const model.Plan) std.mem.Alloca
             },
         };
     }
-    const oriented = hasDirection(plan);
     var checks: std.ArrayList(Check) = .empty;
-    if (oriented) try checks.append(arena, .{ .scope = .all, .operation = .alignment, .equality = true });
     var required_time: f64 = 0;
     for (plan.rules, 0..) |rule, index| {
         try continuity(arena, &checks, plan, rule);
@@ -153,10 +159,11 @@ pub fn prepare(arena: std.mem.Allocator, plan: *const model.Plan) std.mem.Alloca
                 },
             },
         }
+        if (courseAtEvent(rule)) try checks.append(arena, .{ .scope = rule.scope, .operation = .{ .ahead = index } });
     }
     try checks.append(arena, .{ .scope = .{ .time = 0 }, .operation = .{ .coverage = required_time } });
     try checks.append(arena, .{ .scope = .{ .time = 0 }, .operation = .maximum_duration });
-    return .{ .plan = plan, .oriented = oriented, .checks = checks.items, .regions = regions, .curves = curves };
+    return .{ .plan = plan, .checks = checks.items, .regions = regions, .curves = curves };
 }
 
 pub fn value(comptime K: type, prepared: *const Prepared, rhs: model.Value, sampler: anytype) [3]K.Number {
@@ -176,12 +183,7 @@ pub fn value(comptime K: type, prepared: *const Prepared, rhs: model.Value, samp
 pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampler: anytype, comptime mode: Mode) K.Number {
     const A = K.Arithmetic;
     return switch (check.operation) {
-        .alignment => blk: {
-            const point = sampler.point();
-            const local = point.localFrame();
-            const state = point.alignedState();
-            break :blk A.scale(A.sub(A.mul(K.dot(local.east, state.velocity), A.cos(state.course)), A.mul(K.dot(local.north, state.velocity), A.sin(state.course))), 0.1);
-        },
+        .ahead => |index| onCourse(K, sampler.point(), prepared.plan.rules[index].definition.quantity.comparison.eq.scalar).along,
         .coverage => |required| A.scale(A.sub(sampler.eventTime(prepared.plan.events.len - 1), A.constant(required)), 0.1),
         .maximum_duration => A.scale(A.sub(A.constant(shared.trajectory.max_duration_s), sampler.eventTime(prepared.plan.events.len - 1)), 0.1),
         .jump => |jump| blk: {
@@ -189,13 +191,33 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
                 const time = A.value(sampler.eventTime(jump.event));
                 if (time <= range[0] or time >= range[1]) break :blk A.constant(0);
             }
+            if (quantities.directed(jump.quantity) and (sampler.atRest(.{ .index = jump.event, .side = .in }) or sampler.atRest(.{ .index = jump.event, .side = .out }))) break :blk A.constant(0);
             const before = sampler.eventQuantity(.{ .index = jump.event, .side = .in }, jump.quantity);
             const after = sampler.eventQuantity(.{ .index = jump.event, .side = .out }, jump.quantity);
             break :blk A.sub(after[jump.component], before[jump.component]);
         },
+        .corner => |corner| blk: {
+            if (corner.range) |range| {
+                const time = A.value(sampler.eventTime(corner.event));
+                if (time <= range[0] or time >= range[1]) break :blk A.constant(0);
+            }
+            const local = K.frame(sampler.eventQuantity(.{ .index = corner.event, .side = .in }, .position));
+            const before = sampler.eventQuantity(.{ .index = corner.event, .side = .in }, .velocity_ecef);
+            const after = sampler.eventQuantity(.{ .index = corner.event, .side = .out }, .velocity_ecef);
+            const a = [2]K.Number{ K.dot(local.east, before), K.dot(local.north, before) };
+            const b = [2]K.Number{ K.dot(local.east, after), K.dot(local.north, after) };
+            break :blk if (corner.component == 0) A.sub(A.mul(a[0], b[1]), A.mul(a[1], b[0])) else A.add(A.mul(a[0], b[0]), A.mul(a[1], b[1]));
+        },
         .quantity => |operation| blk: {
             const rule = prepared.plan.rules[operation.rule];
             const definition = rule.definition.quantity;
+            // The optimiser holds a course at an event as no velocity across it: that is linear in the velocity,
+            // which an angle is not.
+            if (mode == .optimization and courseAtEvent(rule)) break :blk A.scale(onCourse(K, sampler.point(), definition.comparison.eq.scalar).across, 1 / rule.scale);
+            // Where the path is at rest a quantity that hangs on the direction of travel has no value. There a row
+            // of the optimiser holds nothing, and neither does a step at an event (above); what a rule's own value
+            // is there the verifier decides.
+            if (mode == .optimization and undirected(rule, operation.comparison, sampler)) break :blk A.constant(0);
             if (operation.split_norm) {
                 const point = sampler.point();
                 const state = point.state;
@@ -211,15 +233,11 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
             if (operation.comparison == .objective) break :blk A.scale(sampler.quantity(definition.quantity, rule.scope)[operation.component], 1 / rule.scale);
             const rhs = rightHand(rule, operation.comparison).?;
             const target = value(K, prepared, rhs, sampler)[operation.component];
-            if (definition.quantity == .turn_radius and operation.comparison == .eq) {
+            // The optimiser holds a radius as the speed that goes with the turn rate: the rate may pass through zero.
+            if (mode == .optimization and definition.quantity == .turn_radius and operation.comparison == .eq) {
                 const point = sampler.point();
-                const forward = point.quantity(.forward_speed)[0];
-                const rate = point.alignedState().turn_rate;
-                if (mode == .verification and rule.kind() == .hard) {
-                    if (A.value(forward) == 0 and A.value(rate) == 0) break :blk A.constant(0);
-                    break :blk A.scale(A.sub(A.div(forward, rate), target), 1 / rule.scale);
-                }
-                break :blk A.scale(A.sub(forward, A.mul(target, rate)), 1 / rule.scale);
+                const rate = A.scale(point.quantity(.turn_rate)[0], shared.core.constants.deg2rad(1));
+                break :blk A.scale(A.sub(point.quantity(.forward_speed)[0], A.mul(target, rate)), 1 / rule.scale);
             }
             const q = sampler.quantity(definition.quantity, rule.scope)[operation.component];
             var result = A.sub(q, target);
@@ -248,6 +266,32 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
             const rule = prepared.plan.rules[operation.rule];
             break :blk A.scale(regionMargin(K, prepared.regions[rule.definition.relation.value.inside_region], operation.edge, sampler.point().state.position), 1 / rule.scale);
         },
+    };
+}
+
+/// Whether a rule asks for a direction of travel where the path is at rest: at the sampler's point, or at the event
+/// its value refers to.
+fn undirected(rule: model.Rule, comparison: Comparison, sampler: anytype) bool {
+    if (quantities.directed(rule.definition.quantity.quantity) and sampler.point().atRest()) return true;
+    const rhs = rightHand(rule, comparison) orelse return false;
+    return rhs == .event and quantities.directed(rhs.event.quantity) and sampler.atRest(.{ .index = rhs.event.event, .side = rhs.event.side });
+}
+
+/// A hard course of a stated number at an event.
+fn courseAtEvent(rule: model.Rule) bool {
+    if (rule.scope != .event or rule.definition != .quantity) return false;
+    const definition = rule.definition.quantity;
+    return definition.quantity == .course and definition.comparison == .eq and definition.comparison.eq == .scalar;
+}
+
+/// The horizontal velocity at a point along a course, given in degrees, and across it.
+fn onCourse(comptime K: type, point: *K.Point, course: f64) struct { along: K.Number, across: K.Number } {
+    const A = K.Arithmetic;
+    const velocity = point.horizontalVelocity();
+    const radians = shared.core.constants.deg2rad(course);
+    return .{
+        .along = A.add(A.scale(velocity[0], @sin(radians)), A.scale(velocity[1], @cos(radians))),
+        .across = A.sub(A.scale(velocity[0], @cos(radians)), A.scale(velocity[1], @sin(radians))),
     };
 }
 
@@ -368,38 +412,17 @@ fn appendQuantity(arena: std.mem.Allocator, checks: *std.ArrayList(Check), index
     for (0..count) |component| try checks.append(arena, .{ .scope = rule.scope, .operation = .{ .quantity = .{ .rule = index, .comparison = comparison, .component = component, .split_norm = zero } }, .equality = comparison == .eq or zero });
 }
 
-fn hasDirection(plan: *const model.Plan) bool {
-    for (plan.rules) |rule| {
-        if (rule.definition != .quantity) continue;
-        const q = rule.definition.quantity;
-        if (directionQuantity(q.quantity)) return true;
-        switch (q.comparison) {
-            .eq, .target => |rhs| if (rhs == .event and directionQuantity(rhs.event.quantity)) return true,
-            .range => |range| for ([_]?model.Value{ range.min, range.max }) |bound| {
-                if (bound) |rhs| if (rhs == .event and directionQuantity(rhs.event.quantity)) return true;
-            },
-            .objective => {},
-        }
-    }
-    return false;
-}
-
-fn directionQuantity(quantity: model.Quantity) bool {
-    return switch (quantity) {
-        .course, .turn_rate, .turn_radius, .forward_speed, .forward_acceleration, .forward_jerk, .lateral_acceleration => true,
-        else => false,
-    };
-}
-
 fn continuity(arena: std.mem.Allocator, checks: *std.ArrayList(Check), plan: *const model.Plan, rule: model.Rule) std.mem.Allocator.Error!void {
     if (rule.kind() != .hard or rule.definition != .quantity or !quantities.interval(rule.scope)) return;
-    const derivatives: []const model.Quantity = switch (rule.definition.quantity.quantity) {
+    const quantity = rule.definition.quantity.quantity;
+    const turning = quantity == .lateral_acceleration or quantity == .turn_rate or quantity == .turn_radius;
+    const derivatives: []const model.Quantity = switch (quantity) {
         .acceleration3d, .acceleration_ecef => &.{.velocity_ecef},
         .jerk3d => &.{ .velocity_ecef, .acceleration_ecef },
         .forward_acceleration => &.{.forward_speed},
         .forward_jerk => &.{ .forward_speed, .forward_acceleration },
         .vertical_acceleration => &.{.climb_rate},
-        else => return,
+        else => if (turning) &.{} else return,
     };
     for (1..plan.events.len - 1) |event| {
         const included = switch (rule.scope) {
@@ -409,10 +432,14 @@ fn continuity(arena: std.mem.Allocator, checks: *std.ArrayList(Check), plan: *co
             else => false,
         };
         if (!included) continue;
+        const range = if (rule.scope == .time_range) rule.scope.time_range else null;
+        if (turning and plan.events[event].continuity == .c0) for (0..2) |component| {
+            try checks.append(arena, .{ .scope = .{ .event = .{ .index = event } }, .operation = .{ .corner = .{ .event = event, .quantity = .velocity_ecef, .component = component, .range = range } }, .equality = component == 0 });
+        };
         for (derivatives) |derivative| {
             if (plan.events[event].continuity == .c2) continue;
             if (plan.events[event].continuity == .c1 and (derivative == .velocity_ecef or derivative == .forward_speed or derivative == .climb_rate)) continue;
-            for (0..quantities.components(derivative)) |component| try checks.append(arena, .{ .scope = .{ .event = .{ .index = event } }, .operation = .{ .jump = .{ .event = event, .quantity = derivative, .component = component, .range = if (rule.scope == .time_range) rule.scope.time_range else null } }, .equality = true });
+            for (0..quantities.components(derivative)) |component| try checks.append(arena, .{ .scope = .{ .event = .{ .index = event } }, .operation = .{ .jump = .{ .event = event, .quantity = derivative, .component = component, .range = range } }, .equality = true });
         }
     }
 }

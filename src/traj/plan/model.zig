@@ -222,7 +222,6 @@ pub const GuessState = struct {
     ecef: ?Vector = null,
     velocity_ecef: ?Vector = null,
     acceleration_ecef: ?Vector = null,
-    course: ?f64 = null,
 };
 
 pub const InitialGuess = struct {

@@ -12,23 +12,18 @@ const Jet = kernel.Scalar.Jet;
 pub const time_scale: f64 = 10;
 pub const min_duration: f64 = 1e-3;
 pub const Error = error{ OutOfMemory, InvalidMesh };
-pub const Node = struct { variables: [11]usize };
+pub const Node = struct { variables: [9]usize };
 pub const Cell = candidate.Cell;
 pub const Section = candidate.Section;
 pub const Mesh = struct {
     origin: Vector,
-    scales: [11]f64,
+    scales: [9]f64,
     nodes: []const Node,
     cells: []const Cell,
     sections: []const Section,
     event_in: []const usize,
     event_out: []const usize,
     durations: []const usize,
-
-    pub fn sectionCells(self: *const Mesh, section: usize) []const Cell {
-        const range = self.sections[section];
-        return self.cells[range.first_cell..range.end_cell];
-    }
 };
 pub const Build = struct {
     mesh: Mesh,
@@ -38,16 +33,16 @@ pub const Build = struct {
     inconsistent: bool = false,
 };
 
-const scales = [11]f64{ 100, 100, 100, 10, 10, 10, 1, 1, 1, 1, 0.1 };
+const scales = [9]f64{ 100, 100, 100, 10, 10, 10, 1, 1, 1 };
 
 pub fn build(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, plan: *const model.Plan, counts: []const usize, previous: ?*const candidate.Path) Error!Build {
     var node_count = plan.events.len;
-    var variable_count = std.math.mul(usize, node_count, 11) catch return error.InvalidMesh;
+    var variable_count = std.math.mul(usize, node_count, 9) catch return error.InvalidMesh;
     var cell_count: usize = 0;
     for (counts) |count| {
         cell_count = std.math.add(usize, cell_count, count) catch return error.InvalidMesh;
         node_count = std.math.add(usize, node_count, count - 1) catch return error.InvalidMesh;
-        const variables = std.math.mul(usize, count - 1, 11) catch return error.InvalidMesh;
+        const variables = std.math.mul(usize, count - 1, 9) catch return error.InvalidMesh;
         variable_count = std.math.add(usize, variable_count, variables) catch return error.InvalidMesh;
     }
     for (plan.events[1 .. plan.events.len - 1]) |event| if (event.continuity != .c2) {
@@ -167,18 +162,11 @@ pub fn build(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
                 const polynomial = kernel.Scalar.Cell.init(outgoing[index], incoming[index + 1], seconds[index]);
                 for (cells[section.first_cell .. section.end_cell - 1]) |cell| {
                     const state = polynomial.at(cell.end);
-                    try writeNode(&result, cell.right, .{
-                        .position = state.position,
-                        .velocity = state.velocity,
-                        .acceleration = state.acceleration,
-                        .course = state.course,
-                        .turn_rate = state.turn_rate,
-                    });
+                    try writeNode(&result, cell.right, .{ .position = state.position, .velocity = state.velocity, .acceleration = state.acceleration });
                 }
             }
         }
         try presolve.apply(temporary, plan, &result, nodes, durations);
-        if (previous == null) try seed.heading(temporary, plan, &result);
     }
     result.x = try result_allocator.realloc(x, result.x.len);
     result.lower = try result_allocator.realloc(lower, result.lower.len);
@@ -200,8 +188,6 @@ fn componentLimit(component: usize) f64 {
         0...2 => trajectory.max_radius_m,
         3...5 => trajectory.max_speed_mps,
         6...8 => trajectory.max_acceleration_mps2,
-        9 => 1e6,
-        10 => 1e4,
         else => unreachable,
     };
 }
@@ -210,25 +196,11 @@ fn writeNode(built: *Build, index: usize, state: Jet) Error!void {
     const p = Vector.fromArray(state.position).sub(built.mesh.origin).toArray();
     const v = state.velocity;
     const a = state.acceleration;
-    const values = p ++ v ++ a ++ [2]f64{ state.course, state.turn_rate };
+    const values = p ++ v ++ a;
     for (built.mesh.nodes[index].variables, values, built.mesh.scales) |column, value, scale| {
         if (!std.math.isFinite(value)) return error.InvalidMesh;
         built.x[column] = std.math.clamp(value / scale, built.lower[column], built.upper[column]);
     }
-}
-
-pub fn readNode(mesh: *const Mesh, x: []const f64, index: usize) Jet {
-    var values: [11]f64 = undefined;
-    for (mesh.nodes[index].variables, mesh.scales, &values) |column, scale, *value| {
-        value.* = x[column] * scale;
-    }
-    return .{
-        .position = Vector.fromArray(values[0..3].*).add(mesh.origin).toArray(),
-        .velocity = values[3..6].*,
-        .acceleration = values[6..9].*,
-        .course = values[9],
-        .turn_rate = values[10],
-    };
 }
 
 pub fn sectionSpan(scope: model.Scope, count: usize) ?[2]usize {
