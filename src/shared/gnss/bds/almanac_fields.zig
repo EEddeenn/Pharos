@@ -26,7 +26,7 @@ fn almPrn(p: *const Packet) i64 {
 }
 fn almSatType(p: *const Packet) i64 {
     const a = p.slot orelse return 0;
-    return @intFromEnum(a.sat_type);
+    return @backingInt(a.sat_type);
 }
 fn almHealth(p: *const Packet) i64 {
     const a = p.slot orelse return 0;

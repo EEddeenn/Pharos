@@ -187,7 +187,7 @@ pub fn failure(sv: *const Sv) ?FieldFailure {
     inline for (.{ "sf1", "sf2", "sf3" }) |subframe| {
         const rows = @field(@This(), subframe);
         inline for (rows, 0..) |row, i| {
-            if (field.misfit(Sv, &.{row}, sv) != null) return @unionInit(FieldFailure, subframe, @enumFromInt(i));
+            if (field.misfit(Sv, &.{row}, sv) != null) return @unionInit(FieldFailure, subframe, @fromBackingInt(@intCast(i)));
         }
     }
     return null;

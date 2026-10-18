@@ -143,7 +143,7 @@ fn publicationFailure(arena: std.mem.Allocator, failure: messages.PreparationFai
         .inav => .{ .key = "messages.galileo.inav", .family = "I/NAV" },
         .d2 => .{ .key = "messages.bds.d2", .family = "D2" },
     };
-    const path = try std.fmt.allocPrint(arena, "{s}[{d}]", .{ target.key, failure.publication.index });
+    const path = try arena.print("{s}[{d}]", .{ target.key, failure.publication.index });
     try diags.err(.out_of_range, path, "the publication cannot be encoded for {s} ({s})", .{ target.family, @errorName(failure.publication.reason) });
     return error.InvalidInput;
 }

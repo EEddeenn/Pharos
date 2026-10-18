@@ -19,7 +19,7 @@ pub const Event = extern struct {
 };
 
 pub fn eventToC(ev: engine.events.Event) Event {
-    var out: Event = .{ .epoch = 0, .a = 0, .b = 0, .c = 0, .kind = @intFromEnum(ev), .code = 0, .system = 0, .svid = 0, .signal = 0 };
+    var out: Event = .{ .epoch = 0, .a = 0, .b = 0, .c = 0, .kind = @backingInt(ev), .code = 0, .system = 0, .svid = 0, .signal = 0 };
     switch (ev) {
         .agc => |a| {
             out.epoch = a.epoch.ms;
@@ -35,7 +35,7 @@ pub fn eventToC(ev: engine.events.Event) Event {
         .channel_removed => |c| channelEvent(&out, c.epoch, c.key),
         .ephemeris_switched => |s| {
             out.epoch = s.epoch.ms;
-            out.system = @intFromEnum(s.sat.system);
+            out.system = @backingInt(s.sat.system);
             out.svid = s.sat.prn();
         },
     }
@@ -44,7 +44,7 @@ pub fn eventToC(ev: engine.events.Event) Event {
 
 fn channelEvent(out: *Event, epoch: Epoch, key: types.ChannelKey) void {
     out.epoch = epoch.ms;
-    out.system = @intFromEnum(key.sat.system);
+    out.system = @backingInt(key.sat.system);
     out.svid = key.sat.prn();
-    out.signal = @intFromEnum(key.signal);
+    out.signal = @backingInt(key.signal);
 }

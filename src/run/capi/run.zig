@@ -156,7 +156,7 @@ pub fn pharos_run_pull(r: ?*Handle, buf: ?[*]u8, cap: usize, max_epochs: u32, ou
         .clipped = block.clipped,
         .applied = &h.applied,
         .applied_count = block.applied.len,
-        .failed = if (block.failed != null) @intCast(@intFromEnum(status)) else 0,
+        .failed = if (block.failed != null) @intCast(@backingInt(status)) else 0,
     };
     return status;
 }

@@ -66,7 +66,7 @@ pub const Sky = struct {
             while (self.checkpoints.items[i - 1].ms > e.ms) i -= 1;
             self.window.restore(self.checkpoints.items[i - 1].marks);
         };
-        var next: u64 = if (self.checkpoints.getLastOrNull()) |c| c.ms + checkpoint_ms else 0;
+        var next: u64 = if (self.checkpoints.last()) |c| c.ms + checkpoint_ms else 0;
         while (next <= e.ms) : (next += checkpoint_ms) {
             try self.checkpoints.ensureUnusedCapacity(self.gpa, 1);
             const marks = try self.gpa.alloc(Mark, self.window.tracks.len);

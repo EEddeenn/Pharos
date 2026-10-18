@@ -173,7 +173,7 @@ fn writeMask(w: *BoundedWriter, mask: Mask) Error!void {
     if (mask.systems.len < 1 or mask.systems.len > max_systems) return error.Layout;
     try w.writeUnsigned(4, mask.systems.len);
     for (mask.systems) |s| {
-        try w.writeBits(4, @intFromEnum(s.gnss));
+        try w.writeBits(4, @backingInt(s.gnss));
         for (s.sats) |b| try w.writeBits(1, b);
         for (s.sigs) |b| try w.writeBits(1, b);
         try w.writeBits(1, s.cells != null);
@@ -188,7 +188,7 @@ fn writeMask(w: *BoundedWriter, mask: Mask) Error!void {
 
 fn writeOrbit(w: *BoundedWriter, mask: Mask, block: OrbitBlock) Error!void {
     if (block.sats.len != mask.satCount()) return error.Layout;
-    try w.writeBits(4, @intFromEnum(block.validity));
+    try w.writeBits(4, @backingInt(block.validity));
     var i: usize = 0;
     for (mask.systems) |s| {
         for (0..s.satCount()) |_| {
@@ -225,7 +225,7 @@ fn writeClock(w: *BoundedWriter, c: Clock, multiplier: u2) error{BufferFull}!voi
 
 fn writeClockFull(w: *BoundedWriter, mask: Mask, block: ClockFullBlock) Error!void {
     if (block.multipliers.len != mask.systems.len or block.sats.len != mask.satCount()) return error.Layout;
-    try w.writeBits(4, @intFromEnum(block.validity));
+    try w.writeBits(4, @backingInt(block.validity));
     for (block.multipliers) |m| try w.writeBits(2, m);
     var i: usize = 0;
     for (mask.systems, block.multipliers) |s, m| {
@@ -238,7 +238,7 @@ fn writeClockFull(w: *BoundedWriter, mask: Mask, block: ClockFullBlock) Error!vo
 
 fn writeClockSubset(w: *BoundedWriter, mask: Mask, block: ClockSubsetBlock) Error!void {
     if (block.systems.len < 1 or block.systems.len > max_systems) return error.Layout;
-    try w.writeBits(4, @intFromEnum(block.validity));
+    try w.writeBits(4, @backingInt(block.validity));
     try w.writeUnsigned(4, block.systems.len);
     for (block.systems) |sub| {
         const masked = for (mask.systems) |s| {
@@ -246,7 +246,7 @@ fn writeClockSubset(w: *BoundedWriter, mask: Mask, block: ClockSubsetBlock) Erro
         } else return error.Layout;
         if (sub.selected.len != masked.satCount()) return error.Layout;
         if (sub.values.len != std.mem.countScalar(bool, sub.selected, true)) return error.Layout;
-        try w.writeBits(4, @intFromEnum(sub.gnss));
+        try w.writeBits(4, @backingInt(sub.gnss));
         try w.writeBits(2, sub.multiplier);
         for (sub.selected) |b| try w.writeBits(1, b);
         for (sub.values) |v| try writeClock(w, v, sub.multiplier);
@@ -255,13 +255,13 @@ fn writeClockSubset(w: *BoundedWriter, mask: Mask, block: ClockSubsetBlock) Erro
 
 fn writeCodeBias(w: *BoundedWriter, mask: Mask, block: CodeBiasBlock) Error!void {
     if (block.cells.len != mask.cellCount()) return error.Layout;
-    try w.writeBits(4, @intFromEnum(block.validity));
+    try w.writeBits(4, @backingInt(block.validity));
     for (block.cells) |c| try writeQuantized(w, 11, c, code_bias_lsb, 0);
 }
 
 fn writePhaseBias(w: *BoundedWriter, mask: Mask, block: PhaseBiasBlock) Error!void {
     if (block.cells.len != mask.cellCount()) return error.Layout;
-    try w.writeBits(4, @intFromEnum(block.validity));
+    try w.writeBits(4, @backingInt(block.validity));
     for (block.cells) |c| {
         try writeQuantized(w, 11, if (c) |p| p.cycles else null, phase_bias_lsb, 0);
         try w.writeBits(2, if (c) |p| p.discontinuity else 0);

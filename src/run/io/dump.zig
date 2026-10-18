@@ -52,12 +52,12 @@ pub fn writeScenario(w: *std.Io.Writer, b: *const Bundle) std.Io.Writer.Error!vo
         \\
     , .{
         hex(s.elevation_mask_rad),
-        if (s.samples) |x| @intFromEnum(x.format) else 0,
+        if (s.samples) |x| @backingInt(x.format) else 0,
         if (s.samples) |x| x.sample_rate.hz() else 0,
         if (s.samples) |x| x.center.hz else 0,
         if (s.observation) |x| x.interval_ms else 0,
         if (s.position) |x| x.interval_ms else 0,
-        if (s.position) |x| @intFromEnum(x.format) else 0,
+        if (s.position) |x| @backingInt(x.format) else 0,
         hex(s.power.noise_floor_dbm_hz),
         hex(s.power.init_cn0_dbhz),
         @intFromBool(s.power.elevation_fade),
@@ -75,6 +75,6 @@ pub fn writeScenario(w: *std.Io.Writer, b: *const Bundle) std.Io.Writer.Error!vo
             \\power[{0d}].unit = {4d}
             \\power[{0d}].value = {5f}
             \\
-        , .{ i, @intFromEnum(e.target.system()), svid, e.at_epoch, if (e.level) |l| @intFromEnum(l.unit) else 3, hex(if (e.level) |l| l.value else 0) });
+        , .{ i, @backingInt(e.target.system()), svid, e.at_epoch, if (e.level) |l| @backingInt(l.unit) else 3, hex(if (e.level) |l| l.value else 0) });
     }
 }

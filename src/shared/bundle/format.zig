@@ -82,7 +82,7 @@ fn encode(w: *std.Io.Writer, comptime T: type, value: T) std.Io.Writer.Error!voi
         .float => try w.writeInt(Bits(T), @bitCast(value), .little),
         .bool => try w.writeByte(@intFromBool(value)),
         .void => {},
-        .@"enum" => try w.writeInt(u32, @intFromEnum(value), .little),
+        .@"enum" => try w.writeInt(u32, @backingInt(value), .little),
         .optional => |o| {
             if (value) |v| {
                 try w.writeByte(1);
@@ -103,11 +103,11 @@ fn encode(w: *std.Io.Writer, comptime T: type, value: T) std.Io.Writer.Error!voi
                 try encode(w, s.backing_integer.?, @bitCast(value));
             } else if (comptime isEnumMap(T)) {
                 inline for (comptime std.meta.tags(T.Key)) |k| try encode(w, ?T.Value, value.get(k));
-            } else inline for (s.fields) |f| try encode(w, f.type, @field(value, f.name));
+            } else inline for (s.field_names, s.field_types) |name, Field| try encode(w, Field, @field(value, name));
         },
         .@"union" => |u| {
             if (u.tag_type == null) @compileError("untagged union in a bundle: " ++ @typeName(T));
-            try w.writeInt(u32, @intFromEnum(value), .little);
+            try w.writeInt(u32, @backingInt(value), .little);
             switch (value) {
                 inline else => |payload, tag| try encode(w, @FieldType(T, @tagName(tag)), payload),
             }
@@ -189,7 +189,7 @@ const Reader = struct {
                     return out;
                 }
                 var out: T = undefined;
-                inline for (s.fields) |f| @field(out, f.name) = try self.decode(f.type);
+                inline for (s.field_names, s.field_types) |name, Field| @field(out, name) = try self.decode(Field);
                 return out;
             },
             .@"union" => |u| {
@@ -216,7 +216,7 @@ fn describe(comptime T: type) []const u8 {
             .void => return "void",
             .@"enum" => |e| {
                 var out: []const u8 = "enum(" ++ describe(e.tag_type) ++ "){";
-                for (e.fields) |f| out = out ++ f.name ++ "=" ++ std.fmt.comptimePrint("{d}", .{f.value}) ++ ",";
+                for (e.field_names, e.field_values) |name, value| out = out ++ name ++ "=" ++ std.fmt.comptimePrint("{d}", .{value}) ++ ",";
                 return out ++ "}";
             },
             .optional => |o| return "?" ++ describe(o.child),
@@ -226,13 +226,13 @@ fn describe(comptime T: type) []const u8 {
                 if (isEnumMap(T)) return "map(" ++ describe(T.Key) ++ "," ++ describe(T.Value) ++ ")";
                 var out: []const u8 = if (@hasDecl(T, "Indexer")) "keyed(" ++ describe(T.Key) ++ ")" else "";
                 out = out ++ if (s.layout == .@"packed") "packed(" ++ describe(s.backing_integer.?) ++ "){" else "struct{";
-                for (s.fields) |f| out = out ++ f.name ++ ":" ++ describe(f.type) ++ ",";
+                for (s.field_names, s.field_types) |name, Field| out = out ++ name ++ ":" ++ describe(Field) ++ ",";
                 return out ++ "}";
             },
             .@"union" => |u| {
                 const Tag = u.tag_type orelse @compileError("untagged union in a bundle: " ++ @typeName(T));
                 var out: []const u8 = "union(" ++ describe(Tag) ++ "){";
-                for (u.fields) |f| out = out ++ f.name ++ ":" ++ describe(f.type) ++ ",";
+                for (u.field_names, u.field_types) |name, Field| out = out ++ name ++ ":" ++ describe(Field) ++ ",";
                 return out ++ "}";
             },
             else => @compileError("no bundle layout for " ++ @typeName(T)),

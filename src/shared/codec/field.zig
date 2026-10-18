@@ -94,7 +94,7 @@ pub fn Decoded(comptime Source: type, comptime layout: []const Field(Source)) ty
     comptime lint(Source, layout);
     comptime var names: [layout.len][:0]const u8 = undefined;
     comptime var types: [layout.len]type = undefined;
-    comptime var attrs: [layout.len]std.builtin.Type.StructField.Attributes = undefined;
+    comptime var attrs: [layout.len]std.lang.Type.Struct.FieldAttributes = undefined;
     inline for (layout, 0..) |row, i| {
         names[i] = row.name;
         types[i] = RowType(Source, row);

@@ -51,7 +51,7 @@ const delays = [_]S{
 };
 
 pub fn encode(sv: *const Sv, a: Input, ctx: Ctx, w: *bitwriter.BitWriter) field.Error!void {
-    try field.encode(field.NoSource, &header, &field.no_source, .{ .prn = ctx.prn, .kind = @intFromEnum(ctx.kind), .sow = ctx.sow }, w);
+    try field.encode(field.NoSource, &header, &field.no_source, .{ .prn = ctx.prn, .kind = @backingInt(ctx.kind), .sow = ctx.sow }, w);
     if (ctx.kind != .ephemeris_1) try field.encode(Sv, &hs_flags, sv, .{}, w);
     switch (ctx.kind) {
         .ephemeris_1 => {

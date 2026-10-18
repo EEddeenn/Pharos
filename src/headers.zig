@@ -30,10 +30,10 @@ fn write(w: *Io.Writer, comptime product: abi.Product) Io.Writer.Error!void {
         const info = @typeInfo(record.type).@"struct";
         if (info.layout != .@"extern") @compileError("an ABI record must be extern: " ++ record.name);
         try w.print("struct {s} {{\n", .{record.name});
-        inline for (info.fields) |field| {
-            switch (@typeInfo(field.type)) {
-                .array => |a| try w.print("    {s} {s}[{d}];\n", .{ comptime cName(product, a.child), field.name, a.len }),
-                else => try w.print("    {s} {s};\n", .{ comptime cName(product, field.type), field.name }),
+        inline for (info.field_names, info.field_types) |name, Field| {
+            switch (@typeInfo(Field)) {
+                .array => |a| try w.print("    {s} {s}[{d}];\n", .{ comptime cName(product, a.child), name, a.len }),
+                else => try w.print("    {s} {s};\n", .{ comptime cName(product, Field), name }),
             }
         }
         try w.writeAll("};\n\n");
@@ -41,12 +41,12 @@ fn write(w: *Io.Writer, comptime product: abi.Product) Io.Writer.Error!void {
 
     inline for (comptime abi.functions(product)) |function| {
         const info = @typeInfo(function.type).@"fn";
-        if (info.is_var_args or info.is_generic) @compileError("an ABI function must have fixed typed arguments: " ++ function.name);
+        if (info.attrs.varargs or info.is_generic) @compileError("an ABI function must have fixed typed arguments: " ++ function.name);
         try w.print("{s} {s}(", .{ comptime cName(product, info.return_type.?), function.name });
-        if (info.params.len == 0) try w.writeAll("void");
-        inline for (info.params, 0..) |param, i| {
+        if (info.param_types.len == 0) try w.writeAll("void");
+        inline for (info.param_types, 0..) |Param, i| {
             if (i > 0) try w.writeAll(", ");
-            try w.writeAll(comptime cName(product, param.type.?));
+            try w.writeAll(comptime cName(product, Param.?));
         }
         try w.writeAll(");\n");
     }
@@ -55,11 +55,11 @@ fn write(w: *Io.Writer, comptime product: abi.Product) Io.Writer.Error!void {
 
 fn enumeration(w: *Io.Writer, comptime e: abi.Enum, comptime status: bool) Io.Writer.Error!void {
     const info = @typeInfo(e.type).@"enum";
-    const Storage = if (@bitSizeOf(info.tag_type) == @sizeOf(e.type) * 8) info.tag_type else std.meta.Int(@typeInfo(info.tag_type).int.signedness, @sizeOf(e.type) * 8);
+    const Storage = if (@bitSizeOf(info.tag_type) == @sizeOf(e.type) * 8) info.tag_type else @Int(@typeInfo(info.tag_type).int.signedness, @sizeOf(e.type) * 8);
     try w.print("typedef {s} {s};\nenum {{\n", .{ comptime integer(Storage), e.name });
-    inline for (info.fields, 0..) |field, i| {
-        const failure = status and !std.mem.eql(u8, field.name, "ok") and !std.mem.eql(u8, field.name, "end");
-        try w.print("    {s}_{s}{s} = {d}{s}\n", .{ e.prefix, if (failure) "E_" else "", comptime abi.upper(field.name), field.value, if (i + 1 == info.fields.len) "" else "," });
+    inline for (info.field_names, info.field_values, 0..) |name, value, i| {
+        const failure = status and !std.mem.eql(u8, name, "ok") and !std.mem.eql(u8, name, "end");
+        try w.print("    {s}_{s}{s} = {d}{s}\n", .{ e.prefix, if (failure) "E_" else "", comptime abi.upper(name), value, if (i + 1 == info.field_names.len) "" else "," });
     }
     try w.writeAll("};\n\n");
 }
@@ -96,7 +96,7 @@ fn cName(comptime product: abi.Product, comptime T: type) []const u8 {
         .pointer => |p| blk: {
             if (p.size == .slice) @compileError("slices do not belong in the C ABI: " ++ @typeName(T));
             const child = if (p.child == u8 and p.sentinel_ptr != null) "char" else cName(product, p.child);
-            break :blk child ++ (if (p.is_const) " const" else "") ++ " *";
+            break :blk child ++ (if (p.attrs.@"const") " const" else "") ++ " *";
         },
         else => @compileError("unnamed C ABI type: " ++ @typeName(T)),
     };

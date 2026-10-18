@@ -16,7 +16,7 @@ pub const Ctx = struct { prn: u6 = 0, tow: u17 = 0, alert: bool, isf: bool = fal
 const Type = schedule.Type;
 
 fn messageHeader(comptime Source: type, comptime kind: Type) [5]field.Field(Source) {
-    return header(Source, @intFromEnum(kind));
+    return header(Source, @backingInt(kind));
 }
 
 fn header(comptime Source: type, comptime kind: u6) [5]field.Field(Source) {

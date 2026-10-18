@@ -83,7 +83,7 @@ pub const Diagnostics = struct {
     }
 
     fn addAt(self: *Diagnostics, severity: Severity, code: Code, source: []const u8, path: []const u8, position: ?Position, comptime fmt: []const u8, args: anytype) std.mem.Allocator.Error!void {
-        const message = try std.fmt.allocPrint(self.arena, fmt, args);
+        const message = try self.arena.print(fmt, args);
         try self.items.append(self.arena, .{ .severity = severity, .code = code, .path = path, .source = source, .position = position, .message = message });
         if (severity == .err) self.errors += 1;
     }

@@ -168,7 +168,7 @@ pub fn pageAt(set: *const Set, prn: u8, index: i64) Page {
                 break :blk source.batch(dc.epochOf(t), t);
             };
 
-            var buffer: [std.meta.fields(Optional).len]Optional = undefined;
+            var buffer: [@typeInfo(Optional).@"union".field_names.len]Optional = undefined;
             var available: std.ArrayList(Optional) = .initBuffer(&buffer);
             if (set.data.eop != null) available.appendAssumeCapacity(.eop);
             if (differential) |declared| {

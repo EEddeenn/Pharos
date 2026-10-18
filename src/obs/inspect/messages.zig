@@ -243,7 +243,7 @@ fn gpsText(arena: std.mem.Allocator, input: []const u8) ![]const u8 {
 
 fn gpsPublication(arena: std.mem.Allocator, src: gnss.gps.messages.Sources, prn: u8, t: GpsTime, family: NavFamily) !GpsPublication {
     var out: GpsPublication = .{};
-    if (src.integrity) |v| out.integrity = .{ .isfIndex = v.isf, .alertMaskHex = try std.fmt.allocPrint(arena, "{x:0>8}", .{v.alert}), .targetAlert = v.alerts(prn) };
+    if (src.integrity) |v| out.integrity = .{ .isfIndex = v.isf, .alertMaskHex = try arena.print("{x:0>8}", .{v.alert}), .targetAlert = v.alerts(prn) };
     if (src.text) |v| {
         out.text = try gpsText(arena, v);
     }
@@ -253,7 +253,7 @@ fn gpsPublication(arena: std.mem.Allocator, src: gnss.gps.messages.Sources, prn:
             .reference = .of(v.reference),
             .constellation = v.constellation,
             .service = v.service,
-            .maskHex = try std.fmt.allocPrint(arena, "{x:0>16}", .{v.mask}),
+            .maskHex = try arena.print("{x:0>16}", .{v.mask}),
             .tCorrelIndex = v.t_correl,
             .bNomIndex = v.b_nom,
             .gammaNomIndex = v.gamma_nom,
@@ -287,11 +287,11 @@ fn publications(arena: std.mem.Allocator, b: *const bundle.Bundle, prepared: mes
             var content: InavPublication = .{ .kind = std.meta.activeTag(raw.content) };
             switch (raw.content) {
                 .no_data => {},
-                .test_message => |v| content.testMessageHex = try std.fmt.allocPrint(arena, "{x:0>22}", .{v}),
+                .test_message => |v| content.testMessageHex = try arena.print("{x:0>22}", .{v}),
                 .horizontal => |v| content.horizontal = .{
                     .reference = .of(v.reference),
                     .maskMsb = v.mask_msb,
-                    .maskHex = try std.fmt.allocPrint(arena, "{x:0>8}", .{v.mask}),
+                    .maskHex = try arena.print("{x:0>8}", .{v.mask}),
                     .pConstIndex = v.p_const,
                     .pSatIndex = v.p_sat,
                     .uraIndex = v.ura,

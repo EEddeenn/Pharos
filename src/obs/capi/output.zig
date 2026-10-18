@@ -92,7 +92,7 @@ pub fn pharos_obs_output_info_get(output_handle: ?*const Handle, out: ?*Info) ca
     const dst = out orelse return .arg;
     const summary = h.file.summary();
     dst.* = .{
-        .kind = @intFromEnum(h.kind),
+        .kind = @backingInt(h.kind),
         .epochs = summary.epochs,
         .interval_ms = summary.interval_ms,
         .tracked = @intCast(summary.tracked orelse 0),

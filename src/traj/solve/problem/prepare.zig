@@ -185,7 +185,7 @@ const Compiler = struct {
     fn point(self: *Compiler, location: problem.Location) std.mem.Allocator.Error!usize {
         const key: LocationKey = switch (location) {
             .cell => |cell| .{ .kind = .cell, .index = cell.index, .value = bits(cell.u) },
-            .event => |event| .{ .kind = .event, .index = event.index, .value = @intFromEnum(event.side) },
+            .event => |event| .{ .kind = .event, .index = event.index, .value = @backingInt(event.side) },
             .time => |time| .{ .kind = .time, .index = 0, .value = bits(time) },
         };
         const entry = try self.location_indices.getOrPut(self.allocator, key);
@@ -193,7 +193,7 @@ const Compiler = struct {
         const index = self.locations.items.len;
         entry.value_ptr.* = index;
         try self.locations.append(self.allocator, location);
-        try self.quantities.append(self.allocator, .initEmpty());
+        try self.quantities.append(self.allocator, .empty);
         return index;
     }
 

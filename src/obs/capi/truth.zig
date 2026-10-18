@@ -126,7 +126,7 @@ pub fn pharos_obs_truth_inspect(t: ?*Handle, query: ?*const InspectQuery, out: ?
     const sat = core.types.SatId.fromPrn(system, q.svid) catch return malformedInspect(h);
     const signal = std.enums.fromInt(core.types.Signal, q.signal) orelse return malformedInspect(h);
     if (q.groups & ~@as(u32, 15) != 0) return malformedInspect(h);
-    var groups: inspect.Groups = if (q.groups == 0) .initFull() else .initEmpty();
+    var groups: inspect.Groups = if (q.groups == 0) .full else .empty;
     if (q.groups != 0) {
         inline for (.{ inspect.Group.model, inspect.Group.navigation, inspect.Group.messages, inspect.Group.service }, .{ 1, 2, 4, 8 }) |group, bit| {
             if (q.groups & bit != 0) groups.insert(group);
@@ -170,7 +170,7 @@ fn malformedInspect(h: *Handle) Status {
 fn answer(h: *Handle, result: truth.QueryError!truth.Sky, epoch: u64, o: *Epoch) Status {
     const sky = result catch |e| return failedQuery(h, e, epoch);
     for (sky.satellites, h.satellites[0..sky.satellites.len]) |s, *c| c.* = .{
-        .system = @intFromEnum(s.sat.system),
+        .system = @backingInt(s.sat.system),
         .svid = s.sat.prn(),
         .record = @intFromBool(s.record),
         .above_mask = @intFromBool(s.above_mask),
@@ -179,10 +179,10 @@ fn answer(h: *Handle, result: truth.QueryError!truth.Sky, epoch: u64, o: *Epoch)
         .elevation_deg = rad2deg(s.el_rad),
     };
     for (sky.signals, h.signals[0..sky.signals.len]) |s, *c| c.* = .{
-        .system = @intFromEnum(s.sat.system),
+        .system = @backingInt(s.sat.system),
         .svid = s.sat.prn(),
-        .signal = @intFromEnum(s.signal),
-        .channel = @intFromEnum(s.state),
+        .signal = @backingInt(s.signal),
+        .channel = @backingInt(s.state),
         .commanded = @intFromBool(s.commanded),
         .cn0_dbhz = s.cn0_dbhz,
     };

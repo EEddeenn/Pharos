@@ -32,7 +32,7 @@ fn validateNavFiles(s: *const Request, diags: *Diagnostics) Error!void {
         const i = index.get(f.kind);
         index.set(f.kind, i + 1);
         if (f.path.len == 0) {
-            const path = try std.fmt.allocPrint(diags.arena, "{s}[{d}].name", .{ model.NavKind.words.get(f.kind), i });
+            const path = try diags.arena.print("{s}[{d}].name", .{ model.NavKind.words.get(f.kind), i });
             try diags.err(.missing_field, path, "must be non-empty", .{});
         }
     }
@@ -44,10 +44,10 @@ fn validateNavFiles(s: *const Request, diags: *Diagnostics) Error!void {
 fn validatePrecise(s: *const Request, diags: *Diagnostics) Error!void {
     const p = s.precise orelse return;
     for (p.orbit, 0..) |path, i| if (path.len == 0) {
-        try diags.err(.missing_field, try std.fmt.allocPrint(diags.arena, "precise.orbit[{d}]", .{i}), "must be non-empty", .{});
+        try diags.err(.missing_field, try diags.arena.print("precise.orbit[{d}]", .{i}), "must be non-empty", .{});
     };
     for (p.clock, 0..) |path, i| if (path.len == 0) {
-        try diags.err(.missing_field, try std.fmt.allocPrint(diags.arena, "precise.clock[{d}]", .{i}), "must be non-empty", .{});
+        try diags.err(.missing_field, try diags.arena.print("precise.clock[{d}]", .{i}), "must be non-empty", .{});
     };
 }
 
@@ -243,7 +243,7 @@ fn d2Effect(s: *const Request, diags: *Diagnostics) Error!void {
             if (id > integrity.basic_ids) high = true else low += 1;
         };
         if (high or low > integrity.basic_packets) {
-            const path = try std.fmt.allocPrint(diags.arena, "messages.bds.d2[{d}].integrity.satellites", .{i});
+            const path = try diags.arena.print("messages.bds.d2[{d}].integrity.satellites", .{i});
             try diags.warn(.no_effect, path, "B2I describes satellites 1-30 only, at most 18 (BDS-SIS-ICD 2.1 5.3.3.5); the others are described on B1I and B3I only", .{});
         }
     };

@@ -243,7 +243,7 @@ fn writeTag(gpa: std.mem.Allocator, io: Io, samples: Samples, first: GpsTime, ou
         console.warn("The .tag format has no {s} format: no tag file written", .{samples.format.name()});
         return true;
     };
-    const path = std.fmt.allocPrint(gpa, "{s}.tag", .{output_path}) catch {
+    const path = gpa.print("{s}.tag", .{output_path}) catch {
         _ = cli.outOfMemory(console);
         return false;
     };

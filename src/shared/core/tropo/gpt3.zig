@@ -98,8 +98,8 @@ fn wrap(ilon: i64) i64 {
 
 fn mix(a: Meteorology, b: Meteorology, wa: f64, wb: f64) Meteorology {
     var out: Meteorology = undefined;
-    inline for (std.meta.fields(Meteorology)) |f| {
-        @field(out, f.name) = wa * @field(a, f.name) + wb * @field(b, f.name);
+    inline for (@typeInfo(Meteorology).@"struct".field_names) |name| {
+        @field(out, name) = wa * @field(a, name) + wb * @field(b, name);
     }
     return out;
 }
@@ -137,7 +137,7 @@ fn series(comptime field: Field, point: *const [values * 4]u8, terms: Terms) f64
     const column = comptime table.get(field);
     const first = comptime blk: {
         var n = 0;
-        for (table.values[0..@intFromEnum(field)]) |c| n += c.terms;
+        for (table.values[0..@backingInt(field)]) |c| n += c.terms;
         break :blk n * 4;
     };
     var sum = decode(point[first..][0..4], column);

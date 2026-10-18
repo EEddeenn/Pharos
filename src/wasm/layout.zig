@@ -23,16 +23,17 @@ fn recordLayout(comptime record: abi.Named) []const u8 {
         "\"{s}\":{{\"size\":{d},\"align\":{d},\"fields\":{{",
         .{ record.name, @sizeOf(record.type), @alignOf(record.type) },
     );
-    for (@typeInfo(record.type).@"struct".fields, 0..) |field, i| {
+    const info = @typeInfo(record.type).@"struct";
+    for (info.field_names, info.field_types, 0..) |name, Field, i| {
         if (i > 0) out = out ++ ",";
         out = out ++ std.fmt.comptimePrint(
             "\"{s}\":{{\"offset\":{d},\"size\":{d}",
-            .{ field.name, @offsetOf(record.type, field.name), @sizeOf(field.type) },
+            .{ name, @offsetOf(record.type, name), @sizeOf(Field) },
         );
-        if (@typeInfo(field.type) == .array) {
+        if (@typeInfo(Field) == .array) {
             out = out ++ std.fmt.comptimePrint(
                 ",\"elementSize\":{d}",
-                .{@sizeOf(@typeInfo(field.type).array.child)},
+                .{@sizeOf(@typeInfo(Field).array.child)},
             );
         }
         out = out ++ "}";
@@ -42,8 +43,9 @@ fn recordLayout(comptime record: abi.Named) []const u8 {
 
 fn enumeration(comptime name: []const u8, comptime T: type) []const u8 {
     comptime var out: []const u8 = "\"" ++ name ++ "\":{";
-    for (@typeInfo(T).@"enum".fields, 0..) |field, i| {
-        out = out ++ (if (i > 0) "," else "") ++ "\"" ++ field.name ++ "\":" ++ std.fmt.comptimePrint("{d}", .{field.value});
+    const info = @typeInfo(T).@"enum";
+    for (info.field_names, info.field_values, 0..) |tag, value, i| {
+        out = out ++ (if (i > 0) "," else "") ++ "\"" ++ tag ++ "\":" ++ std.fmt.comptimePrint("{d}", .{value});
     }
     return out ++ "}";
 }

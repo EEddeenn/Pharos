@@ -1,8 +1,6 @@
 const std = @import("std");
 const IqFormat = @import("shared").core.types.IqFormat;
 
-const native_endian = @import("builtin").cpu.arch.endian();
-
 const V4 = @Vector(4, f32);
 const V4u = @Vector(4, u32);
 const V4i = @Vector(4, i32);
@@ -107,8 +105,7 @@ fn vectorLinear(comptime T: type, re: []const f32, im: []const f32, gain: f32, o
         const ia: @Vector(4, T) = @truncate(qa);
         const ib: @Vector(4, T) = @truncate(qb);
         const packed_v: @Vector(8, T) = std.simd.interlace(.{ ia, ib });
-        const little: @Vector(8, T) = if (native_endian == .little) packed_v else @byteSwap(packed_v);
-        out[i * 2 * @sizeOf(T) ..][0..n].* = @bitCast(little);
+        out[i * 2 * @sizeOf(T) ..][0..n].* = @bitCast(packed_v);
     }
     return @reduce(.Add, clip);
 }

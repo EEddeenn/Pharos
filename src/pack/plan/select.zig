@@ -19,19 +19,19 @@ fn healthy(e: *const records.KeplerEphemeris) bool {
 }
 
 pub fn recordBefore(a: *const records.KeplerEphemeris, b: *const records.KeplerEphemeris) bool {
-    if (a.source() != b.source()) return @intFromEnum(a.source()) < @intFromEnum(b.source());
+    if (a.source() != b.source()) return @backingInt(a.source()) < @backingInt(b.source());
     if (!a.toe.eql(b.toe)) return b.toe.lessThan(a.toe);
     if (!a.toc.eql(b.toc)) return b.toc.lessThan(a.toc);
     if (a.iode != b.iode) return a.iode < b.iode;
     if (a.iodc != b.iodc) return a.iodc < b.iodc;
-    inline for (std.meta.fields(records.KeplerEphemeris)) |f| {
-        if (comptime std.mem.eql(u8, f.name, "group_delay")) {
+    inline for (@typeInfo(records.KeplerEphemeris).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "group_delay")) {
             for (std.enums.values(records.GroupDelayTerm)) |term| {
                 const order = valueOrder(a.group_delay.get(term), b.group_delay.get(term));
                 if (order != .eq) return order == .lt;
             }
         } else {
-            const order = valueOrder(@field(a, f.name), @field(b, f.name));
+            const order = valueOrder(@field(a, name), @field(b, name));
             if (order != .eq) return order == .lt;
         }
     }
@@ -44,26 +44,26 @@ fn valueOrder(a: anytype, b: @TypeOf(a)) std.math.Order {
         .bool => return std.math.order(@intFromBool(a), @intFromBool(b)),
         .int => return std.math.order(a, b),
         .float => {
-            const Bits = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const Bits = @Int(.unsigned, @bitSizeOf(T));
             const left: Bits = @bitCast(a);
             const right: Bits = @bitCast(b);
             return std.math.order(left, right);
         },
-        .@"enum" => return std.math.order(@intFromEnum(a), @intFromEnum(b)),
+        .@"enum" => return std.math.order(@backingInt(a), @backingInt(b)),
         .optional => {
             const left = a orelse return if (b == null) .eq else .lt;
             return valueOrder(left, b orelse return .gt);
         },
-        .@"struct" => inline for (std.meta.fields(T)) |f| {
-            const order = valueOrder(@field(a, f.name), @field(b, f.name));
+        .@"struct" => |s| inline for (s.field_names) |name| {
+            const order = valueOrder(@field(a, name), @field(b, name));
             if (order != .eq) return order;
         },
-        .@"union" => {
+        .@"union" => |u| {
             const tag = std.meta.activeTag(a);
             const other = std.meta.activeTag(b);
             if (tag != other) return valueOrder(tag, other);
-            inline for (std.meta.fields(T)) |f| {
-                if (@field(std.meta.Tag(T), f.name) == tag) return valueOrder(@field(a, f.name), @field(b, f.name));
+            inline for (u.field_names) |name| {
+                if (@field(std.meta.Tag(T), name) == tag) return valueOrder(@field(a, name), @field(b, name));
             }
             unreachable;
         },

@@ -37,7 +37,7 @@ pub const ExactInt = struct {
 
     pub fn jsonStringify(self: ExactInt, writer: anytype) !void {
         var buffer: [21]u8 = undefined;
-        try writer.write(std.fmt.bufPrint(&buffer, "{d}", .{self.value}) catch unreachable);
+        try writer.write(std.mem.print(&buffer, "{d}", .{self.value}) catch unreachable);
     }
 };
 

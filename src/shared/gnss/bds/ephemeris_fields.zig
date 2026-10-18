@@ -86,7 +86,7 @@ fn toc(s: *const Source) i64 {
     return s.eph.toc.inScale(.bds).ms / records.epoch_step_ms;
 }
 fn satType(s: *const Source) i64 {
-    return @intFromEnum(s.sat_type);
+    return @backingInt(s.sat_type);
 }
 fn deltaA(s: *const Source) f64 {
     return s.eph.sqrt_a * s.eph.sqrt_a - constants.aRef(s.sat_type);

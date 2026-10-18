@@ -182,7 +182,7 @@ pub const KeplerEphemeris = struct {
 
     pub fn parameters(self: *const KeplerEphemeris) kepler_parameters.Parameters {
         var out: kepler_parameters.Parameters = undefined;
-        inline for (std.meta.fields(kepler_parameters.Parameters)) |f| @field(out, f.name) = @field(self, f.name);
+        inline for (@typeInfo(kepler_parameters.Parameters).@"struct".field_names) |name| @field(out, name) = @field(self, name);
         return out;
     }
 };

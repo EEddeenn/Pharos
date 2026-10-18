@@ -17,7 +17,7 @@ pub fn text(buffer: *[max_len]u8, samples: Samples, first: GpsTime) ?[]const u8 
     const name = formatName(samples.format) orelse return null;
     const c = first.toCalendar();
     const ms: u32 = @intFromFloat(@floor(c.second * 1000.0));
-    return std.fmt.bufPrint(buffer,
+    return std.mem.print(buffer,
         \\PROG = pharos-run
         \\TIME = {d:0>4}/{d:0>2}/{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}
         \\FMT  = {s}

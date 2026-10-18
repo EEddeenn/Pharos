@@ -208,7 +208,7 @@ fn leapSeconds(w: *Io.Writer, leap: core.civil.Leap, first: time.GpsTime, last: 
 }
 
 fn counted(buf: []u8, count: i8) []const u8 {
-    return std.fmt.bufPrint(buf, "{d}", .{count}) catch unreachable;
+    return std.mem.print(buf, "{d}", .{count}) catch unreachable;
 }
 
 fn epochRecord(w: *Io.Writer, t: time.GpsTime, label: []const u8) Io.Writer.Error!void {
@@ -254,7 +254,7 @@ fn obsTypes(w: *Io.Writer, system: types.System, layout: *const Layout) Io.Write
         var line: [60]u8 = @splat(' ');
         if (i == 0) {
             line[0] = system.rinexLetter();
-            _ = std.fmt.bufPrint(line[1..6], "{d:>5}", .{n}) catch unreachable;
+            _ = std.mem.print(line[1..6], "{d:>5}", .{n}) catch unreachable;
         }
         for (codes[i..@min(n, i + 13)], 0..) |code, k| @memcpy(line[7 + 4 * k ..][0..3], &code);
         try record(w, "{s}", .{&line}, "SYS / # / OBS TYPES");
@@ -283,13 +283,13 @@ fn slotFreq(w: *Io.Writer, freq: [24]?types.FreqId) Io.Writer.Error!void {
     var i: usize = 0;
     while (true) : (i += 8) {
         var line: [60]u8 = @splat(' ');
-        if (i == 0) _ = std.fmt.bufPrint(line[0..3], "{d:>3}", .{n}) catch unreachable;
+        if (i == 0) _ = std.mem.print(line[0..3], "{d:>3}", .{n}) catch unreachable;
         for (slots[i..@min(n, i + 8)], 0..) |slot, k| {
             const f = slot.freq.int();
             if (f < 0) {
-                _ = std.fmt.bufPrint(line[3 + 7 * k ..][0..7], " R{d:0>2} -{d}", .{ slot.number, @as(u8, @intCast(-f)) }) catch unreachable;
+                _ = std.mem.print(line[3 + 7 * k ..][0..7], " R{d:0>2} -{d}", .{ slot.number, @as(u8, @intCast(-f)) }) catch unreachable;
             } else {
-                _ = std.fmt.bufPrint(line[3 + 7 * k ..][0..7], " R{d:0>2} {d:>2}", .{ slot.number, @as(u8, @intCast(f)) }) catch unreachable;
+                _ = std.mem.print(line[3 + 7 * k ..][0..7], " R{d:0>2} {d:>2}", .{ slot.number, @as(u8, @intCast(f)) }) catch unreachable;
             }
         }
         try record(w, "{s}", .{&line}, "GLONASS SLOT / FRQ #");

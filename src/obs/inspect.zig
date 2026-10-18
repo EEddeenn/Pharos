@@ -19,7 +19,7 @@ pub const Query = struct {
     epoch: core.time.Epoch,
     sat: types.SatId,
     signal: types.Signal,
-    groups: Groups = .initFull(),
+    groups: Groups = .full,
 
     pub fn includes(self: Query, group: Group) bool {
         return self.groups.contains(group);

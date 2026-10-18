@@ -175,11 +175,11 @@ pub fn parseTree(ctx: *const Ctx, text: []const u8) Error!?json.Value {
 
 pub fn join(ctx: *const Ctx, path: []const u8, key: []const u8) Error![]const u8 {
     if (path.len == 0) return key;
-    return std.fmt.allocPrint(ctx.arena, "{s}.{s}", .{ path, key });
+    return ctx.arena.print("{s}.{s}", .{ path, key });
 }
 
 pub fn element(ctx: *const Ctx, path: []const u8, i: usize) Error![]const u8 {
-    return std.fmt.allocPrint(ctx.arena, "{s}[{d}]", .{ path, i });
+    return ctx.arena.print("{s}[{d}]", .{ path, i });
 }
 
 pub fn root(ctx: *const Ctx, value: json.Value) Node {

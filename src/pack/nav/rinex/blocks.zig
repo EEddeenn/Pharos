@@ -77,7 +77,7 @@ const Matched = struct { epoch: rinex_fields.Epoch, prn: u32 };
 fn recordEpoch(pools: *rinex_records.Pools, system: types.System, b: Block, lines: *rinex_fields.Lines) Error!?Matched {
     const line = std.mem.trimEnd(u8, nextInBlock(lines) orelse "", "\r");
     const epoch = rinex_fields.epochLine(line) catch {
-        const label = if (line.len > 0) line[0..@min(line.len, 23)] else try std.fmt.allocPrint(pools.arena, "{c}{d:0>2}", .{ system.rinexLetter(), b.prn orelse 0 });
+        const label = if (line.len > 0) line[0..@min(line.len, 23)] else try pools.arena.print("{c}{d:0>2}", .{ system.rinexLetter(), b.prn orelse 0 });
         try pools.rejected.append(pools.arena, .{ .system = system, .named = .{ .label = label }, .message = b.msg, .reason = .malformed });
         return null;
     };

@@ -87,7 +87,7 @@ fn angleOnGrid(angle: f64) f64 {
 fn parametersOf(word: *const Word) Parameters {
     const raw = field.decode(Parameters, &rows, &word.words);
     var p: Parameters = undefined;
-    inline for (std.meta.fields(Parameters)) |f| @field(p, f.name) = field.value(Parameters, &rows, f.name, raw);
+    inline for (@typeInfo(Parameters).@"struct".field_names) |name| @field(p, name) = field.value(Parameters, &rows, name, raw);
     return p;
 }
 

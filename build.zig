@@ -11,13 +11,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const host_modules = modules(b, b.graph.host, .Debug, .private);
+    const host_modules = modules(b, b.graph.host, .debug, .private);
     const headers = b.addExecutable(.{
         .name = "headers",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/headers.zig"),
             .target = b.graph.host,
-            .optimize = .Debug,
+            .optimize = .debug,
             .strip = true,
             .imports = &.{.{ .name = "shared", .module = host_modules.shared }},
         }),
@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     const emit_headers = b.addRunArtifact(headers);
     for (products) |dir| {
         const name = b.fmt("pharos_{s}.h", .{dir});
-        const path = emit_headers.addOutputFileArg(name);
+        const path = emit_headers.addOutputFileArg2(name, .{});
         b.addNamedLazyPath(name, path);
         b.getInstallStep().dependOn(&b.addInstallHeaderFile(path, name).step);
     }
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
         });
         b.installArtifact(exe);
         const run = b.addRunArtifact(exe);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         b.step(dir, b.fmt("Run {s} (pass args after --)", .{exe_name})).dependOn(&run.step);
         const object = b.addObject(.{
             .name = lib_name,
@@ -61,8 +61,8 @@ pub fn build(b: *std.Build) void {
         });
         const archive_name = b.fmt("{s}{s}{s}", .{ target.result.libPrefix(), lib_name, target.result.staticLibSuffix() });
         const ar = b.addSystemCommand(&.{ b.graph.zig_exe, "ar", "rcs" });
-        const archive = ar.addOutputFileArg(archive_name);
-        ar.addArtifactArg(object);
+        const archive = ar.addOutputFileArg2(archive_name, .{});
+        ar.addArtifactArg2(object, .{});
         b.addNamedLazyPath(lib_name, archive);
         b.getInstallStep().dependOn(&b.addInstallLibFile(archive, archive_name).step);
     }
@@ -104,7 +104,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/schema.zig"),
             .target = b.graph.host,
-            .optimize = .Debug,
+            .optimize = .debug,
             .strip = true,
             .imports = &.{.{ .name = "shared", .module = host_modules.shared }},
         }),
@@ -112,12 +112,12 @@ pub fn build(b: *std.Build) void {
     for (products, host_modules.products) |dir, module| schemas.root_module.addImport(b.fmt("pharos_{s}", .{dir}), module);
     const emit = b.addRunArtifact(schemas);
     for ([_][]const u8{ "trajectory.schema.json", "scenario.schema.json" }) |name| {
-        const schema = emit.addOutputFileArg(name);
+        const schema = emit.addOutputFileArg2(name, .{});
         b.addNamedLazyPath(name, schema);
         wasm_step.dependOn(&b.addInstallLibFile(schema, name).step);
     }
 
-    const fmt_paths: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src" };
+    const fmt_paths = b.pathList(&.{ "build.zig", "build.zig.zon", "src" });
     const fmt_check = b.addFmt(.{ .paths = fmt_paths, .check = true });
     const fmt_check_step = b.step("fmt-check", "Fail if any source is not zig fmt clean");
     fmt_check_step.dependOn(&fmt_check.step);
@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) void {
     fmt_step.dependOn(&fmt.step);
 }
 
-fn modules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, visibility: enum { public, private }) Modules {
+fn modules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, visibility: enum { public, private }) Modules {
     const shared = b.createModule(.{
         .root_source_file = b.path("src/shared/root.zig"),
         .target = target,

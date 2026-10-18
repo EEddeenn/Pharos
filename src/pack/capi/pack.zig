@@ -159,7 +159,7 @@ pub fn pharos_pack_describe_nav(file: ?*const File, out: ?*?*NavDescription) cal
         return nomem(&common.thread_error);
     };
     for (covered, entries) |c, *o| o.* = .{
-        .system = @intFromEnum(c.system),
+        .system = @backingInt(c.system),
         .leap_seconds = c.leap_seconds,
         .satellites = c.satellites.bits,
         .from_gps_ms = c.from.ms,
@@ -231,13 +231,13 @@ fn summaryOf(b: *const bundle.Bundle, span: bundle.Span) Info {
         .leap_seconds = span.leap_seconds,
         .leap_seconds_after = span.leap_seconds_after,
         .has_samples = @intFromBool(scenario.samples != null),
-        .sample_format = if (scenario.samples) |s| @intFromEnum(s.format) else 0,
+        .sample_format = if (scenario.samples) |s| @backingInt(s.format) else 0,
         .sample_rate_hz = if (scenario.samples) |s| s.sample_rate.hz() else 0,
         .center_hz = if (scenario.samples) |s| s.center.hz else 0,
         .elevation_mask_deg = @import("shared").core.constants.rad2deg(scenario.elevation_mask_rad),
         .observation_interval_ms = if (scenario.observation) |o| o.interval_ms else 0,
         .position_interval_ms = if (scenario.position) |p| p.interval_ms else 0,
-        .position_format = if (scenario.position) |p| @intFromEnum(p.format) else 0,
+        .position_format = if (scenario.position) |p| @backingInt(p.format) else 0,
     };
 }
 

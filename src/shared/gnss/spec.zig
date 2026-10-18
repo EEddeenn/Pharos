@@ -21,13 +21,13 @@ const table: [signal_count]Spec = blk: {
     var t: [signal_count]Spec = undefined;
     var seen: [signal_count]bool = @splat(false);
     for (gps.rows ++ bds.rows ++ galileo.rows ++ glonass.rows) |row| {
-        const i = @intFromEnum(row.signal);
+        const i = @backingInt(row.signal);
         if (seen[i]) @compileError("duplicate spec row for " ++ row.signal.name());
         seen[i] = true;
         t[i] = row;
     }
     for (seen, 0..) |s, i| {
-        if (!s) @compileError("missing spec row for " ++ @as(Signal, @enumFromInt(i)).name());
+        if (!s) @compileError("missing spec row for " ++ @as(Signal, @fromBackingInt(@intCast(i))).name());
     }
     break :blk t;
 };
@@ -37,7 +37,7 @@ comptime {
 }
 
 pub fn get(signal: Signal) *const Spec {
-    return &table[@intFromEnum(signal)];
+    return &table[@backingInt(signal)];
 }
 
 const unity_tolerance = 1e-12;
@@ -53,7 +53,7 @@ const realized_db: [signal_count]f64 = blk: {
 };
 
 pub fn realizedDb(signal: Signal) f64 {
-    return realized_db[@intFromEnum(signal)];
+    return realized_db[@backingInt(signal)];
 }
 
 pub fn frameFor(signal: Signal, sat: SatId) Frame {
@@ -70,7 +70,7 @@ pub const max_per_system: usize = blk: {
 };
 
 pub fn slot(signal: Signal) usize {
-    return slots[@intFromEnum(signal)];
+    return slots[@backingInt(signal)];
 }
 
 const slots: [signal_count]u8 = blk: {

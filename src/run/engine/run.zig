@@ -285,32 +285,35 @@ pub const Run = struct {
     }
 
     fn restart(self: *Run) StepError!void {
-        errdefer |e| self.failed = e;
         self.geometry.reset();
-        try self.channels.reset();
+        self.channels.reset() catch |e| return self.fail(e);
         self.power.reset();
         self.next_power = 0;
         self.events.truncate(0);
         self.epoch = .zero;
         self.blocks_produced = 0;
         self.failed = null;
-        try self.begin();
+        self.begin() catch |e| return self.fail(e);
     }
 
     fn step(self: *Run, limit_epochs: u64, out: ?[]u8, applied_count: *usize) StepError!u32 {
-        errdefer |e| self.failed = e;
         const first = self.epoch;
-        applied_count.* += try self.applyDue(first, applied_count.*);
+        applied_count.* += self.applyDue(first, applied_count.*) catch |e| return self.fail(e);
         const count = self.windowAt(first, limit_epochs);
         self.window = .{
             .first = first,
             .gain = self.gain.linear(),
             .out = if (out) |o| o[0 .. count * self.info.bytes_per_epoch] else &.{},
         };
-        try self.channels.prepare(first, count, self.geometry, &self.power, &self.events);
+        self.channels.prepare(first, count, self.geometry, &self.power, &self.events) catch |e| return self.fail(e);
         self.runWindow(if (out == null) 0 else count);
         self.epoch = first.plus(count);
         return count;
+    }
+
+    fn fail(self: *Run, e: StepError) StepError {
+        self.failed = e;
+        return e;
     }
 
     fn windowAt(self: *const Run, first: Epoch, max: u64) u32 {

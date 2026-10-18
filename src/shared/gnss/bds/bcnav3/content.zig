@@ -27,7 +27,7 @@ const S = field.Field(Sv);
 
 fn header(comptime kind: Type) [2]N {
     return .{
-        .{ .name = "kind", .width = 6, .src = .{ .constant = @intFromEnum(kind) } },
+        .{ .name = "kind", .width = 6, .src = .{ .constant = @backingInt(kind) } },
         .{ .name = "sow", .width = 20, .src = .{ .ctx = "sow" } },
     };
 }

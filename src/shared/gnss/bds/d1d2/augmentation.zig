@@ -57,8 +57,8 @@ const delta_t_code_max = 4095;
 
 pub fn block(p: ?*const Prepared, corrections: []const ?f64) integrity.Block {
     const prepared = p orelse return integrity.Block.none;
-    const msb: u2 = if (prepared.integrity) |list| @intFromEnum(list.check) else 1;
-    const lsb: u2 = if (prepared.grid) |g| @intFromEnum(g.check) else 1;
+    const msb: u2 = if (prepared.integrity) |list| @backingInt(list.check) else 1;
+    const lsb: u2 = if (prepared.grid) |g| @backingInt(g.check) else 1;
     var out: integrity.Block = .{ .sat_h2 = (msb << 1) | lsb };
     const list = prepared.integrity orelse return out;
     for (list.svid[0..list.count], list.indices[0..list.count], 0..) |id, indices, k| {

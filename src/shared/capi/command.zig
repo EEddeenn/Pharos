@@ -48,18 +48,18 @@ fn fromC(c: Command) ?command.Command {
 }
 
 pub fn toC(c: command.Command) Command {
-    var out: Command = .{ .kind = @intFromEnum(c.action), .apply_at_epoch = c.apply_at_epoch };
+    var out: Command = .{ .kind = @backingInt(c.action), .apply_at_epoch = c.apply_at_epoch };
     switch (c.action) {
         .noise_floor_dbm_hz => |v| out.value = v,
         .elevation_mask => |v| out.value = core.constants.rad2deg(v),
         .signal_power => |p| {
-            out.system = @intFromEnum(p.target.system());
+            out.system = @backingInt(p.target.system());
             out.svid = switch (p.target) {
                 .whole => 0,
                 .sat => |s| s.prn(),
             };
             if (p.level) |l| {
-                out.unit = @intFromEnum(l.unit);
+                out.unit = @backingInt(l.unit);
                 out.value = l.value;
             } else out.use_default = 1;
         },

@@ -148,12 +148,12 @@ pub const Replay = struct {
 
     fn rewindTo(self: *Replay, to: Epoch) void {
         const gpa = self.gpa;
-        while (self.snapshots.getLastOrNull()) |last| {
+        while (self.snapshots.last()) |last| {
             if (last.epoch.ms < to.ms) break;
             last.deinit(gpa);
             self.snapshots.items.len -= 1;
         }
-        const from = self.snapshots.getLastOrNull() orelse self.base.?;
+        const from = self.snapshots.last() orelse self.base.?;
         self.seq.restore(from.states, from.held.items);
         var k = from.logged;
         while (k < self.changes.items.len and self.changes.items[k].epoch.ms < to.ms) : (k += 1) self.seq.redo(self.changes.items[k].change);

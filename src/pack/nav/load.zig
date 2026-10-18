@@ -49,7 +49,7 @@ pub fn load(arena: std.mem.Allocator, source: files.Source, nav_files: []const b
     for (nav_files, texts) |file, text| {
         const i = ordinal.get(file.kind);
         ordinal.set(file.kind, i + 1);
-        const path = try std.fmt.allocPrint(arena, "{s}[{d}].name", .{ bundle.scenario.NavKind.words.get(file.kind), i });
+        const path = try arena.print("{s}[{d}].name", .{ bundle.scenario.NavKind.words.get(file.kind), i });
         const scope: diagnostics.Scope = .{ .diags = diags, .source = file.path, .path = path };
         const is_almanac = almanac.detect(text) != null;
         switch (file.kind) {
@@ -73,8 +73,8 @@ pub fn load(arena: std.mem.Allocator, source: files.Source, nav_files: []const b
         if (pools.kepler.items.len + pools.glonass.items.len == records_before) {
             try scope.warn(.no_record, null, "the file gives no ephemeris record of GPS, Galileo, BDS or GLONASS", .{});
         }
-        inline for (std.meta.fields(core.iono.Broadcast)) |g| {
-            if (@field(header.iono, g.name) == null) @field(header.iono, g.name) = try fitting(scope, g.name, @field(file_header.iono, g.name));
+        inline for (@typeInfo(core.iono.Broadcast).@"struct".field_names) |name| {
+            if (@field(header.iono, name) == null) @field(header.iono, name) = try fitting(scope, name, @field(file_header.iono, name));
         }
         if (file_header.leap) |l| {
             if (header.leap) |earlier| {
@@ -105,7 +105,7 @@ fn declared(arena: std.mem.Allocator, nav_files: []const bundle.scenario.NavFile
         defer ordinal += 1;
         if (almanac.detect(text) != null) continue;
         const d = rinex.declaration(text) orelse continue;
-        return .{ .declaration = d, .path = try std.fmt.allocPrint(arena, "ephemeris[{d}].name", .{ordinal}), .name = file.path };
+        return .{ .declaration = d, .path = try arena.print("ephemeris[{d}].name", .{ordinal}), .name = file.path };
     }
     return null;
 }
@@ -136,7 +136,7 @@ fn plausibleAlmanacs(arena: std.mem.Allocator, scope: diagnostics.Scope, list: [
             .system = sat.system,
             .named = switch (a) {
                 .kepler => |k| .{ .record = .{ .prn = sat.prn(), .epoch = k.toa.toCalendar() } },
-                .glonass => |g| .{ .label = try std.fmt.allocPrint(arena, "{f} N4 {d} NA {d}", .{ sat, g.n4, g.na }) },
+                .glonass => |g| .{ .label = try arena.print("{f} N4 {d} NA {d}", .{ sat, g.n4, g.na }) },
             },
             .message = "almanac",
             .field = name,
@@ -159,14 +159,14 @@ fn fitting(scope: diagnostics.Scope, comptime name: []const u8, set: anytype) st
 
 fn transmitted(ions: []const rinex.Ion, start: GpsTime, fallback: core.iono.Broadcast) core.iono.Broadcast {
     var out = fallback;
-    inline for (std.meta.fields(core.iono.Broadcast)) |f| {
+    inline for (@typeInfo(core.iono.Broadcast).@"struct".field_names) |name| {
         var best: ?rinex.Ion = null;
         for (ions) |ion| {
-            if (@field(ion.set, f.name) == null or start.lessThan(ion.transmitted)) continue;
+            if (@field(ion.set, name) == null or start.lessThan(ion.transmitted)) continue;
             if (best) |b| if (!b.transmitted.lessThan(ion.transmitted)) continue;
             best = ion;
         }
-        if (best) |b| @field(out, f.name) = @field(b.set, f.name);
+        if (best) |b| @field(out, name) = @field(b.set, name);
     }
     return out;
 }
@@ -229,7 +229,7 @@ pub fn precise(arena: std.mem.Allocator, source: files.Source, p: bundle.scenari
     var interval: ?f64 = null;
     var first_epoch: ?GpsTime = null;
     for (p.orbit, 0..) |path, index| {
-        const scope: diagnostics.Scope = .{ .diags = diags, .source = path, .path = try std.fmt.allocPrint(arena, "precise.orbit[{d}]", .{index}) };
+        const scope: diagnostics.Scope = .{ .diags = diags, .source = path, .path = try arena.print("precise.orbit[{d}]", .{index}) };
         const file = try sp3.parse(arena, try files.readResolved(arena, source, path, files.max_bytes, scope), leap, scope);
         if (interval) |i| {
             if (i != file.interval_s) return scope.fail(.invalid_format, null, "the SP3 interval {d} s does not match the earlier files' {d} s", .{ file.interval_s, i });
@@ -243,7 +243,7 @@ pub fn precise(arena: std.mem.Allocator, source: files.Source, p: bundle.scenari
     }
     var clocks: std.ArrayList(bundle.precise.ClockRecord) = .empty;
     for (p.clock, 0..) |path, index| {
-        const scope: diagnostics.Scope = .{ .diags = diags, .source = path, .path = try std.fmt.allocPrint(arena, "precise.clock[{d}]", .{index}) };
+        const scope: diagnostics.Scope = .{ .diags = diags, .source = path, .path = try arena.print("precise.clock[{d}]", .{index}) };
         try clocks.appendSlice(arena, try clk.parse(arena, try files.readResolved(arena, source, path, files.max_bytes, scope), leap, scope));
     }
     const scope: diagnostics.Scope = .{ .diags = diags, .source = diags.source, .path = "precise" };

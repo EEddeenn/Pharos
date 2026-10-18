@@ -232,7 +232,7 @@ pub fn encode(content: Content) Error!Message {
 }
 
 fn writeContent(w: *BitWriter, content: Content) void {
-    w.writeBits(@bitSizeOf(Type), @intFromEnum(content));
+    w.writeBits(@bitSizeOf(Type), @backingInt(content));
     switch (content) {
         .mask => |m| {
             writeCommon(w, m.common);

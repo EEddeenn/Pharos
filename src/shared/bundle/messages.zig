@@ -7,8 +7,8 @@ pub const Messages = struct {
     d2: []const gnss.bds.d1d2.augmentation.Publication = &.{},
 
     pub fn ordered(self: *const Messages) bool {
-        inline for (std.meta.fields(Messages)) |f| {
-            if (!gnss.publication.ordered(@field(self, f.name))) return false;
+        inline for (@typeInfo(Messages).@"struct".field_names) |name| {
+            if (!gnss.publication.ordered(@field(self, name))) return false;
         }
         return true;
     }

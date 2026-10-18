@@ -186,7 +186,7 @@ pub fn optionLines(comptime tool: Tool, comptime Name: type, comptime options: O
         var width: usize = 0;
         for (rows) |row| width = @max(width, row.label.len);
         var text: []const u8 = "";
-        for (rows) |row| text = text ++ "  " ++ row.label ++ " " ** (width + 3 - row.label.len) ++ row.help ++ "\n";
+        for (rows) |row| text = text ++ "  " ++ row.label ++ @as([width + 3 - row.label.len]u8, @splat(' ')) ++ row.help ++ "\n";
         return text;
     }
 }
@@ -208,7 +208,7 @@ fn labelled(comptime Name: type, comptime options: Options(Name)) []const Row {
 
 fn long(comptime name: anytype) []const u8 {
     comptime {
-        var text = @tagName(name)[0..].*;
+        var text = @tagName(name).*;
         std.mem.replaceScalar(u8, &text, '_', '-');
         const spelled = text;
         return "--" ++ &spelled;
@@ -351,7 +351,7 @@ pub const FileWriter = struct {
 
 pub fn withExtension(arena: std.mem.Allocator, path: []const u8, extension: []const u8) error{OutOfMemory}![]const u8 {
     const ext = std.Io.Dir.path.extension(path);
-    return std.fmt.allocPrint(arena, "{s}.{s}", .{ path[0 .. path.len - ext.len], extension });
+    return arena.print("{s}.{s}", .{ path[0 .. path.len - ext.len], extension });
 }
 
 pub fn printDiagnostics(console: Console, diags: *const Diagnostics) void {

@@ -173,12 +173,12 @@ comptime {
 pub fn Sets(comptime Wrap: fn (comptime type) type) type {
     const families = std.enums.values(NavFamily);
     var types: [families.len]type = undefined;
-    var attrs: [families.len]std.builtin.Type.StructField.Attributes = undefined;
+    var attrs: [families.len]std.lang.Type.Struct.FieldAttributes = undefined;
     for (families, 0..) |family, i| {
         types[i] = Wrap(Set(family));
         attrs[i] = .{ .default_value_ptr = if (@typeInfo(types[i]) == .optional) nullDefault(types[i]) else null };
     }
-    return @Struct(.auto, null, std.meta.fieldNames(NavFamily), &types, &attrs);
+    return @Struct(.auto, null, @typeInfo(NavFamily).@"enum".field_names, &types, &attrs);
 }
 
 fn nullDefault(comptime T: type) *const anyopaque {

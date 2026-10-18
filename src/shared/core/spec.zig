@@ -201,7 +201,7 @@ pub fn check(comptime table: []const Spec) void {
     if (table.len != std.meta.tags(Signal).len) @compileError("spec table must list every Signal");
     for (table, 0..) |s, i| {
         const label = "spec[" ++ s.signal.name() ++ "]";
-        if (@intFromEnum(s.signal) != i) @compileError(label ++ ": table row out of enum order");
+        if (@backingInt(s.signal) != i) @compileError(label ++ ": table row out of enum order");
         if (s.carrier.hz(if (s.carrier == .fdma) FreqId{ .k = 0 } else null) == 0) @compileError(label ++ ": missing carrier frequency");
 
         const code = s.code;
@@ -235,7 +235,7 @@ pub fn check(comptime table: []const Spec) void {
         } else if (s.data_gain.power() == 0) @compileError(label ++ ": data channel must have a non-zero gain");
 
         if (s.carrier_reference) |ref| {
-            const r = table[@intFromEnum(ref)];
+            const r = table[@backingInt(ref)];
             if (ref.system() != s.signal.system() or !std.meta.eql(r.carrier, s.carrier) or r.carrier_reference != null) @compileError(label ++ ": the carrier reference is not a reference row of the system on the same carrier");
         }
 

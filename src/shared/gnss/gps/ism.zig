@@ -91,10 +91,10 @@ pub fn check(src: *const Ism) error{ValueOutOfRange}!void {
 
 pub fn encode(src: *const Ism, w: *bitwriter.BitWriter, filler: usize) field.Error!void {
     try field.encode(Ism, &rows, src, .{
-        .gnss_id = @intFromEnum(src.constellation),
+        .gnss_id = @backingInt(src.constellation),
         .wn = @mod(src.reference.week(), time.week_modulus_13),
         .tow = @divExact(src.reference.msOfWeek(), tow_step_ms),
-        .service = @intFromEnum(src.service),
+        .service = @backingInt(src.service),
     }, w);
     w.writeAlternating(filler);
 }

@@ -44,7 +44,7 @@ pub fn cnavPage(header: Header, body: *const Page) cnav.Frame {
     var content: cnav.Content = .{};
     var w = content.writer();
     w.writeBits(cnav.reserved_bits, 0);
-    w.writeBits(2, @intFromEnum(header.status));
+    w.writeBits(2, @backingInt(header.status));
     w.writeBits(2, 0);
     w.writeBits(2, header.message_type);
     w.writeBits(5, header.message_id);
