@@ -14,8 +14,14 @@ pub const Written = struct {
     write_failed: ?Io.File.Writer.Error,
 };
 
+fn writeBlock(writer: *Io.File.Writer, bytes: []const u8) ?Io.File.Writer.Error {
+    writer.interface.writeAll(bytes) catch return writer.err orelse error.Unexpected;
+    return null;
+}
+
 pub fn writeRun(gpa: std.mem.Allocator, io: Io, path: []const u8, run: *Run, context: anytype, comptime afterBlock: fn (@TypeOf(context), *Run, Block) void) (Io.File.OpenError || error{OutOfMemory})!Written {
-    const pulled = try gpa.alloc(u8, run.info.bytes_per_epoch * pull_epochs);
+    const half = run.info.bytes_per_epoch * pull_epochs;
+    const pulled = try gpa.alloc(u8, 2 * half);
     defer gpa.free(pulled);
     const buffer = try gpa.alloc(u8, buffer_bytes);
     defer gpa.free(buffer);
@@ -23,15 +29,20 @@ pub fn writeRun(gpa: std.mem.Allocator, io: Io, path: []const u8, run: *Run, con
     defer file.close(io);
     var writer: Io.File.Writer = .init(file, io, buffer);
     var write_failed: ?Io.File.Writer.Error = null;
+    // A block is written while the next one is pulled into the other half.
+    var writing: ?Io.Future(?Io.File.Writer.Error) = null;
+    var k: usize = 0;
     const failed: ?PullError = while (true) {
-        const block = run.pull(pulled, pull_epochs) catch |e| break e;
-        writer.interface.writeAll(pulled[0..block.bytes]) catch {
-            write_failed = writer.err orelse error.Unexpected;
-        };
+        const slot = pulled[k * half ..][0..half];
+        const block = run.pull(slot, pull_epochs) catch |e| break e;
+        if (writing) |*w| write_failed = w.await(io);
+        writing = if (write_failed == null) io.async(writeBlock, .{ &writer, slot[0..block.bytes] }) else null;
         afterBlock(context, run, block);
         if (block.failed) |e| break e;
         if (block.epochs == 0 or write_failed != null) break null;
+        k ^= 1;
     };
+    if (writing) |*w| write_failed = w.await(io);
     if (write_failed == null) writer.interface.flush() catch {
         write_failed = writer.err orelse error.Unexpected;
     };
