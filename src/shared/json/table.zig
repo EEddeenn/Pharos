@@ -13,15 +13,24 @@ pub const Range = struct {
     open_min: bool = false,
     open_max: bool = false,
 
-    fn holds(self: Range, v: f64) bool {
+    pub fn holds(self: Range, v: f64) bool {
         if (!std.math.isFinite(v)) return false;
         const above = if (self.open_min) v > self.min else v >= self.min;
         const below = if (self.open_max) v < self.max else v <= self.max;
         return above and below;
     }
 
+    /// The range in words, after "must be": "from 1 to 3", "1", "at least 0", "above 0 and below 360".
     pub fn format(self: Range, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.print("{c}{d}, {d}{c}", .{ @as(u8, if (self.open_min) '(' else '['), self.min, self.max, @as(u8, if (self.open_max) ')' else ']') });
+        const low = std.math.isFinite(self.min);
+        const high = std.math.isFinite(self.max);
+        if (low and high and !self.open_min and !self.open_max) {
+            if (self.min == self.max) return w.print("{d}", .{self.min});
+            return w.print("from {d} to {d}", .{ self.min, self.max });
+        }
+        if (low) try w.print("{s} {d}", .{ if (self.open_min) "above" else "at least", self.min });
+        if (low and high) try w.writeAll(" and ");
+        if (high) try w.print("{s} {d}", .{ if (self.open_max) "below" else "at most", self.max });
     }
 };
 
@@ -162,6 +171,14 @@ pub fn fieldName(comptime json: []const u8) []const u8 {
     }
 }
 
+fn keyNames(comptime Raw: type) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (Raw.table, 0..) |key, i| out = out ++ (if (i == 0) "" else ", ") ++ key.name;
+        return out;
+    }
+}
+
 pub fn keyOf(comptime Raw: type, comptime name: []const u8) Key {
     for (Raw.table) |key| if (std.mem.eql(u8, key.name, name)) return key;
     @compileError(@typeName(Raw) ++ " has no key " ++ name);
@@ -234,7 +251,7 @@ pub fn read(comptime Raw: type, obj: Object) Error!?Raw {
         }
     }
     if (@hasDecl(Raw, "kinds") and ok) try unused(Raw, raw, obj);
-    try obj.finish();
+    if (!try obj.finish(comptime keyNames(Raw))) ok = false;
     return if (ok) raw else null;
 }
 
@@ -273,8 +290,10 @@ fn missing(ctx: *const Ctx, path: []const u8) Error!void {
     try ctx.diags.err(.missing_field, path, "required", .{});
 }
 
-fn outside(ctx: *const Ctx, path: []const u8, range: Range, v: f64) Error!void {
-    try ctx.diags.err(.out_of_range, path, "must be in {f}, got {d}", .{ range, v });
+/// An integer is written with every digit, a floating value as `node.Number` writes it.
+fn outside(ctx: *const Ctx, path: []const u8, range: Range, v: anytype) Error!void {
+    if (@typeInfo(@TypeOf(v)) == .int) return ctx.diags.err(.out_of_range, path, "must be {f}, got {d}", .{ range, v });
+    try ctx.diags.err(.out_of_range, path, "must be {f}, got {f}", .{ range, node.Number{ .value = v, .outside = range } });
 }
 
 fn value(comptime T: type, n: Node, comptime key: Key) Error!?T {
@@ -284,8 +303,13 @@ fn value(comptime T: type, n: Node, comptime key: Key) Error!?T {
             return if (try inRange(n, key.range, v)) v else null;
         },
         .int => {
-            const v = try n.integer(T) orelse return null;
-            return if (try inRange(n, key.range, @floatFromInt(v))) v else null;
+            const v = try n.integer() orelse return null;
+            // The key's range before the type's, so that a value outside both is told the key's.
+            if (!try inRange(n, key.range, v)) return null;
+            return std.math.cast(T, v) orelse {
+                try n.ctx.diags.err(.out_of_range, n.path, "must be from {d} to {d}, got {d}", .{ std.math.minInt(T), std.math.maxInt(T), v });
+                return null;
+            };
         },
         .bool => return n.boolean(),
         .@"enum" => return n.word(T, key.what orelse key.name),
@@ -340,9 +364,9 @@ fn itemCount(ctx: *const Ctx, path: []const u8, comptime items: ?Items, count: u
     return false;
 }
 
-fn inRange(n: Node, comptime range: ?Range, v: f64) Error!bool {
+fn inRange(n: Node, comptime range: ?Range, v: anytype) Error!bool {
     const r = range orelse return true;
-    if (r.holds(v)) return true;
+    if (r.holds(if (@typeInfo(@TypeOf(v)) == .int) @floatFromInt(v) else v)) return true;
     try outside(n.ctx, n.path, r, v);
     return false;
 }
@@ -363,7 +387,7 @@ pub fn kind(comptime Raw: type, raw: Raw, ctx: *const Ctx, path: []const u8) Err
                     if (t.range) |range| {
                         const x: f64 = if (@typeInfo(@TypeOf(v)) == .int) @floatFromInt(v) else v;
                         if (ok and !range.holds(x)) {
-                            try outside(ctx, try node.join(ctx, path, t.name), range, x);
+                            try outside(ctx, try node.join(ctx, path, t.name), range, v);
                             ok = false;
                         }
                     }

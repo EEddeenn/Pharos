@@ -8,6 +8,7 @@ const NavFamily = @import("shared").core.types.NavFamily;
 const GpsTime = @import("shared").core.time.GpsTime;
 const Leap = @import("shared").core.civil.Leap;
 const trajectory = @import("shared").trajectory;
+const node = @import("shared").json.node;
 const scenario = @import("scenario.zig");
 const diagnostics = @import("shared").core.diagnostics;
 const Diagnostics = diagnostics.Diagnostics;
@@ -26,11 +27,12 @@ pub fn assemble(arena: std.mem.Allocator, source: nav.files.Source, text: []cons
 
     const traj = try loadTrajectory(arena, source, request.trajectory_file, diags);
     if (request.duration_ms) |duration| if (duration > traj.epochs()) {
-        try diags.err(.out_of_range, "duration", "the trajectory lasts {d} s", .{traj.duration()});
+        const lasts: node.Number = .{ .value = traj.duration(), .outside = .{ .min = @as(f64, @floatFromInt(duration)) / 1000 } };
+        try diags.err(.out_of_range, "duration", "the trajectory lasts {f} s", .{lasts});
         return error.InvalidInput;
     };
     if (traj.epochs() == 0) {
-        try diags.err(.out_of_range, "trajectory", "the trajectory lasts {d} s, less than an epoch of 1 ms", .{traj.duration()});
+        try diags.err(.out_of_range, "trajectory", "the trajectory lasts {f} s, less than an epoch of 1 ms", .{node.Number{ .value = traj.duration(), .outside = .{ .min = 1e-3 } }});
         return error.InvalidInput;
     }
 
@@ -104,7 +106,7 @@ fn checkMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, run_ms: u64,
             var t = s.start;
             while (t.lessThan(end)) {
                 messages.build(family, storage, b, &allocation, &broadcast, prepared, .{}, t) catch |e| {
-                    try diags.err(.out_of_range, "ephemeris", "{s} at {d} s into the run: the navigation data cannot be encoded into its message set ({s})", .{ family.name(), into(s, t), @errorName(e) });
+                    try diags.err(.out_of_range, "ephemeris", "{s} at {d} s into the run: the navigation data cannot be encoded into its message set ({s})", .{ family.name(), into(s, t), encoding(e) });
                     return error.InvalidInput;
                 };
                 var snapshot: messages.Snapshot = .{};
@@ -116,8 +118,9 @@ fn checkMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, run_ms: u64,
     }
 }
 
-fn into(s: *const bundle.scenario.Scenario, t: GpsTime) i64 {
-    return @divFloor(t.ms - s.start.ms, 1000);
+/// The seconds from the run start: whole milliseconds, so written with every digit.
+fn into(s: *const bundle.scenario.Scenario, t: GpsTime) f64 {
+    return @as(f64, @floatFromInt(t.ms - s.start.ms)) / 1000;
 }
 
 fn requireData(family: NavFamily, snapshot: messages.Snapshot, s: *const bundle.scenario.Scenario, allocation: *const gnss.allocation.Allocation, t: GpsTime, diags: *Diagnostics) Error!void {
@@ -144,8 +147,16 @@ fn publicationFailure(arena: std.mem.Allocator, failure: messages.PreparationFai
         .d2 => .{ .key = "messages.bds.d2", .family = "D2" },
     };
     const path = try arena.print("{s}[{d}]", .{ target.key, failure.publication.index });
-    try diags.err(.out_of_range, path, "the publication cannot be encoded for {s} ({s})", .{ target.family, @errorName(failure.publication.reason) });
+    try diags.err(.out_of_range, path, "the publication cannot be encoded for {s} ({s})", .{ target.family, encoding(failure.publication.reason) });
     return error.InvalidInput;
+}
+
+fn encoding(e: gnss.publication.EncodingError) []const u8 {
+    return switch (e) {
+        error.ValueOutOfRange => "a value lies outside its range",
+        error.FieldOverflow => "a value does not fit its field",
+        error.ValueMissing => "a value is missing",
+    };
 }
 
 fn utcServed(s: *const bundle.scenario.Scenario, set: *const NavSet, leap: Leap) bool {

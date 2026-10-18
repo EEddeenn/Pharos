@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const pharos_pack = @import("pharos_pack");
 const Diagnostics = pharos_pack.core.diagnostics.Diagnostics;
+const Escaped = pharos_pack.core.diagnostics.Escaped;
 const bundle = pharos_pack.bundle;
 const Args = @import("args.zig").Args;
 const cli = pharos_pack.cli;
@@ -12,7 +13,7 @@ const max_scenario_bytes = 64 << 20;
 pub fn pack(gpa: std.mem.Allocator, io: Io, args: Args, console: Console) u8 {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    console.info("Loading scenario: {s}", .{args.input});
+    console.info("Loading scenario: {f}", .{Escaped{ .text = args.input }});
     const text = (cli.readFile(io, arena.allocator(), args.input, max_scenario_bytes, console) catch return cli.outOfMemory(console)) orelse return 1;
     var diags: Diagnostics = .{ .arena = arena.allocator(), .source = args.input };
     const assembled = pharos_pack.assemble.assemble(arena.allocator(), .{ .dir = .{ .io = io, .base = Io.Dir.path.dirname(args.input) } }, text, &diags) catch |e| {
@@ -32,7 +33,7 @@ pub fn pack(gpa: std.mem.Allocator, io: Io, args: Args, console: Console) u8 {
         cli.cannotWrite(console, path, e);
         return 1;
     };
-    console.info("Bundle written: {s}", .{path});
+    console.info("Bundle written: {f}", .{Escaped{ .text = path }});
     console.flush();
     return 0;
 }

@@ -87,8 +87,8 @@ fn recordEpoch(pools: *rinex_records.Pools, system: types.System, b: Block, line
     return null;
 }
 
-fn rejectBlock(pools: *rinex_records.Pools, system: types.System, b: Block, first: []const u8, lines: *rinex_fields.Lines) std.mem.Allocator.Error!void {
-    try pools.rejected.append(pools.arena, .{ .system = system, .named = .{ .label = first[0..@min(first.len, 23)] }, .message = @tagName(b.kind), .reason = .malformed });
+fn rejectBlock(pools: *rinex_records.Pools, system: types.System, message: []const u8, first: []const u8, lines: *rinex_fields.Lines) std.mem.Allocator.Error!void {
+    try pools.rejected.append(pools.arena, .{ .system = system, .named = .{ .label = first[0..@min(first.len, 23)] }, .message = message, .reason = .malformed });
     skipBlock(lines);
 }
 
@@ -113,9 +113,9 @@ fn ionosphere(pools: *rinex_records.Pools, b: Block, lines: *rinex_fields.Lines)
         .bds => if (std.mem.eql(u8, b.msg, "CNVX")) 9 else if (std.mem.eql(u8, b.msg, "D1D2")) 8 else return skipBlock(lines),
         .glo => return skipBlock(lines),
     };
-    const first = std.mem.trimEnd(u8, nextInBlock(lines) orelse return rejectBlock(pools, system, b, "", lines), "\r");
-    const epoch = rinex_fields.calendar(first) catch return rejectBlock(pools, system, b, first, lines);
-    const v = ionosphereValues(first, lines, count) catch return rejectBlock(pools, system, b, first, lines);
+    const first = std.mem.trimEnd(u8, nextInBlock(lines) orelse return rejectBlock(pools, system, "ion", "", lines), "\r");
+    const epoch = rinex_fields.calendar(first) catch return rejectBlock(pools, system, "ion", first, lines);
+    const v = ionosphereValues(first, lines, count) catch return rejectBlock(pools, system, "ion", first, lines);
     skipBlock(lines);
     var set: core.iono.Broadcast = .{};
     switch (system) {
@@ -141,7 +141,7 @@ fn timeOffset(pools: *rinex_records.Pools, b: Block, lines: *rinex_fields.Lines)
     const msg = rinex_aux.message(b.msg) orelse return skipBlock(lines);
     const first = nextInBlock(lines) orelse return error.MalformedRecord;
     const second = nextInBlock(lines) orelse return error.MalformedRecord;
-    const parsed = rinex_aux.sto(system, msg, first, second, pools.leap) catch return rejectBlock(pools, system, b, first, lines);
+    const parsed = rinex_aux.sto(system, msg, first, second, pools.leap) catch return rejectBlock(pools, system, "sto", first, lines);
     if (parsed) |offset| {
         if (gnss.plausible.timeOffset(offset.record)) |name| {
             try pools.rejected.append(pools.arena, .{ .system = system, .named = .{ .record = .{ .prn = b.prn orelse 0, .epoch = offset.epoch } }, .message = "sto", .field = name });
@@ -155,7 +155,7 @@ fn earthOrientation(pools: *rinex_records.Pools, b: Block, lines: *rinex_fields.
     const msg = rinex_aux.message(b.msg) orelse return skipBlock(lines);
     var body: [3][]const u8 = undefined;
     for (&body) |*row| row.* = nextInBlock(lines) orelse return error.MalformedRecord;
-    const orientation = rinex_aux.eop(system, msg, body, pools.leap) catch return rejectBlock(pools, system, b, body[0], lines);
+    const orientation = rinex_aux.eop(system, msg, body, pools.leap) catch return rejectBlock(pools, system, "eop", body[0], lines);
     if (gnss.plausible.eop(&orientation.record)) |name| {
         try pools.rejected.append(pools.arena, .{ .system = system, .named = .{ .record = .{ .prn = b.prn orelse 0, .epoch = orientation.epoch } }, .message = "eop", .field = name });
     } else try pools.eops.append(pools.arena, orientation.record);

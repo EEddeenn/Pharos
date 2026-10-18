@@ -5,6 +5,10 @@ const engine = @import("../engine.zig");
 const gain = @import("../synth.zig").gain;
 const io = @import("../io.zig");
 const capi = @import("shared").capi;
+const cli = @import("shared").cli;
+const Escaped = @import("shared").core.diagnostics.Escaped;
+const node = @import("shared").json.node;
+const table = @import("shared").json.table;
 const common = @import("common.zig");
 const convert = @import("convert.zig");
 const allocator = common.allocator;
@@ -81,11 +85,12 @@ pub fn pharos_run_create(data: ?[*]const u8, len: usize, o: ?*const Options, out
     };
     const constant_gain: ?gain.Db = switch (mode) {
         .adaptive => if (opts.gain_db == 0) null else {
-            common.thread_error.set("gain_db must be 0 under the adaptive gain, got {d}", .{opts.gain_db});
+            common.thread_error.set("gain_db must be 0 under the adaptive gain, got {f}", .{node.Number{ .value = opts.gain_db }});
             return .arg;
         },
         .constant => gain.Db.fromValue(opts.gain_db) orelse {
-            common.thread_error.set("gain_db must lie within {d}..{d}, got {d}", .{ gain.Db.min.db, gain.Db.max.db, opts.gain_db });
+            const allowed: table.Range = .{ .min = gain.Db.min.db, .max = gain.Db.max.db };
+            common.thread_error.set("gain_db must be {f}, got {f}", .{ allowed, node.Number{ .value = opts.gain_db, .outside = allowed } });
             return .arg;
         },
     };
@@ -108,7 +113,7 @@ pub fn pharos_run_create(data: ?[*]const u8, len: usize, o: ?*const Options, out
         .noise = noise,
         .gain = constant_gain,
     }) catch |e| {
-        common.thread_error.set("cannot create the run: {f}", .{engine.run.createFailure(e)});
+        common.thread_error.set("cannot create the run: {s}", .{engine.run.reason(e)});
         discard(r);
         return switch (e) {
             error.OutOfMemory => .nomem,
@@ -171,7 +176,7 @@ fn pullFailed(h: *Handle, e: engine.run.PullError) Status {
         error.MessageSet, error.MissingEarthOrientation, error.MissingTimeOffset, error.MissingUtcParameters => |f| capi.failed(Status, f),
         error.Internal => .internal,
     };
-    h.err.set("epoch {d} of {d} could not be generated: {s} ({s})", .{ h.run.epoch.ms, h.run.info.span.epochs, @errorName(e), engine.run.reason(e) });
+    h.err.set("epoch {d} of {d} could not be generated: {s}", .{ h.run.epoch.ms, h.run.info.span.epochs, engine.run.reason(e) });
     return status;
 }
 
@@ -275,7 +280,7 @@ pub fn pharos_run_to_file(r: ?*Handle, path: ?[*:0]const u8, bytes_written: ?*u6
 
 fn cannotWrite(h: *Handle, path: []const u8, e: anyerror) Status {
     var short: [capi.elided_len]u8 = undefined;
-    h.err.set("cannot write {s}: {s}", .{ capi.elide(&short, path), @errorName(e) });
+    h.err.set("cannot write {f}: {f}", .{ Escaped{ .text = capi.elide(&short, path) }, cli.FileError{ .e = e } });
     return .io;
 }
 

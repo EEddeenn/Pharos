@@ -38,7 +38,7 @@ pub const Diagnostic = struct {
     message: []const u8,
 
     pub fn format(self: Diagnostic, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        if (self.source.len > 0) try w.writeAll(self.source);
+        if (self.source.len > 0) try w.print("{f}", .{Escaped{ .text = self.source }});
         if (self.position) |position| {
             if (self.source.len > 0) try w.print(":{d}", .{position.line}) else try w.print("line {d}", .{position.line});
             if (position.column > 0) try w.print(":{d}", .{position.column});
@@ -46,6 +46,21 @@ pub const Diagnostic = struct {
         if (self.source.len > 0 or self.position != null) try w.writeAll(": ");
         if (self.path.len > 0) try w.print("{s}: ", .{self.path});
         try w.writeAll(self.message);
+    }
+};
+
+/// A text of the input or of a caller as a path or a message quotes it: a control character as its JSON escape, so
+/// that no key or name cuts the C string of a message, and bytes that are not UTF-8 as U+FFFD, so that it is UTF-8.
+pub const Escaped = struct {
+    text: []const u8,
+
+    pub fn format(self: Escaped, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        var start: usize = 0;
+        for (self.text, 0..) |c, i| if (c < 0x20) {
+            try w.print("{f}\\u{x:0>4}", .{ std.unicode.fmtUtf8(self.text[start..i]), c });
+            start = i + 1;
+        };
+        try w.print("{f}", .{std.unicode.fmtUtf8(self.text[start..])});
     }
 };
 

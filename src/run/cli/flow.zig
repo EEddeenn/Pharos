@@ -10,6 +10,8 @@ const engine = pharos_run.engine;
 const Run = engine.run.Run;
 const cli = pharos_run.cli;
 const Console = cli.Console;
+const Escaped = pharos_run.core.diagnostics.Escaped;
+const Number = cli.Number;
 const Args = @import("args.zig").Args;
 
 const progress_every_epochs = 10_000;
@@ -64,7 +66,7 @@ fn report(console: Console, b: *const Bundle, run: *Run, args: Args) ?usize {
     const noise = engine.run.NoiseMode.words.get(run.options.noise);
     switch (run.gain) {
         .adaptive => console.info("Options: workers {d}, seed {d}, noise {s}, gain adaptive", .{ run.info.workers, run.options.seed, noise }),
-        .constant => |constant| console.info("Options: workers {d}, seed {d}, noise {s}, gain constant {d} dB", .{ run.info.workers, run.options.seed, noise, constant.level.db }),
+        .constant => |constant| console.info("Options: workers {d}, seed {d}, noise {s}, gain constant {f} dB", .{ run.info.workers, run.options.seed, noise, Number{ .value = constant.level.db } }),
     }
     if (args.seek != null) {
         console.info("Starting at epoch {d} of {d}, {f}", .{ run.entryEpoch().ms, run.info.span.epochs, run.entryTime().printed(null) });
@@ -120,7 +122,7 @@ fn reportSeekError(console: Console, run: *const Run, target: Epoch, e: engine.r
 }
 
 fn reportStop(console: Console, run: *const Run, e: engine.run.PullError) void {
-    console.fail("Epoch {d} of {d} could not be generated: {s} ({s})", .{ run.epoch.ms, run.info.span.epochs, @errorName(e), engine.run.reason(e) });
+    console.fail("Epoch {d} of {d} could not be generated: {s}", .{ run.epoch.ms, run.info.span.epochs, engine.run.reason(e) });
 }
 
 fn reportBlock(blocks: *Blocks, run: *Run, block: engine.run.Block) void {
@@ -146,16 +148,17 @@ fn reportBlock(blocks: *Blocks, run: *Run, block: engine.run.Block) void {
 
 fn printSummary(console: Console, run: *const Run, path: []const u8, bytes_on_file: u64, seconds: f64) void {
     const mib = cli.mib(bytes_on_file);
-    console.info("Samples written: {s}, {d} epochs, {d:.2} MiB", .{ path, bytes_on_file / run.info.bytes_per_epoch, mib });
+    console.info("Samples written: {f}, {d} epochs, {f} MiB", .{ Escaped{ .text = path }, bytes_on_file / run.info.bytes_per_epoch, Number{ .value = mib } });
     const components: u64 = (run.epoch.ms - run.entryEpoch().ms) * run.info.samples_per_epoch * 2;
     if (components > 0) {
-        console.info("Clipped: {d} of {d} components, {d:.4}%", .{ run.total_clipped, components, @as(f64, @floatFromInt(run.total_clipped)) / @as(f64, @floatFromInt(components)) * 100.0 });
+        const clipped = @as(f64, @floatFromInt(run.total_clipped)) / @as(f64, @floatFromInt(components)) * 100.0;
+        console.info("Clipped: {d} of {d} components, {f}%", .{ run.total_clipped, components, Number{ .value = clipped } });
     }
     switch (run.gain) {
-        .adaptive => |agc| console.info("AGC gain at the end: {d:.3}", .{agc.gain}),
+        .adaptive => |agc| console.info("AGC gain at the end: {f}", .{Number{ .value = agc.gain }}),
         .constant => {},
     }
-    console.info("Generated in {d:.2} s, {d:.2} MiB/s", .{ seconds, if (seconds > 0) mib / seconds else 0.0 });
+    console.info("Generated in {f} s, {f} MiB/s", .{ Number{ .value = seconds }, Number{ .value = if (seconds > 0) mib / seconds else 0.0 } });
     console.flush();
 }
 
@@ -199,12 +202,12 @@ const DumpFiles = struct {
 };
 
 fn reportInitError(console: Console, e: engine.run.CreateError) void {
-    console.fail("Cannot create the run: {f}", .{engine.run.createFailure(e)});
+    console.fail("Cannot create the run: {s}", .{engine.run.reason(e)});
 }
 
 fn reportEvent(console: Console, ev: engine.events.Event) void {
     switch (ev) {
-        .agc => |a| console.warn("AGC gain {s} to {d:.3} at {d} ms: {d:.2}% clipped", .{ if (a.reduced) "reduced" else "increased", a.gain, a.epoch.ms, a.clip_rate * 100.0 }),
+        .agc => |a| console.warn("AGC gain {s} to {f} at {d} ms: {f}% clipped", .{ if (a.reduced) "reduced" else "increased", Number{ .value = a.gain }, a.epoch.ms, Number{ .value = a.clip_rate * 100.0 } }),
         .channel_added => |c| console.info("Channel {f} added at {d} ms", .{ c.key, c.epoch.ms }),
         .channel_removed => |c| console.info("Channel {f} removed at {d} ms", .{ c.key, c.epoch.ms }),
         .ephemeris_switched => |e| console.info("Ephemeris of {f} switched at {d} ms", .{ e.sat, e.epoch.ms }),
@@ -233,7 +236,7 @@ fn writeScenarioDump(gpa: std.mem.Allocator, io: Io, dir: []const u8, b: *const 
     };
     defer gpa.free(path);
     if (!cli.writeFile(io, path, text.written(), console)) return false;
-    console.info("Scenario dump written: {s}", .{path});
+    console.info("Scenario dump written: {f}", .{Escaped{ .text = path }});
     return true;
 }
 
@@ -249,6 +252,6 @@ fn writeTag(gpa: std.mem.Allocator, io: Io, samples: Samples, first: GpsTime, ou
     };
     defer gpa.free(path);
     if (!cli.writeFile(io, path, text, console)) return false;
-    console.info("Tag written: {s}", .{path});
+    console.info("Tag written: {f}", .{Escaped{ .text = path }});
     return true;
 }

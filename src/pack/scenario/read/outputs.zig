@@ -16,7 +16,6 @@ const default_cn0_dbhz: f64 = 47;
 const grid_warn_tolerance_khz = 1e-6;
 const grid_warn_tolerance_hz = 1e-3;
 const max_schedule_time_s = 4.0e12;
-const exponent_print_threshold = 1e9;
 const Key = table.Key;
 const Ctx = node.Ctx;
 const Error = node.Error;
@@ -76,7 +75,7 @@ fn satellites(system: System, svids: []const u32, ctx: *const Ctx, path: []const
     var ok = true;
     for (svids, 0..) |svid, i| {
         out[i] = SatId.fromPrn(system, svid) catch {
-            try ctx.diags.err(.out_of_range, try node.element(ctx, path, i), "svid {d} is not a {s} satellite (1..{d})", .{ svid, system.displayName(), system.capacity() });
+            try ctx.diags.err(.out_of_range, try node.element(ctx, path, i), "a {s} svid must be from 1 to {d}, got {d}", .{ system.displayName(), system.capacity(), svid });
             ok = false;
             continue;
         };
@@ -87,13 +86,16 @@ fn satellites(system: System, svids: []const u32, ctx: *const Ctx, path: []const
 pub fn resolveSamples(raw: RawSamples, ctx: *const Ctx, path: []const u8) Error!model.Samples {
     const mhz = raw.sample_freq;
     const khz_f = @round(mhz * 1000.0);
+    // A value on its grid is whole kilohertz or hertz, so written with every digit, as an integer is.
     if (@abs(khz_f - mhz * 1000.0) > grid_warn_tolerance_khz) {
-        try ctx.diags.warn(.sample_rate_rounded, try node.join(ctx, path, "sampleFreq"), "sample rate moved onto the kHz grid: {d} MHz -> {d} MHz", .{ mhz, khz_f / 1000.0 });
+        const moved = khz_f / 1000.0;
+        try ctx.diags.warn(.sample_rate_rounded, try node.join(ctx, path, "sampleFreq"), "sample rate moved onto the kHz grid: {f} MHz -> {d} MHz", .{ node.Number{ .value = mhz, .apart = moved }, moved });
     }
     const center_mhz = raw.center_freq;
     const center_hz = @round(center_mhz * 1e6);
     if (@abs(center_hz - center_mhz * 1e6) > grid_warn_tolerance_hz) {
-        try ctx.diags.warn(.center_rounded, try node.join(ctx, path, "centerFreq"), "centre frequency moved onto whole hertz: {d} MHz -> {d} MHz", .{ center_mhz, center_hz / 1e6 });
+        const moved = center_hz / 1e6;
+        try ctx.diags.warn(.center_rounded, try node.join(ctx, path, "centerFreq"), "centre frequency moved onto whole hertz: {f} MHz -> {d} MHz", .{ node.Number{ .value = center_mhz, .apart = moved }, moved });
     }
     return .{
         .format = raw.format,
@@ -241,8 +243,7 @@ pub fn resolvePower(raw: RawPower, ctx: *const Ctx, path: []const u8) Error!?mod
 
 fn requireInRange(ctx: *const Ctx, path: []const u8, what: []const u8, v: f64, range: [2]f64, unit: []const u8, ok: *bool) Error!void {
     if (v >= range[0] and v <= range[1]) return;
-    if (@abs(v) < exponent_print_threshold) {
-        try ctx.diags.err(.out_of_range, path, "{s} {d} {s} lies outside [{d}, {d}]", .{ what, v, unit, range[0], range[1] });
-    } else try ctx.diags.err(.out_of_range, path, "{s} {e} {s} lies outside [{d}, {d}]", .{ what, v, unit, range[0], range[1] });
+    const allowed: table.Range = .{ .min = range[0], .max = range[1] };
+    try ctx.diags.err(.out_of_range, path, "{s} must be {f} {s}, got {f}", .{ what, allowed, unit, node.Number{ .value = v, .outside = allowed } });
     ok.* = false;
 }

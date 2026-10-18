@@ -43,7 +43,7 @@ pub const Args = struct {
     dry_run: bool = false,
 };
 
-const created_range = std.fmt.comptimePrint("{d}..{d} seconds", .{ Created.min.unix_s, Created.max.unix_s });
+const created_range = std.fmt.comptimePrint("from {d} to {d} seconds", .{ Created.min.unix_s, Created.max.unix_s });
 
 pub fn parse(argv: []const []const u8, refusal: *cli.Refusal) cli.Refused!Args {
     var scan: cli.Scan(Name, options) = .{ .argv = argv, .refusal = refusal, .input = input.placeholder };
@@ -53,7 +53,7 @@ pub fn parse(argv: []const []const u8, refusal: *cli.Refusal) cli.Refused!Args {
         .option => |o| switch (o.name) {
             .observation => args.observation = o.value,
             .position => args.position = o.value,
-            .created => args.created = creationTime(o.value) orelse return scan.expects(o, created_range),
+            .created => args.created = creationTime(o.value) orelse return scan.outside(o, created_range),
             .seek => args.seek = try scan.integer(u64, 0, std.math.maxInt(u64), o),
             .dry_run => args.dry_run = true,
         },

@@ -1,5 +1,6 @@
 const std = @import("std");
 const time = @import("shared").core.time;
+const dictionary = @import("shared").core.dictionary;
 const fields = @import("../fields.zig");
 const record = @import("../record.zig");
 const records = @import("shared").gnss.records;
@@ -8,12 +9,20 @@ const bds_records = @import("shared").gnss.bds.records;
 
 const Error = record.Error;
 
-pub const Kind = enum { d1, d2, cnv1, cnv2, cnv3 };
+pub const Kind = enum {
+    d1,
+    d2,
+    cnv1,
+    cnv2,
+    cnv3,
+
+    /// The message types as RINEX 4 records name them.
+    pub const words: std.EnumArray(Kind, []const u8) = .init(.{ .d1 = "D1", .d2 = "D2", .cnv1 = "CNV1", .cnv2 = "CNV2", .cnv3 = "CNV3" });
+};
 pub const rinex3_kind: Kind = .d1;
 
 pub fn kind(msg: []const u8) ?Kind {
-    const kinds = std.StaticStringMap(Kind).initComptime(.{ .{ "D1", .d1 }, .{ "D2", .d2 }, .{ "CNV1", .cnv1 }, .{ "CNV2", .cnv2 }, .{ "CNV3", .cnv3 } });
-    return kinds.get(msg);
+    return dictionary.parse(Kind, msg);
 }
 
 pub fn bodyLines(k: Kind) usize {

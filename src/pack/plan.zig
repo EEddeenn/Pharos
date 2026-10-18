@@ -267,7 +267,8 @@ pub fn reportCoverage(plan: *const Plan, s: *const model.Scenario, run_ms: u64, 
         if (covered == 0) {
             try diags.warn(.no_record, "ephemeris", "no {s} satellite has a record at the run start, {f}: its signals carry nothing until one does", .{ name, at });
         } else {
-            try diags.warn(.no_record, "ephemeris", "no {s} satellite has a record from {f}, {d} s into the run", .{ name, at, covered / 1000 });
+            // Whole milliseconds, so every digit, as an integer is written.
+            try diags.warn(.no_record, "ephemeris", "no {s} satellite has a record from {f}, {d} s into the run", .{ name, at, @as(f64, @floatFromInt(covered)) / 1000 });
         }
     }
 }

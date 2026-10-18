@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const target = @import("shared").core.target;
 const diagnostics = @import("shared").core.diagnostics;
+const cli = @import("shared").cli;
 
 pub const max_bytes: usize = 256 << 20;
 const utf8_bom = "\xEF\xBB\xBF";
@@ -20,7 +21,7 @@ pub fn readResolved(arena: std.mem.Allocator, source: Source, path: []const u8, 
         if (e == error.OutOfMemory) return error.OutOfMemory;
         if (e == error.StreamTooLong) {
             try scope.err(.io_error, null, "a file loaded by name may be at most {d} MiB", .{limit_bytes >> 20});
-        } else try scope.err(.io_error, null, "cannot read the file ({s})", .{@errorName(e)});
+        } else try scope.err(.io_error, null, "cannot read the file ({f})", .{cli.FileError{ .e = e }});
         return error.IoFailed;
     };
     return if (std.mem.startsWith(u8, text, utf8_bom)) text[utf8_bom.len..] else text;

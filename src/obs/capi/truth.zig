@@ -217,7 +217,7 @@ fn failedQuery(h: *Handle, e: truth.QueryError, epoch: u64) Status {
         },
         error.OutOfMemory => return nomem(&h.err),
         error.MessageSet, error.MissingEarthOrientation, error.MissingTimeOffset, error.MissingUtcParameters => |f| {
-            h.err.set("epoch {d} of {d} could not be planned: {s} ({s})", .{ epoch, h.truth.span.epochs, @errorName(f), stage.messages.reason(f) });
+            h.err.set("epoch {d} of {d} could not be planned: {s}", .{ epoch, h.truth.span.epochs, stage.messages.reason(f) });
             return capi.failed(Status, f);
         },
     }

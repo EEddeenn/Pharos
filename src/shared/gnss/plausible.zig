@@ -50,7 +50,7 @@ fn delayLimit(term: records.GroupDelayTerm) f64 {
 pub fn groupDelays(delays: *const records.GroupDelays) ?[:0]const u8 {
     for (std.enums.values(records.GroupDelayTerm)) |term| {
         const value = delays.get(term) orelse continue;
-        if (!(@abs(value) < delayLimit(term))) return @tagName(term);
+        if (!(@abs(value) < delayLimit(term))) return records.GroupDelayTerm.words.get(term);
     }
     return null;
 }

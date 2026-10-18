@@ -493,12 +493,6 @@ fn value(c: Context, raw: read.RawValue, quantity: model.Quantity) Error!model.V
         .object => {
             const obj = try n.object() orelse unreachable;
             const reference = try table.read(RawReference, obj) orelse return error.InvalidInput;
-            for (obj.keys()) |key| {
-                const known = for (RawReference.table) |entry| {
-                    if (std.mem.eql(u8, key, entry.name)) break true;
-                } else false;
-                if (!known) return fail(c.ctx, .unknown_key, try obj.childPath(key), "unknown reference field", .{});
-            }
             if (reference.point) |id| {
                 if (quantity != .position) return fail(c.ctx, .wrong_type, n.path, "a point reference is only valid for position", .{});
                 if (reference.event != null or reference.quantity != null or reference.side != null or reference.factor != null or reference.offset != null) return fail(c.ctx, .out_of_range, n.path, "a point reference takes only point", .{});

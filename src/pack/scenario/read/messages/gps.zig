@@ -172,7 +172,7 @@ fn satelliteMask(ids: []const u32, constellation: gps.ism.Constellation, ctx: *c
     var ok = true;
     for (ids, 0..) |id, i| {
         const bit = constellation.bitOf(id) orelse {
-            try ctx.diags.err(.out_of_range, try node.element(ctx, path, i), "satellite must be in [{d}, {d}]", .{ range.first, range.last });
+            try ctx.diags.err(.out_of_range, try node.element(ctx, path, i), "satellite must be from {d} to {d}, got {d}", .{ range.first, range.last, id });
             ok = false;
             continue;
         };

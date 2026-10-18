@@ -1,5 +1,6 @@
 const std = @import("std");
 const time = @import("shared").core.time;
+const dictionary = @import("shared").core.dictionary;
 const gnss = @import("shared").gnss;
 const fields = @import("../fields.zig");
 const record = @import("../record.zig");
@@ -7,12 +8,17 @@ const galileo = gnss.galileo.records;
 
 const Error = record.Error;
 
-pub const Kind = enum { inav, fnav };
+pub const Kind = enum {
+    inav,
+    fnav,
+
+    /// The message types as RINEX 4 records name them.
+    pub const words: std.EnumArray(Kind, []const u8) = .init(.{ .inav = "INAV", .fnav = "FNAV" });
+};
 pub const rinex3_kind: Kind = .inav;
 
 pub fn kind(msg: []const u8) ?Kind {
-    const kinds = std.StaticStringMap(Kind).initComptime(.{ .{ "INAV", .inav }, .{ "FNAV", .fnav } });
-    return kinds.get(msg);
+    return dictionary.parse(Kind, msg);
 }
 
 pub fn bodyLines(_: Kind) usize {

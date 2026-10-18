@@ -6,6 +6,9 @@ const Trajectory = @import("trajectory.zig").Trajectory;
 const bundle = @import("bundle.zig");
 const stage = @import("stage.zig");
 const Diagnostics = core.diagnostics.Diagnostics;
+const Escaped = core.diagnostics.Escaped;
+/// A floating value as the tools' messages write it, as every sentence does.
+pub const Number = @import("json/node.zig").Number;
 
 pub const Console = struct {
     out: *Io.Writer,
@@ -64,6 +67,8 @@ pub fn Options(comptime Name: type) type {
 
 pub const Refused = error{Refused};
 
+/// An argument that matched no option or command, and a value, are the user's text, quoted escaped; the other texts
+/// are options and commands that matched, or Pharos's own words.
 pub const Refusal = union(enum) {
     unknown_option: []const u8,
     unknown_command: []const u8,
@@ -73,21 +78,23 @@ pub const Refusal = union(enum) {
     no_path: []const u8,
     no_value: []const u8,
     expects: struct { option: []const u8, what: []const u8, got: ?[]const u8 },
+    outside: struct { option: []const u8, range: []const u8, got: []const u8 },
     required: []const u8,
 
     pub fn format(self: Refusal, w: *Io.Writer) Io.Writer.Error!void {
         switch (self) {
-            .unknown_option => |arg| try w.print("Unknown option '{s}'", .{arg}),
-            .unknown_command => |arg| try w.print("Unknown command '{s}'", .{arg}),
-            .unexpected => |arg| try w.print("Unexpected argument '{s}'", .{arg}),
+            .unknown_option => |arg| try w.print("Unknown option '{f}'", .{Escaped{ .text = arg }}),
+            .unknown_command => |arg| try w.print("Unknown command '{f}'", .{Escaped{ .text = arg }}),
+            .unexpected => |arg| try w.print("Unexpected argument '{f}'", .{Escaped{ .text = arg }}),
             .foreign => |f| try w.print("{s} is not an option of {s}", .{ f.option, f.command }),
             .twice => |option| try w.print("{s} is given twice", .{option}),
             .no_path => |option| try w.print("{s} requires a path", .{option}),
             .no_value => |option| try w.print("{s} requires a value", .{option}),
             .expects => |e| {
                 try w.print("{s} expects {s}", .{ e.option, e.what });
-                if (e.got) |got| try w.print(", got {s}", .{got});
+                if (e.got) |got| try w.print(", got {f}", .{Escaped{ .text = got }});
             },
+            .outside => |o| try w.print("{s} must be {s}, got {f}", .{ o.option, o.range, Escaped{ .text = o.got } }),
             .required => |what| try w.print("{s} is required", .{what}),
         }
     }
@@ -157,10 +164,15 @@ pub fn Scan(comptime Name: type, comptime options: Options(Name)) type {
             return self.refuse(found.expects(what));
         }
 
+        /// Refuses a value outside its range, the range in the shared words: "from 0 to 10".
+        pub fn outside(self: *const Self, found: Found, range: []const u8) Refused {
+            return self.refuse(.{ .outside = .{ .option = found.spelling, .range = range, .got = found.value } });
+        }
+
         pub fn integer(self: *const Self, comptime T: type, comptime min: T, comptime max: T, found: Found) Refused!T {
-            const range = std.fmt.comptimePrint("{d}..{d}", .{ min, max });
-            const n = decimal(T, found.value) orelse return self.expects(found, range);
-            return if (n >= min and n <= max) n else self.expects(found, range);
+            const range = std.fmt.comptimePrint("from {d} to {d}", .{ min, max });
+            const n = decimal(T, found.value) orelse return self.outside(found, range);
+            return if (n >= min and n <= max) n else self.outside(found, range);
         }
 
         pub fn word(self: *const Self, comptime E: type, found: Found) Refused!E {
@@ -301,23 +313,60 @@ const utf8_bom = "\xEF\xBB\xBF";
 pub fn readFile(io: Io, arena: std.mem.Allocator, path: []const u8, max_bytes: usize, console: Console) std.mem.Allocator.Error!?[]u8 {
     const bytes = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(max_bytes + 1)) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory;
+        const quoted: Escaped = .{ .text = path };
         if (e == error.StreamTooLong) {
-            const cap = mib(max_bytes);
+            const cap = max_bytes >> 20;
             if (Io.Dir.cwd().statFile(io, path, .{})) |st| {
-                console.fail("Cannot read {s}: the file is {d:.1} MiB; this input may be at most {d:.0} MiB", .{ path, mib(st.size), cap });
-            } else |_| console.fail("Cannot read {s}: this input may be at most {d:.0} MiB", .{ path, cap });
-        } else console.fail("Cannot read {s}: {s}", .{ path, @errorName(e) });
+                const size: Number = .{ .value = mib(st.size), .outside = .{ .max = @floatFromInt(cap) } };
+                console.fail("Cannot read {f}: the file is {f} MiB; this input may be at most {d} MiB", .{ quoted, size, cap });
+            } else |_| console.fail("Cannot read {f}: this input may be at most {d} MiB", .{ quoted, cap });
+        } else console.fail("Cannot read {f}: {f}", .{ quoted, FileError{ .e = e } });
         return null;
     };
     return if (std.mem.startsWith(u8, bytes, utf8_bom)) bytes[utf8_bom.len..] else bytes;
 }
+
+/// A file's error in words: its name written as lowercase words ("file not found"), but for the names that would
+/// not read so.
+pub const FileError = struct {
+    e: anyerror,
+
+    pub fn format(self: FileError, w: *Io.Writer) Io.Writer.Error!void {
+        try w.writeAll(switch (self.e) {
+            error.IsDir => "it is a directory",
+            error.NotDir => "a part of the path is not a directory",
+            error.SymLinkLoop => "too many symbolic links",
+            error.InputOutput => "an input or output error",
+            error.Unexpected => "an unexpected error of the system",
+            error.SystemResources => "the system is short of resources",
+            error.WouldBlock => "it would have to wait",
+            error.Streaming => "it is a stream, not a file",
+            error.ProcessFdQuotaExceeded => "too many files are open in this process",
+            error.SystemFdQuotaExceeded => "too many files are open in the system",
+            error.DiskQuota => "the disk quota is used up",
+            error.SocketUnconnected => "the socket is not connected",
+            error.NoDevice => "no such device",
+            error.LockViolation => "another process has locked it",
+            error.FileLocksUnsupported => "the file system has no file locks",
+            error.LinkQuotaExceeded => "too many links",
+            error.ReadOnlyFileSystem => "the file system is read-only",
+            else => {
+                for (@errorName(self.e), 0..) |c, i| {
+                    if (i > 0 and std.ascii.isUpper(c)) try w.writeByte(' ');
+                    try w.writeByte(std.ascii.toLower(c));
+                }
+                return;
+            },
+        });
+    }
+};
 
 pub fn mib(bytes: u64) f64 {
     return @as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0);
 }
 
 pub fn cannotWrite(console: Console, path: []const u8, e: anyerror) void {
-    console.fail("Cannot write {s}: {s}", .{ path, @errorName(e) });
+    console.fail("Cannot write {f}: {f}", .{ Escaped{ .text = path }, FileError{ .e = e } });
 }
 
 pub fn writeFile(io: Io, path: []const u8, bytes: []const u8, console: Console) bool {
@@ -373,7 +422,7 @@ fn checkBundleHeader(io: Io, path: []const u8, scope: core.diagnostics.Scope) co
 }
 
 pub fn loadBundle(io: Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, path: []const u8, console: Console) ?bundle.Bundle {
-    console.info("Loading bundle: {s}", .{path});
+    console.info("Loading bundle: {f}", .{Escaped{ .text = path }});
     var input = std.heap.ArenaAllocator.init(gpa);
     defer input.deinit();
     var diags: Diagnostics = .{ .arena = input.allocator(), .source = path };
@@ -399,8 +448,8 @@ pub fn loadBundle(io: Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, path
 
 pub fn reportTrajectory(console: Console, traj: *const Trajectory, file: []const u8) void {
     if (traj.name.len > 0) {
-        console.info("Trajectory {s} ({s}): {d} knots over {d:.3} s", .{ traj.name, file, traj.knots.len, traj.duration() });
-    } else console.info("Trajectory {s}: {d} knots over {d:.3} s", .{ file, traj.knots.len, traj.duration() });
+        console.info("Trajectory {f} ({f}): {d} knots over {f} s", .{ Escaped{ .text = traj.name }, Escaped{ .text = file }, traj.knots.len, Number{ .value = traj.duration() } });
+    } else console.info("Trajectory {f}: {d} knots over {f} s", .{ Escaped{ .text = file }, traj.knots.len, Number{ .value = traj.duration() } });
 }
 
 pub fn reportSpan(console: Console, span: bundle.Span, leap: civil.Leap) void {
@@ -424,11 +473,12 @@ pub fn reportCoverage(console: Console, b: *const bundle.Bundle) void {
     } else return;
     const covered = b.plan.coveredMs(&b.scenario, null);
     if (covered >= b.epochs()) return;
-    console.warn("No satellite of a listed signal flies a record from {d:.3} s into the run: nothing is transmitted from there on", .{@as(f64, @floatFromInt(covered)) / 1000.0});
+    // Whole milliseconds, so every digit, as an integer is written.
+    console.warn("No satellite of a listed signal flies a record from {d} s into the run: nothing is transmitted from there on", .{@as(f64, @floatFromInt(covered)) / 1000.0});
 }
 
 fn reportPrecise(console: Console, product: *const bundle.precise.Product) void {
-    console.info("Precise product: {d} satellites at {d} s", .{ product.satelliteCount(), product.interval_s });
+    console.info("Precise product: {d} satellites at {f} s", .{ product.satelliteCount(), Number{ .value = product.interval_s } });
 }
 
 fn reportAntenna(console: Console, b: *const bundle.Bundle) void {
@@ -460,14 +510,23 @@ pub fn printIonosphere(console: Console, ionosphere: *const stage.ionosphere.Ion
             .none => console.info("Ionosphere {s}: none", .{system.name()}),
             .klobuchar => |k| {
                 const name: []const u8 = if (ionosphere.requested == .auto and system == .glo) "Klobuchar substitute" else "Klobuchar";
-                console.info("Ionosphere {s}: {s}, alpha {e:.3} {e:.3} {e:.3} {e:.3}, beta {e:.3} {e:.3} {e:.3} {e:.3} ({s})", .{ system.name(), name, k.alpha[0], k.alpha[1], k.alpha[2], k.alpha[3], k.beta[0], k.beta[1], k.beta[2], k.beta[3], origin });
+                console.info("Ionosphere {s}: {s}, alpha {f}, beta {f} ({s})", .{ system.name(), name, Values{ .values = &k.alpha }, Values{ .values = &k.beta }, origin });
             },
             .bds_klobuchar => |b| {
                 const k = b.coefficients;
-                console.info("Ionosphere {s}: BDS Klobuchar, alpha {e:.3} {e:.3} {e:.3} {e:.3}, beta {e:.3} {e:.3} {e:.3} {e:.3} ({s})", .{ system.name(), k.alpha[0], k.alpha[1], k.alpha[2], k.alpha[3], k.beta[0], k.beta[1], k.beta[2], k.beta[3], origin });
+                console.info("Ionosphere {s}: BDS Klobuchar, alpha {f}, beta {f} ({s})", .{ system.name(), Values{ .values = &k.alpha }, Values{ .values = &k.beta }, origin });
             },
-            .nequick => |n| console.info("Ionosphere {s}: NeQuick G, ai0 {d} ai1 {d} ai2 {d} ({s})", .{ system.name(), n.coefficients.ai0, n.coefficients.ai1, n.coefficients.ai2, origin }),
-            .bdgim => |m| console.info("Ionosphere {s}: BDGIM, alpha {d} {d} {d} {d} {d} {d} {d} {d} {d} TECu ({s})", .{ system.name(), m.alpha[0], m.alpha[1], m.alpha[2], m.alpha[3], m.alpha[4], m.alpha[5], m.alpha[6], m.alpha[7], m.alpha[8], origin }),
+            .nequick => |n| console.info("Ionosphere {s}: NeQuick G, ai0 {f} ai1 {f} ai2 {f} ({s})", .{ system.name(), Number{ .value = n.coefficients.ai0 }, Number{ .value = n.coefficients.ai1 }, Number{ .value = n.coefficients.ai2 }, origin }),
+            .bdgim => |m| console.info("Ionosphere {s}: BDGIM, alpha {f} TECu ({s})", .{ system.name(), Values{ .values = &m.alpha }, origin }),
         }
     }
 }
+
+/// Coefficients as a line lists them: each as `Number` writes it, a space between.
+const Values = struct {
+    values: []const f64,
+
+    pub fn format(self: Values, w: *Io.Writer) Io.Writer.Error!void {
+        for (self.values, 0..) |v, i| try w.print("{s}{f}", .{ if (i == 0) "" else " ", Number{ .value = v } });
+    }
+};

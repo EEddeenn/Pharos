@@ -82,7 +82,7 @@ pub fn resolve(raw: RawPublication, ctx: *const Ctx, path: []const u8) Error!?is
 fn testMessage(text: []const u8, ctx: *const Ctx, path: []const u8) Error!?u87 {
     const key_path = try node.join(ctx, path, "testMessage");
     if (text.len != 22 or text[0] < '0' or text[0] > '7') {
-        try ctx.diags.err(.out_of_range, key_path, "must be exactly 22 hexadecimal digits with first digit 0..7", .{});
+        try ctx.diags.err(.out_of_range, key_path, "must be exactly 22 hexadecimal digits, the first from 0 to 7", .{});
         return null;
     }
     var result: u87 = 0;
@@ -107,7 +107,7 @@ fn satelliteMask(ids: []const u32, ctx: *const Ctx, path: []const u8) Error!?Mas
         const msb = svid >= 33;
         if (bank) |selected| {
             if (selected != msb) {
-                try ctx.diags.err(.out_of_range, item_path, "satellites must share one mask bank: 1..32 or 33..63", .{});
+                try ctx.diags.err(.out_of_range, item_path, "satellites must share one mask bank: from 1 to 32 or from 33 to 63", .{});
                 ok = false;
                 continue;
             }

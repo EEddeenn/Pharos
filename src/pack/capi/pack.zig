@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const bundle = @import("shared").bundle;
 const Diagnostics = @import("shared").core.diagnostics.Diagnostics;
+const Escaped = @import("shared").core.diagnostics.Escaped;
 const target = @import("shared").core.target;
 const assemble = @import("../assemble.zig");
 const nav = @import("../nav.zig");
@@ -94,7 +95,7 @@ pub fn pharos_pack_create_from_memory(json: ?[*]const u8, len: usize, files: ?[*
         for (table[0..i]) |earlier| {
             if (std.mem.eql(u8, earlier.name, file.name)) {
                 var short: [capi.elided_len]u8 = undefined;
-                common.thread_error.set("the name {s} is given twice", .{capi.elide(&short, file.name)});
+                common.thread_error.set("the name {f} is given twice", .{Escaped{ .text = capi.elide(&short, file.name) }});
                 return .arg;
             }
         }

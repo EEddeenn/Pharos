@@ -53,18 +53,6 @@ pub fn reason(e: Reasoned) []const u8 {
     };
 }
 
-pub const CreateFailure = struct {
-    err: CreateError,
-
-    pub fn format(self: CreateFailure, w: *Io.Writer) Io.Writer.Error!void {
-        try w.print("{s} ({s})", .{ @errorName(self.err), reason(self.err) });
-    }
-};
-
-pub fn createFailure(e: CreateError) CreateFailure {
-    return .{ .err = e };
-}
-
 pub const Info = struct {
     samples: bundle.scenario.Samples,
     samples_per_epoch: u32,

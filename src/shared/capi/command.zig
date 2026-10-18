@@ -22,7 +22,10 @@ pub fn decode(given: Command, err: *ErrorBuffer) ?command.Command {
 }
 
 pub fn rejected(comptime S: type, err: *ErrorBuffer, e: error{ InvalidValue, EpochPassed }) S {
-    err.set("submit rejected: {s}", .{@errorName(e)});
+    err.set("submit rejected: {s}", .{switch (e) {
+        error.InvalidValue => "the command's value is out of range",
+        error.EpochPassed => "the command's epoch has passed",
+    }});
     return .arg;
 }
 

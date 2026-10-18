@@ -155,6 +155,8 @@ fn object(s: *Schema, comptime R: type) Io.Writer.Error!void {
     try s.begin("properties");
     inline for (R.table) |key| try property(s, @FieldType(R, table.fieldName(key.name)), key);
     try s.end();
+    try s.jw.objectField("additionalProperties");
+    try s.jw.write(false);
     const required = comptime blk: {
         var names: []const []const u8 = &.{};
         for (R.table) |key| {

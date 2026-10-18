@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("core.zig");
+const node = @import("json/node.zig");
 const Ecef = core.coord.Ecef;
 
 pub const hermite = @import("trajectory/hermite.zig");
@@ -75,8 +76,8 @@ pub const Trajectory = struct {
         location: ?struct { knot: usize, t: f64 } = null,
 
         pub fn format(self: Invalid, w: *std.Io.Writer) std.Io.Writer.Error!void {
-            if (self.location) |location| try w.print("knot {d} at {d} s: ", .{ location.knot + 1, location.t });
-            try w.print("{s} ({s})", .{ @errorName(self.reason), reason(self.reason) });
+            if (self.location) |location| try w.print("knot {d} at {f} s: ", .{ location.knot + 1, node.Number{ .value = location.t } });
+            try w.writeAll(reason(self.reason));
         }
     };
 

@@ -143,10 +143,13 @@ const ClockReference = struct {
         const o = try n.object() orelse return null;
         var out: ClockReference = .{};
         var ok = true;
+        var listed = false;
         for (o.keys(), 0..) |key, i| {
             const entry = try o.entry(i);
             const system = dictionary.parse(System, key) orelse {
-                try ctx.diags.warn(.unknown_key, entry.path, "unknown system, ignored", .{});
+                try node.unknownKey(ctx, entry.path, if (listed) null else comptime dictionary.words(System));
+                listed = true;
+                ok = false;
                 continue;
             };
             const ref = try entry.word(model.ClockRef, "clock reference") orelse {
@@ -160,7 +163,6 @@ const ClockReference = struct {
             }
             out.refs.set(system, ref);
         }
-        try o.finish();
         return if (ok) out else null;
     }
 
@@ -184,6 +186,8 @@ const ClockReference = struct {
             try s.end();
         }
         try s.end();
+        try s.jw.objectField("additionalProperties");
+        try s.jw.write(false);
     }
 };
 
@@ -317,7 +321,7 @@ fn resolveIonosphere(raw: RawIonosphere, ctx: *const Ctx, path: []const u8) node
         var one: [9]f64 = @splat(0);
         one[i] = v;
         if (coefficients(which, one[0..values.len]).misfit()) |name| {
-            try ctx.diags.err(.out_of_range, try node.element(ctx, list_path, i), "{s} = {e} does not fit the field its messages broadcast it in", .{ name, v });
+            try ctx.diags.err(.out_of_range, try node.element(ctx, list_path, i), "{s} = {f} does not fit the field its messages broadcast it in", .{ name, node.Number{ .value = v } });
             ok = false;
         }
     }

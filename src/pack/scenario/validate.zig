@@ -5,8 +5,11 @@ const spec = gnss.spec;
 const model = @import("shared").bundle.scenario;
 const Request = @import("request.zig").Request;
 const Diagnostics = @import("shared").core.diagnostics.Diagnostics;
+const Range = @import("shared").json.table.Range;
+const Number = @import("shared").json.node.Number;
 
-const usual_noise_floor_dbm_hz = [2]f64{ -200, -100 };
+const usual_noise_floor_dbm_hz: Range = .{ .min = -200, .max = -100 };
+const usual_init_cn0_dbhz: Range = .{ .min = 0, .max = 60 };
 
 const Error = std.mem.Allocator.Error;
 
@@ -83,7 +86,7 @@ fn validateBand(x: model.Samples, signal: core.types.Signal, diags: *Diagnostics
     const run = inside orelse {
         const low = row.carrierHz(.{ .k = plan.plan_k_min });
         const high = row.carrierHz(.{ .k = plan.plan_k_max });
-        try diags.warn(.band_excluded, "signals", "{s} at {d}-{d} MHz (k {d}..{d}) lies outside the sampled band and will not be generated", .{ signal.name(), mhz(low), mhz(high), plan.plan_k_min, plan.plan_k_max });
+        try diags.warn(.band_excluded, "signals", "{s} from {d} to {d} MHz (k from {d} to {d}) lies outside the sampled band and will not be generated", .{ signal.name(), mhz(low), mhz(high), plan.plan_k_min, plan.plan_k_max });
         return;
     };
     if (run[0] == plan.plan_k_min and run[1] == plan.plan_k_max) return;
@@ -99,7 +102,7 @@ fn validateBand(x: model.Samples, signal: core.types.Signal, diags: *Diagnostics
 }
 
 fn printRun(arena: std.mem.Allocator, out: *std.ArrayList(u8), a: i32, b: i32) Error!void {
-    if (a == b) try out.print(arena, "{d}", .{a}) else try out.print(arena, "{d}..{d}", .{ a, b });
+    if (a == b) try out.print(arena, "{d}", .{a}) else try out.print(arena, "from {d} to {d}", .{ a, b });
 }
 
 fn mhz(hz: u64) f64 {
@@ -108,11 +111,11 @@ fn mhz(hz: u64) f64 {
 
 fn validatePower(s: *const Request, diags: *Diagnostics) Error!void {
     const p = &s.power;
-    if (!(p.noise_floor_dbm_hz >= usual_noise_floor_dbm_hz[0] and p.noise_floor_dbm_hz <= usual_noise_floor_dbm_hz[1])) {
-        try diags.warn(.out_of_range, "power.noiseFloor", "noise floor {d} dBm/Hz is outside the usual [-200, -100]", .{p.noise_floor_dbm_hz});
+    if (!usual_noise_floor_dbm_hz.holds(p.noise_floor_dbm_hz)) {
+        try diags.warn(.out_of_range, "power.noiseFloor", "the noise floor is usually {f} dBm/Hz, got {f}", .{ usual_noise_floor_dbm_hz, Number{ .value = p.noise_floor_dbm_hz, .outside = usual_noise_floor_dbm_hz } });
     }
-    if (!(p.init_cn0_dbhz >= 0 and p.init_cn0_dbhz <= 60)) {
-        try diags.warn(.out_of_range, "power.initPower", "initial C/N0 {d} dB-Hz is outside the usual [0, 60]", .{p.init_cn0_dbhz});
+    if (!usual_init_cn0_dbhz.holds(p.init_cn0_dbhz)) {
+        try diags.warn(.out_of_range, "power.initPower", "the initial C/N0 is usually {f} dB-Hz, got {f}", .{ usual_init_cn0_dbhz, Number{ .value = p.init_cn0_dbhz, .outside = usual_init_cn0_dbhz } });
     }
 }
 
@@ -244,7 +247,7 @@ fn d2Effect(s: *const Request, diags: *Diagnostics) Error!void {
         };
         if (high or low > integrity.basic_packets) {
             const path = try diags.arena.print("messages.bds.d2[{d}].integrity.satellites", .{i});
-            try diags.warn(.no_effect, path, "B2I describes satellites 1-30 only, at most 18 (BDS-SIS-ICD 2.1 5.3.3.5); the others are described on B1I and B3I only", .{});
+            try diags.warn(.no_effect, path, "B2I describes satellites from 1 to 30 only, at most 18 (BDS-SIS-ICD 2.1 5.3.3.5); the others are described on B1I and B3I only", .{});
         }
     };
 }

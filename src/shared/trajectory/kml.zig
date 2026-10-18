@@ -25,12 +25,20 @@ pub fn foot(w: *Writer) Writer.Error!void {
 }
 
 fn escaped(w: *Writer, name: []const u8) Writer.Error!void {
-    for (name) |c| switch (c) {
+    var i: usize = 0;
+    while (i < name.len) : (i += 1) switch (name[i]) {
         '&' => try w.writeAll("&amp;"),
         '<' => try w.writeAll("&lt;"),
         '>' => try w.writeAll("&gt;"),
         '"' => try w.writeAll("&quot;"),
         '\'' => try w.writeAll("&apos;"),
-        else => try w.writeByte(c),
+        // characters XML 1.0 does not allow: these, and U+FFFE and U+FFFF
+        0...8, 11, 12, 14...31 => {},
+        0xEF => if (i + 2 < name.len and name[i + 1] == 0xBF and name[i + 2] & 0xFE == 0xBE) {
+            i += 2;
+        } else {
+            try w.writeByte(0xEF);
+        },
+        else => try w.writeByte(name[i]),
     };
 }

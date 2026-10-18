@@ -102,16 +102,17 @@ pub fn systemRecord(comptime sys: types.System) type {
 
 pub fn keplerRecord(comptime sys: types.System, pools: *Pools, kind: systemRecord(sys).Kind, prn: u32, ep: Epoch, lines: *Lines) std.mem.Allocator.Error!?records.KeplerEphemeris {
     const R = systemRecord(sys);
+    const message = R.Kind.words.get(kind);
     var rows: [9][4]?f64 = undefined;
     const n = R.bodyLines(kind);
     for (rows[0..n]) |*row| row.* = rinex_fields.optionalBodyLine(lines) catch {
-        try rejectMalformed(pools, sys, prn, ep, @tagName(kind));
+        try rejectMalformed(pools, sys, prn, ep, message);
         return null;
     };
     const sat = types.SatId.fromPrn(sys, prn) catch return null;
     var body: record.Body = .{ .rows = rows[0..n] };
-    const completion = R.complete(&body, kind, GpsTime.fromGpsCalendar(ep.utc)) catch |e| return blankOrSkip(pools, e, sys, prn, ep, @tagName(kind), body.blank);
-    var rec = keplerFromBody(sat, ep, &body, completion) catch |e| return blankOrSkip(pools, e, sys, prn, ep, @tagName(kind), body.blank);
+    const completion = R.complete(&body, kind, GpsTime.fromGpsCalendar(ep.utc)) catch |e| return blankOrSkip(pools, e, sys, prn, ep, message, body.blank);
+    var rec = keplerFromBody(sat, ep, &body, completion) catch |e| return blankOrSkip(pools, e, sys, prn, ep, message, body.blank);
     rec.transmitted = transmissionTime(&rec, n, rows[n - 1][0]);
     if (gnss.plausible.kepler(&rec)) |name| {
         try pools.rejected.append(pools.arena, .{ .system = sys, .named = .{ .record = .{ .prn = prn, .epoch = ep.utc } }, .message = rec.source().rinexName(sat), .field = name });

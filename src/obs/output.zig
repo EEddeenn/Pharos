@@ -16,7 +16,12 @@ pub const SubmitError = error{ OutOfMemory, InvalidValue, EpochPassed };
 pub const RangeError = error{ Begun, EpochOutOfRange, EmptyRange, NoEpochs };
 pub const PullError = error{InvalidBatchSize};
 pub const EpochRange = struct { first: u64, end: u64 };
-pub const Output = enum(u8) { observation = 0, position = 1 };
+pub const Output = enum(u8) {
+    observation = 0,
+    position = 1,
+
+    pub const words: std.EnumArray(Output, []const u8) = .init(.{ .observation = "observation", .position = "position" });
+};
 pub const max_batch_epochs: u32 = 64;
 pub const Summary = struct { first_ms: u64, last_ms: u64, epochs: u64, interval_ms: u32, tracked: ?usize };
 pub const Batch = struct { bytes: []const u8, completed_epochs: u64, generated_through: ?u64, end: bool };
@@ -36,6 +41,14 @@ pub const Created = struct {
         return fromUnixSeconds(read_s.*);
     }
 };
+
+/// Why a file could not be made, in the words of a sentence.
+pub fn reason(e: Error) []const u8 {
+    return switch (e) {
+        error.OutOfMemory => "out of memory",
+        error.NoSuchOutput => "the bundle declares none",
+    };
+}
 
 const Sampler = struct {
     start: core.time.GpsTime,

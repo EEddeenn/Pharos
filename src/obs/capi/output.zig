@@ -63,11 +63,11 @@ fn create(input: ?*source.Handle, kind: u32, dating: Dating, out: ?*?*Handle) St
     const created = switch (dating) {
         .created => |c| c,
         .unix_s => |s| {
-            common.thread_error.set("created_unix_s must lie within {d}..{d}, got {d}", .{ output.Created.min.unix_s, output.Created.max.unix_s, s });
+            common.thread_error.set("created_unix_s must be from {d} to {d}, got {d}", .{ output.Created.min.unix_s, output.Created.max.unix_s, s });
             return .arg;
         },
         .wall_clock_s => |s| {
-            common.thread_error.set("the wall clock reads {d} s, outside {d}..{d}", .{ s, output.Created.min.unix_s, output.Created.max.unix_s });
+            common.thread_error.set("the wall clock must read from {d} to {d} s, got {d}", .{ output.Created.min.unix_s, output.Created.max.unix_s, s });
             return .arg;
         },
     };
@@ -75,7 +75,7 @@ fn create(input: ?*source.Handle, kind: u32, dating: Dating, out: ?*?*Handle) St
     origin.retain();
     h.* = .{ .source = origin, .file = undefined, .kind = format };
     h.file = output.File.create(allocator, &origin.b, format, created) catch |e| {
-        common.thread_error.set("cannot create the {s} file: {s}", .{ @tagName(format), @errorName(e) });
+        common.thread_error.set("cannot create the {s} file: {s}", .{ output.Output.words.get(format), output.reason(e) });
         origin.release();
         allocator.destroy(h);
         return switch (e) {
@@ -108,9 +108,9 @@ pub fn pharos_obs_output_set_range(output_handle: ?*Handle, first_epoch: u64, en
     h.file.range(.{ .first = first_epoch, .end = end_epoch }) catch |e| {
         switch (e) {
             error.Begun => h.err.set("the file has begun: a range comes before the first pull", .{}),
-            error.EpochOutOfRange => h.err.set("range [{d}, {d}) lies outside the model extent [0, {d})", .{ first_epoch, end_epoch, h.file.fullRange().end }),
-            error.EmptyRange => h.err.set("range [{d}, {d}) is empty or reversed", .{ first_epoch, end_epoch }),
-            error.NoEpochs => h.err.set("range [{d}, {d}) contains no output epoch", .{ first_epoch, end_epoch }),
+            error.EpochOutOfRange => h.err.set("end_epoch must be at most {d}, got {d}", .{ h.file.fullRange().end, end_epoch }),
+            error.EmptyRange => h.err.set("end_epoch must be above first_epoch ({d}), got {d}", .{ first_epoch, end_epoch }),
+            error.NoEpochs => h.err.set("first_epoch {d} and end_epoch {d} select no output epoch", .{ first_epoch, end_epoch }),
         }
         return .arg;
     };
@@ -124,7 +124,7 @@ pub fn pharos_obs_output_pull(output_handle: ?*Handle, max_epochs: u32, out: ?*B
     h.err.begin();
     const batch = h.file.pull(max_epochs) catch |e| switch (e) {
         error.InvalidBatchSize => {
-            h.err.set("max_epochs must lie within 1..{d}, got {d}", .{ output.max_batch_epochs, max_epochs });
+            h.err.set("max_epochs must be from 1 to {d}, got {d}", .{ output.max_batch_epochs, max_epochs });
             return .arg;
         },
     };

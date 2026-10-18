@@ -8,6 +8,7 @@ const Output = pharos_obs.output.Output;
 const Created = pharos_obs.output.Created;
 const cli = pharos_obs.cli;
 const Console = cli.Console;
+const Escaped = pharos_obs.core.diagnostics.Escaped;
 const Args = @import("args.zig").Args;
 
 pub fn write(gpa: std.mem.Allocator, io: Io, args: Args, console: Console) u8 {
@@ -41,13 +42,13 @@ pub fn write(gpa: std.mem.Allocator, io: Io, args: Args, console: Console) u8 {
 }
 
 fn warnIgnored(console: Console, output: Output, option: []const u8) void {
-    console.warn("The bundle declares no {s} file: {s} is ignored", .{ @tagName(output), option });
+    console.warn("The bundle declares no {s} file: {s} is ignored", .{ Output.words.get(output), option });
 }
 
 fn readClock(io: Io, console: Console) ?Created {
     var read_s: i64 = 0;
     return Created.fromWallClock(io, &read_s) orelse {
-        console.fail("The wall clock reads {d} s, outside {d}..{d}", .{ read_s, Created.min.unix_s, Created.max.unix_s });
+        console.fail("The wall clock must read from {d} to {d} s, got {d}", .{ Created.min.unix_s, Created.max.unix_s, read_s });
         return null;
     };
 }
@@ -59,7 +60,12 @@ fn writeOne(gpa: std.mem.Allocator, io: Io, b: *const Bundle, output: Output, cr
     };
     defer file.destroy();
     if (args.seek) |epoch| file.range(.{ .first = epoch, .end = file.fullRange().end }) catch |e| {
-        console.fail("--seek {d} cannot select the {s} file's epochs: {s}", .{ epoch, @tagName(output), @errorName(e) });
+        console.fail("--seek {d} cannot select the {s} file's epochs: {s}", .{ epoch, Output.words.get(output), switch (e) {
+            error.Begun => "the file has begun",
+            error.EpochOutOfRange => "the range goes beyond the run",
+            error.EmptyRange => "no epoch of the run is left from it",
+            error.NoEpochs => "the file has no epoch from it on",
+        } });
         return 1;
     };
     if (file.ionosphere()) |ionosphere| cli.printIonosphere(console, ionosphere);
@@ -88,7 +94,7 @@ fn writeOne(gpa: std.mem.Allocator, io: Io, b: *const Bundle, output: Output, cr
         cli.cannotWrite(console, path, e);
         return 1;
     };
-    console.info("{s} written: {s}", .{ title, path });
+    console.info("{s} written: {f}", .{ title, Escaped{ .text = path } });
     console.flush();
     return 0;
 }
@@ -102,5 +108,5 @@ const From = struct {
 };
 
 fn reportInitError(console: Console, output: Output, e: pharos_obs.output.Error) void {
-    console.fail("Cannot create the {s} file: {s}", .{ @tagName(output), @errorName(e) });
+    console.fail("Cannot create the {s} file: {s}", .{ Output.words.get(output), pharos_obs.output.reason(e) });
 }

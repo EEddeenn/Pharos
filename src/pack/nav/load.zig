@@ -2,6 +2,7 @@ const std = @import("std");
 const core = @import("shared").core;
 const gnss = @import("shared").gnss;
 const bundle = @import("shared").bundle;
+const node = @import("shared").json.node;
 const diagnostics = core.diagnostics;
 const Diagnostics = diagnostics.Diagnostics;
 const GpsTime = core.time.GpsTime;
@@ -151,7 +152,7 @@ fn fitting(scope: diagnostics.Scope, comptime name: []const u8, set: anytype) st
     var one: core.iono.Broadcast = .{};
     @field(one, name) = value;
     if (gnss.plausible.broadcastIono(one)) |field| {
-        try scope.warn(.implausible_record, null, "the {s} set of the header is dropped, {s} outside its broadcast field", .{ name, field });
+        try scope.warn(.implausible_record, null, "the {s} set of the header is dropped, {s} outside its broadcast field", .{ bundle.ionosphere.Model.words.get(@field(bundle.ionosphere.Model, name)), field });
         return null;
     }
     return value;
@@ -188,7 +189,7 @@ fn report(arena: std.mem.Allocator, scope: diagnostics.Scope, rejected: []const 
                 const separator = if (count > 0) ", " else "";
                 switch (q.named) {
                     .record => |at| try names.print(arena, "{s}{c}{d:0>2} {f}", .{ separator, q.system.rinexLetter(), at.prn, at.epoch }),
-                    .label => |label| try names.print(arena, "{s}{s}", .{ separator, label }),
+                    .label => |label| try names.print(arena, "{s}{f}", .{ separator, diagnostics.Escaped{ .text = label } }),
                 }
             }
             count += 1;
@@ -220,7 +221,7 @@ fn warnAttitude(atx: bundle.antex.Antex, scope: diagnostics.Scope) std.mem.Alloc
         var seen = false;
         for (atx.antennas[0..i]) |b| seen = seen or std.mem.eql(u8, a.kind, b.kind);
         if (seen) continue;
-        try scope.warn(.no_record, null, "no yaw law is held for the antenna type {s}: its satellites fly the nominal law through their turns", .{a.kind});
+        try scope.warn(.no_record, null, "no yaw law is held for the antenna type {f}: its satellites fly the nominal law through their turns", .{diagnostics.Escaped{ .text = a.kind }});
     }
 }
 
@@ -232,7 +233,7 @@ pub fn precise(arena: std.mem.Allocator, source: files.Source, p: bundle.scenari
         const scope: diagnostics.Scope = .{ .diags = diags, .source = path, .path = try arena.print("precise.orbit[{d}]", .{index}) };
         const file = try sp3.parse(arena, try files.readResolved(arena, source, path, files.max_bytes, scope), leap, scope);
         if (interval) |i| {
-            if (i != file.interval_s) return scope.fail(.invalid_format, null, "the SP3 interval {d} s does not match the earlier files' {d} s", .{ file.interval_s, i });
+            if (i != file.interval_s) return scope.fail(.invalid_format, null, "the SP3 interval {f} s does not match the earlier files' {f} s", .{ node.Number{ .value = file.interval_s, .apart = i }, node.Number{ .value = i, .apart = file.interval_s } });
         } else interval = file.interval_s;
         if (file.samples.len > 0) {
             if (first_epoch) |t0| {

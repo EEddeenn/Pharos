@@ -49,7 +49,7 @@ pub const Args = struct {
     options: engine.run.Options = .{},
 };
 
-const gain_range = std.fmt.comptimePrint("{d}..{d} dB", .{ gain.Db.min.db, gain.Db.max.db });
+const gain_range = std.fmt.comptimePrint("from {d} to {d} dB", .{ gain.Db.min.db, gain.Db.max.db });
 
 pub fn parse(argv: []const []const u8, refusal: *cli.Refusal) cli.Refused!Args {
     var scan: cli.Scan(Name, options) = .{ .argv = argv, .refusal = refusal, .input = input.placeholder };
@@ -62,7 +62,7 @@ pub fn parse(argv: []const []const u8, refusal: *cli.Refusal) cli.Refused!Args {
             .workers => args.options.workers = try scan.integer(u32, 0, std.math.maxInt(u32), o),
             .seed => args.options.seed = try scan.integer(u64, 0, std.math.maxInt(u64), o),
             .noise => args.options.noise = try scan.word(NoiseMode, o),
-            .gain => args.options.gain = gain.Db.fromValue(o.number()) orelse return scan.expects(o, gain_range),
+            .gain => args.options.gain = gain.Db.fromValue(o.number()) orelse return scan.outside(o, gain_range),
             .seek => args.seek = .{ .ms = try scan.integer(u64, 0, std.math.maxInt(u64), o) },
             .dump => args.dump = o.value,
             .dry_run => args.dry_run = true,
