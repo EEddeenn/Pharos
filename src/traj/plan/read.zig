@@ -369,7 +369,7 @@ pub const RawRule = struct {
     eq: ?RawValue = null,
     range: ?RawRange = null,
     value: ?RawValue = null,
-    scale: f64 = undefined,
+    scale: ?f64 = null,
     weight: f64 = undefined,
     reduce: ?model.Reduce = null,
     sense: ?model.Sense = null,
@@ -382,21 +382,21 @@ pub const RawRule = struct {
         .{ .name = "eq", .doc = "hard equality value" },
         .{ .name = "range", .doc = "hard inclusive bounds; at least one bound is required" },
         .{ .name = "value", .doc = "soft target value" },
-        .{ .name = "scale", .default = .{ .number = 1 }, .range = .{ .min = 0, .open_min = true }, .doc = "positive physical normalization scale" },
+        .{ .name = "scale", .range = .{ .min = 0, .open_min = true }, .doc = "positive physical normalization scale of a target or an objective; default 1" },
         .{ .name = "weight", .default = .{ .number = 1 }, .range = .{ .min = 0, .open_min = true }, .doc = "positive target or objective weight" },
-        .{ .name = "reduce", .doc = "objective reduction; default value" },
+        .{ .name = "reduce", .doc = "objective reduction" },
         .{ .name = "sense", .doc = "objective direction; default minimize" },
         .{ .name = "relation", .doc = "geometric relation instead of a quantity" },
     };
 
     pub fn schemaMetadata(s: *shared.json.schema.Schema) std.Io.Writer.Error!void {
         try alternatives(s, &.{
-            .{ .tag = .{ .key = "kind", .value = "hard" }, .required = &.{ "quantity", "eq" }, .forbidden = &.{ "range", "value", "relation", "reduce", "sense" } },
-            .{ .tag = .{ .key = "kind", .value = "hard" }, .required = &.{ "quantity", "range" }, .forbidden = &.{ "eq", "value", "relation", "reduce", "sense" } },
-            .{ .tag = .{ .key = "kind", .value = "hard" }, .required = &.{"relation"}, .forbidden = &.{ "quantity", "eq", "range", "value", "reduce", "sense" } },
+            .{ .tag = .{ .key = "kind", .value = "hard" }, .required = &.{ "quantity", "eq" }, .forbidden = &.{ "range", "value", "relation", "reduce", "sense", "scale" } },
+            .{ .tag = .{ .key = "kind", .value = "hard" }, .required = &.{ "quantity", "range" }, .forbidden = &.{ "eq", "value", "relation", "reduce", "sense", "scale" } },
+            .{ .tag = .{ .key = "kind", .value = "hard" }, .required = &.{"relation"}, .forbidden = &.{ "quantity", "eq", "range", "value", "reduce", "sense", "scale" } },
             .{ .tag = .{ .key = "kind", .value = "target" }, .required = &.{ "quantity", "value" }, .forbidden = &.{ "eq", "range", "relation", "reduce", "sense" } },
             .{ .tag = .{ .key = "kind", .value = "target" }, .required = &.{"relation"}, .forbidden = &.{ "quantity", "eq", "range", "value", "reduce", "sense" } },
-            .{ .tag = .{ .key = "kind", .value = "objective" }, .required = &.{"quantity"}, .forbidden = &.{ "eq", "range", "value", "relation" } },
+            .{ .tag = .{ .key = "kind", .value = "objective" }, .required = &.{ "quantity", "reduce" }, .forbidden = &.{ "eq", "range", "value", "relation" } },
         });
     }
 };

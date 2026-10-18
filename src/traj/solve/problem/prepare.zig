@@ -9,7 +9,9 @@ const subdivisions = 4;
 const QuantitySet = std.EnumSet(model.Quantity);
 const CurveSample = std.meta.Child(@FieldType(problem.Curve, "samples"));
 const Bounds = struct { value: f64, lower: f64, upper: f64 };
-const Sampling = struct { scope: model.Scope, points: []const usize };
+/// The points of a scope. `weights` are their weights in an integral where the points say them (a range of time
+/// laid on the cells it covers); the points' own places say them otherwise.
+const Sampling = struct { scope: model.Scope, points: []const usize, weights: ?[]const f64 = null };
 const LocationKey = struct { kind: enum { cell, event, time }, index: usize, value: u64 };
 const Batch = struct {
     constraints: std.ArrayList(usize) = .empty,
@@ -283,9 +285,10 @@ const Compiler = struct {
         return .{ times[cell.section] + span * cell.start, times[cell.section] + span * cell.end };
     }
 
-    fn samples(self: *Compiler, scope: model.Scope) std.mem.Allocator.Error![]const usize {
-        for (self.samplings.items) |sampling| if (std.meta.eql(sampling.scope, scope)) return sampling.points;
+    fn samples(self: *Compiler, scope: model.Scope) std.mem.Allocator.Error!Sampling {
+        for (self.samplings.items) |sampling| if (std.meta.eql(sampling.scope, scope)) return sampling;
         var points: std.ArrayList(usize) = .empty;
+        var weights: std.ArrayList(f64) = .empty;
         switch (scope) {
             .event => |event| try points.append(self.allocator, try self.point(.{ .event = event })),
             .time => |time| {
@@ -297,6 +300,8 @@ const Compiler = struct {
                     break;
                 };
                 try points.append(self.allocator, try self.point(location));
+                // One point is the whole of what is asked at one time, wherever in its cell it lies.
+                try weights.append(self.allocator, 1);
             },
             .time_range => |range| if (self.times != null) {
                 // Five points in each cell the range covers, over the part of the cell it covers.
@@ -308,6 +313,9 @@ const Compiler = struct {
                     for (0..subdivisions + 1) |k| {
                         const time = low + (high - low) * @as(f64, @floatFromInt(k)) / subdivisions;
                         try points.append(self.allocator, try self.point(.{ .cell = .{ .index = index, .u = (time - span[0]) / (span[1] - span[0]) } }));
+                        // Simpson's weights over the part, as a share of the cell.
+                        const simpson: f64 = if (k == 0 or k == subdivisions) 1 else if (k % 2 == 1) 4 else 2;
+                        try weights.append(self.allocator, simpson / (3 * subdivisions) * (high - low) / (span[1] - span[0]));
                     }
                 }
             } else {
@@ -331,14 +339,14 @@ const Compiler = struct {
                 };
             },
         }
-        try self.samplings.append(self.allocator, .{ .scope = scope, .points = points.items });
-        return points.items;
+        try self.samplings.append(self.allocator, .{ .scope = scope, .points = points.items, .weights = if (weights.items.len > 0) weights.items else null });
+        return self.samplings.items[self.samplings.items.len - 1];
     }
 
     /// For the convex tier, the control points of a rule's polynomial over its scope, where the rule is one that
     /// control points hold: a place, a velocity, an acceleration, a 3D norm of one of them or of the jerk, a region.
     fn controls(self: *Compiler, descriptor: rules.Check) std.mem.Allocator.Error!?[]const usize {
-        if (self.times == null) return null;
+        if (self.times == null or self.rules.isObjective(descriptor)) return null;
         const order: u8 = switch (descriptor.operation) {
             .region => 0,
             .quantity => |operation| switch (self.rules.plan.rules[operation.rule].definition.quantity.quantity) {
@@ -375,7 +383,10 @@ const Compiler = struct {
     }
 
     fn check(self: *Compiler, descriptor: rules.Check, index: usize) std.mem.Allocator.Error!void {
-        const points = try self.controls(descriptor) orelse try self.samples(descriptor.scope);
+        // A plan's own word on its smoothness is no term of the convex tier's layout: the tier integrates it itself.
+        if (self.times != null) if (descriptor.ruleIndex()) |rule| if (rules.smoothed(self.rules.plan.rules[rule]) != null) return;
+        const sampling: Sampling = if (try self.controls(descriptor)) |points| .{ .scope = descriptor.scope, .points = points } else try self.samples(descriptor.scope);
+        const points = sampling.points;
         const objective = self.rules.isObjective(descriptor);
         const duration = descriptor.operation == .quantity and self.rules.plan.rules[descriptor.operation.quantity.rule].definition.quantity.quantity == .duration;
         const sequence = if (descriptor.operation == .curve) try self.curve(descriptor.operation.curve.rule, points) else null;
@@ -385,7 +396,7 @@ const Compiler = struct {
                 .operation = if (sequence) |curve_index| .{ .curve = .{ .check = index, .variable = self.curves.items[curve_index].samples[sample].variable } } else .{ .check = index },
                 .point = point_index,
                 .equality = descriptor.equality,
-                .weight = descriptor.weight * (if (duration) @as(f64, 1) else quadrature(self.locations.items[point_index], sample, points.len)),
+                .weight = descriptor.weight * (if (sampling.weights) |weights| weights[sample] else quadrature(self.locations.items[point_index], sample, points.len)),
                 .margin = if (objective or descriptor.equality) 0 else if (descriptor.ruleIndex()) |rule| self.margins[rule] else 0,
             };
             if (objective) try self.objectives.append(self.allocator, term) else try self.constraints.append(self.allocator, term);

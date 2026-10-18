@@ -44,8 +44,8 @@ pub const Report = struct {
     status: Status,
     feasible: bool,
     verified: bool,
-    /// Whether what the solve makes least was at its least when it stopped: in the nonlinear solve the plan's soft
-    /// rules (true where it has none), in the convex tier its own measure of the path's smoothness.
+    /// Whether what the solve makes least was at its least when it stopped: the plan's soft rules (in the nonlinear
+    /// solve true where it has none; in the convex tier the path's smoothness stands for them there).
     settled: bool,
     iterations: usize,
     /// What the solve spent, in the unit of `Options.max_work`.
@@ -209,9 +209,10 @@ fn sayNone(diagnostics: *shared.core.diagnostics.Diagnostics, named: []const boo
     } else try diagnostics.err(.invalid_segment, "rules", "no path meets the hard rules: {d} of them {s} named", .{ count, verb });
 }
 
-/// The convex tier: the answer of a plan that states no target and no objective, whose events' times are held and
-/// whose rules are convex in the path; null where the plan is not one. The answer is the path of least jerk, ties
-/// by least acceleration (`convex.zig`). The mesh loop is the nonlinear solve's: a limit the verifier finds
+/// The convex tier: the answer of a plan whose events' times are held and whose rules are convex in the path, a
+/// target or an objective a square in it or about it; null where the plan is not one. The answer makes the plan's
+/// own targets and objectives least, and where it states none is the path of least jerk, ties by least
+/// acceleration (`convex.zig`). The mesh loop is the nonlinear solve's: a limit the verifier finds
 /// overrun between the tier's rows gets a margin and its section more cells. A mesh that holds no path gets more
 /// cells where the rows that cannot hold together stand, since a finer mesh may hold one; the "no" of the finest
 /// is not decided, and names those rules, or none where the tier's floor is among them. A finer mesh is made only
@@ -257,7 +258,7 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
         const prepared = try problem.prepare(allocator, temporary, &tier_rules, margins, built_mesh, true);
         var workspace = try problem.Workspace.init(temporary, &prepared.layout);
         workspace.hold_frame = true;
-        const solved: convex.Report = if (built_mesh.inconsistent) .{ .outcome = .none } else try convex.solve(allocator, temporary, &prepared.layout, &workspace, prepared.x, shape.frame, (options.max_work -| work) / cells);
+        const solved: convex.Report = if (built_mesh.inconsistent) .{ .outcome = .none } else try convex.solve(allocator, temporary, &prepared.layout, &workspace, prepared.x, shape, (options.max_work -| work) / cells);
         iterations += solved.iterations;
         work +|= solved.work *| cells;
         const current = try workspace.candidateOf(temporary, prepared.x);
@@ -380,7 +381,7 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
                 .settled = solved.outcome == .optimal,
                 .iterations = iterations,
                 .work = work,
-                .objective = 0,
+                .objective = finite(solved.objective, 0),
                 .max_violation = finite(validation.max_violation, 1e300),
                 .stationarity = 0,
             },
@@ -395,6 +396,13 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
                     try diagnostics.err(.invalid_segment, "rules", "trajectory solve reached its work bound of {d} before a candidate passed every check: maximum normalized violation {d}", .{ options.max_work, result.report.max_violation });
                 } else try diagnostics.err(.invalid_segment, "rules", "trajectory solve {s}: maximum normalized violation {d}", .{ @tagName(result.report.status), result.report.max_violation });
             }
+        } else if (!result.report.settled) {
+            const soft = for (plan.rules) |rule| {
+                if (rule.kind() != .hard) break true;
+            } else false;
+            if (soft) {
+                try diagnostics.warn(.invalid_segment, "rules", "the solve stopped before the soft rules settled: the path meets every hard rule, and a target or objective may be met less well than it can be", .{});
+            } else try diagnostics.warn(.invalid_segment, "rules", "the solve stopped before the path settled: the path meets every hard rule, and may be less smooth than it can be", .{});
         }
         return result;
     }

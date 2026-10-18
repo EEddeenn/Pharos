@@ -445,7 +445,7 @@ fn residual(comptime K: type, context: *Context(K), term: problem.Term) K.Number
 }
 
 /// A soft term: its value, and what its Gauss-Newton row is made of. The term is `curvature / 2` times the square
-/// of `residual` where it is a weighted square (the weight taken as it stands), and `curvature` is zero elsewhere.
+/// of `residual` where it is a weighted square, and `curvature` is zero elsewhere.
 fn Soft(comptime K: type) type {
     return struct { value: K.Number, residual: K.Number, curvature: f64 };
 }
@@ -457,11 +457,10 @@ fn objective(comptime K: type, context: *Context(K), term: problem.Term) Soft(K)
     const base = residual(K, context, term);
     var result = base;
     if (check.operation == .region and A.value(result) >= 0) return .{ .value = A.constant(0), .residual = base, .curvature = 0 };
-    if (check.square) result = A.mul(result, result);
-    var curvature: f64 = if (check.square) 2 * term.weight else 0;
+    result = A.mul(result, result);
+    var curvature: f64 = 2 * term.weight;
     if (check.average_scope) |scope| {
-        const duration_quantity = check.operation == .quantity and layout.rules.plan.rules[check.operation.quantity.rule].definition.quantity.quantity == .duration;
-        const measure = if (duration_quantity) context.scopeDuration(scope) else switch (layout.locations[term.point]) {
+        const measure = switch (layout.locations[term.point]) {
             .cell => |place| blk: {
                 const cell = layout.mesh.cells[place.index];
                 break :blk A.scale(context.duration(cell.section), cell.end - cell.start);
@@ -476,5 +475,5 @@ fn objective(comptime K: type, context: *Context(K), term: problem.Term) Soft(K)
             curvature /= A.value(whole);
         }
     }
-    return .{ .value = A.scale(result, term.weight), .residual = base, .curvature = @max(0, curvature) };
+    return .{ .value = A.scale(result, term.weight), .residual = base, .curvature = curvature };
 }

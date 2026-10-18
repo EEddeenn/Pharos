@@ -1,14 +1,17 @@
 //! The convex tier. With the events' times held, a rule of the tier's class is a row that is linear in the path's
-//! unknowns, or a bound less the squared norm of a vector that is linear in them. The rows and their derivatives
-//! at one point therefore state the whole problem, and it is solved as what it is: a convex programme, the path
-//! of least jerk that meets the rows, by a primal-dual interior-point method whose every step is one factor,
-//! along the path, of the symmetric matrix of the unknowns and the rows' multipliers. Where there is no path, a
-//! second programme (the least sum of what the rows are broken by) says so, and its multipliers name the rows
-//! that cannot hold together.
+//! unknowns, or a bound less the squared norm of a vector that is linear in them, and a target or an objective is
+//! a sum of squares of such vectors. The rows and their derivatives at one point therefore state the whole
+//! problem, and it is solved as what it is: a convex programme, by a primal-dual interior-point method whose
+//! every step is one factor, along the path, of the symmetric matrix of the unknowns and the rows' multipliers.
+//! What it makes least is the plan's own targets and objectives, or the path's jerk where the plan states none.
+//! Where there is no path, a second programme (the least sum of what the rows are broken by) says so, and its
+//! multipliers name the rows that cannot hold together.
 //!
 //! A rule that is linear only once the local frame is held (an altitude, a horizontal speed) is linearised where
-//! the path is, and the programme is made again about its answer until the rows are what it said they would be.
+//! the path is, and the programme is made again about its answer until the rows are what it said they would be,
+//! and, where a target or an objective is such, until an answer moves nothing.
 const std = @import("std");
+const model = @import("../plan.zig").model;
 const problem = @import("problem.zig");
 const rules = @import("rules.zig");
 const mesh_module = @import("mesh.zig");
@@ -35,6 +38,8 @@ pub const Report = struct {
     outcome: Outcome = .undecided,
     iterations: usize = 0,
     work: usize = 0,
+    /// The plan's own targets and objectives at the answer: nothing where it states none.
+    objective: f64 = 0,
     /// Indices of the layout's constraints, where the outcome is `none` or `unmet`.
     conflict: []const usize = &.{},
 };
@@ -49,6 +54,8 @@ const tie = 1e-6;
 /// The weight of the objective's curvature in the programme of least violation: it keeps that programme's answer
 /// one point, near where the step began.
 const hold = 0.1;
+/// The most programmes of one mesh.
+const most_passes = 8;
 const none = std.math.maxInt(usize);
 
 /// A symmetric matrix kept by rows, each from its first coupled unknown to its diagonal.
@@ -423,9 +430,9 @@ fn room(value: f64, change: f64) f64 {
 }
 
 /// The convex programme of a layout about `x`, solved, and `x` moved to its answer: the layout of a plan the tier
-/// takes (`rules.shape`), which has no soft row. `frame` says that some row is linear only where the path is: the
+/// takes (`rules.shape`). `shape.frame` says that some row or soft term is what it is only where the path is: the
 /// programme is then made again about its answer.
-pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, layout: *const problem.Layout, workspace: *problem.Workspace, x: []f64, frame: bool, max_work: usize) Error!Report {
+pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, layout: *const problem.Layout, workspace: *problem.Workspace, x: []f64, shape: rules.Shape, max_work: usize) Error!Report {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const memory = arena.allocator();
@@ -437,6 +444,8 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
     for (layout.order, 0..) |column, index| place[column] = index;
     const row_places = try memory.alloc(usize, layout.columns.len);
     for (row_places, layout.columns) |*out, column| out.* = place[column];
+    const soft_places = try memory.alloc(usize, layout.soft_columns.len);
+    for (soft_places, layout.soft_columns) |*out, column| out.* = place[column];
     // A bound that cannot bind is no row. Neither is a row that holds no unknown: it is a number, looked at where
     // it is read.
     const vacuous = try memory.alloc(bool, rows);
@@ -455,6 +464,7 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
         for (&places, cellColumns(mesh, cell, axis)) |*out, column| out.* = place[column];
         objective.widen(&places);
     };
+    for (0..layout.objectives.len) |term| objective.widen(soft_places[layout.soft_offsets[term]..layout.soft_offsets[term + 1]]);
     objective.close();
 
     // The step's matrix: the unknowns in the same order, and each row's multiplier after the last of its unknowns
@@ -504,9 +514,10 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
     const values = try memory.alloc(f64, rows);
     const jacobian = try memory.alloc(f64, layout.columns.len);
     const curved = try memory.alloc(f64, layout.curved_offsets[rows]);
-    // The evaluator's objective is the plan's soft rules: there are none, and its value and gradient are not read.
-    var stated: f64 = 0;
-    const stated_gradient = try memory.alloc(f64, x.len);
+    // The evaluator's objective is the layout's soft terms: each a square, with its row of the Gauss-Newton matrix.
+    var value: f64 = 0;
+    const gradient = try memory.alloc(f64, x.len);
+    const soft = try memory.alloc(f64, layout.soft_columns.len);
     var solver: Solver = .{
         .layout = layout,
         .objective = objective,
@@ -543,14 +554,16 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
     // The most a row was broken by at the least, where the pass before found no step that meets the rows.
     var doubt: ?f64 = null;
     var confirmed = false;
-    for (0..8) |pass| {
+    // How far the last answer moved the path, in the unknowns' own scaled units.
+    var moved: f64 = std.math.inf(f64);
+    for (0..most_passes) |pass| {
         // The work bound is held where it can be passed: before each evaluation, and at each iteration.
         if (report.work + 1 > max_work) {
             report.outcome = .spent;
             break;
         }
         report.work += 1;
-        workspace.values(x, .{ .objective = &stated, .constraints = values }) catch {
+        workspace.values(x, .{ .objective = &value, .constraints = values }) catch {
             report.outcome = .invalid;
             return report;
         };
@@ -567,15 +580,16 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
         };
         if (pass > 0) {
             // The rows where the path now is, against what the programme said they would be: where they are the
-            // same, its answer is the plan's (the objective is the same quadratic wherever it is read). A limit
-            // the programme left well short of being reached need only still hold.
+            // same, its answer is the plan's (the objective being the same quadratic wherever it is read, or the
+            // last answer having moved nothing). A limit the programme left well short of being reached need only
+            // still hold.
             var off: f64 = 0;
             for (kinds, values, solver.value) |kind, number, foretold| switch (kind) {
                 .skip => {},
                 .equality => off = @max(off, @abs(number - foretold)),
                 .inequality => off = @max(off, if (foretold > 1e-3) @max(0, -number) else @abs(number - foretold)),
             };
-            if (report.outcome == .optimal and off <= met) {
+            if (report.outcome == .optimal and off <= met and (!shape.soft or moved <= 1e-6)) {
                 confirmed = true;
                 break;
             }
@@ -585,7 +599,7 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
             break;
         }
         report.work += nlp.derivative_work;
-        workspace.derivatives(x, .{ .gradient = stated_gradient, .jacobian = jacobian, .soft = &.{}, .curved = curved }) catch {
+        workspace.derivatives(x, .{ .gradient = gradient, .jacobian = jacobian, .soft = soft, .curved = curved }) catch {
             report.outcome = .invalid;
             return report;
         };
@@ -608,10 +622,16 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
             kind.* = .skip;
         };
 
-        // The objective: the path's smoothness, about where the path now is.
+        // The objective, about where the path now is: the plan's own targets and objectives, or the path's
+        // smoothness where it states none.
         @memset(solver.hessian, 0);
-        @memset(solver.gradient, 0);
-        smoothness(mesh, x, place, &objective, solver.hessian, solver.gradient);
+        for (solver.gradient, layout.order) |*g, column| g.* = gradient[column];
+        for (0..layout.objectives.len) |term| {
+            const a = layout.soft_offsets[term];
+            const b = layout.soft_offsets[term + 1];
+            objective.add(solver.hessian, soft_places[a..b], soft[a..b], 1);
+        }
+        if (own(prepared.plan, mesh, x, place, &objective, solver.hessian, solver.gradient) == null) _ = smoothness(mesh, x, place, &objective, solver.hessian, solver.gradient, .all, 3, 1);
         var size: f64 = 0;
         for (0..n) |i| size = @max(size, solver.hessian[objective.at(i, i)]);
         for (solver.gradient) |g| size = @max(size, @abs(g));
@@ -633,10 +653,14 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
             if (ended != .converged) ended = solver.within(&report, .optimum, weight, 80, max_work);
         }
         if (ended == .converged) {
-            for (layout.order, solver.d) |column, change| x[column] += change;
+            moved = 0;
+            for (layout.order, solver.d) |column, change| {
+                x[column] += change;
+                moved = @max(moved, @abs(change));
+            }
             report.outcome = .optimal;
-            // Rows that are exact where they were read are exact where the path now is.
-            if (!frame) {
+            // Rows and soft terms that are exact where they were read are exact where the path now is.
+            if (!shape.frame) {
                 confirmed = true;
                 break;
             }
@@ -648,6 +672,7 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
             var worst: f64 = 0;
             for (solver.instances[0..solver.count]) |instance| worst = @max(worst, -instance.sign * solver.value[instance.row]);
             report.outcome = if (report.work + nlp.factor_work > max_work) .spent else .undecided;
+            moved = std.math.inf(f64);
             if (again != .converged) break;
             for (layout.order, solver.d) |column, change| x[column] += change;
             if (worst > met) {
@@ -671,7 +696,42 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
     }
     if (report.outcome == .optimal and !confirmed) report.outcome = .undecided;
     report.iterations = solver.iterations;
+    // What the plan's own targets and objectives come to where the path now is (the step's matrix is scratch here).
+    if (own(prepared.plan, mesh, x, place, &objective, solver.hessian, solver.gradient)) |smooth| {
+        report.work += 1;
+        workspace.values(x, .{ .objective = &value, .constraints = values }) catch return report;
+        report.objective = value + smooth;
+    }
     return report;
+}
+
+/// A plan's own words on its smoothness (`rules.smoothed`), each added to the objective as `smoothness`
+/// integrates it, by its weight over the square of its scale, and over its scope's time where it is a mean: what
+/// they come to. Null where the plan states no target and no objective at all.
+fn own(plan: *const model.Plan, mesh: *const mesh_module.Mesh, x: []const f64, place: []const usize, profile: *const Profile, hessian: []f64, gradient: []f64) ?f64 {
+    var sum: ?f64 = null;
+    for (plan.rules) |rule| {
+        if (rule.kind() == .hard) continue;
+        if (sum == null) sum = 0;
+        const order = rules.smoothed(rule) orelse continue;
+        var factor = rule.weight / (rule.scale * rule.scale);
+        if (rule.definition.quantity.comparison.objective == .mean_square) factor /= switch (rule.scope) {
+            .all => lasts(mesh, x, 0, mesh.sections.len),
+            .section => |index| lasts(mesh, x, index, index + 1),
+            .between => |ends| lasts(mesh, x, ends[0], ends[1]),
+            .time_range => |range| range[1] - range[0],
+            .event, .time => unreachable,
+        };
+        sum.? += smoothness(mesh, x, place, profile, hessian, gradient, rule.scope, order, factor);
+    }
+    return sum;
+}
+
+/// The time the sections from one to another take.
+fn lasts(mesh: *const mesh_module.Mesh, x: []const f64, from: usize, to: usize) f64 {
+    var sum: f64 = 0;
+    for (mesh.durations[from..to]) |column| sum += x[column] * mesh_module.time_scale;
+    return sum;
 }
 
 /// The columns of one axis of a cell's two nodes: place, velocity and acceleration of each.
@@ -681,19 +741,34 @@ fn cellColumns(mesh: *const mesh_module.Mesh, cell: mesh_module.Cell, axis: usiz
     return .{ a[axis], a[axis + 3], a[axis + 6], b[axis], b[axis + 3], b[axis + 6] };
 }
 
-/// The tier's objective: the integral of the squared jerk, with that of the squared acceleration by a small weight
-/// (`tie`) to break its ties. Each is a sum over the cells of exact integrals: five Gauss points integrate the
-/// square of a polynomial of degree four exactly.
-fn smoothness(mesh: *const mesh_module.Mesh, x: []const f64, place: []const usize, profile: *const Profile, hessian: []f64, gradient: []f64) void {
+/// `factor` times the integral, over what a scope covers, of the squared jerk (`order` 3) or acceleration (2),
+/// added to the objective's matrix and gradient about `x`; what it comes to at `x` is returned. Behind the jerk,
+/// the acceleration by a small weight (`tie`) breaks its ties, and is no part of what is returned. Each is a sum
+/// over the cells of exact integrals: five Gauss points integrate the square of a polynomial of degree four exactly.
+fn smoothness(mesh: *const mesh_module.Mesh, x: []const f64, place: []const usize, profile: *const Profile, hessian: []f64, gradient: []f64, scope: model.Scope, order: usize, factor: f64) f64 {
     const nodes = [_]f64{ 0.5, 0.5 - 0.5 * 0.5384693101056831, 0.5 + 0.5 * 0.5384693101056831, 0.5 - 0.5 * 0.9061798459386640, 0.5 + 0.5 * 0.9061798459386640 };
     const weights = [_]f64{ 0.5 * 0.5688888888888889, 0.5 * 0.4786286704993665, 0.5 * 0.4786286704993665, 0.5 * 0.2369268850561891, 0.5 * 0.2369268850561891 };
+    var sum: f64 = 0;
     for (mesh.cells) |cell| {
         const span = x[mesh.durations[cell.section]] * mesh_module.time_scale;
         const h = span * (cell.end - cell.start);
-        for ([_]usize{ 3, 2 }) |order| {
-            const share: f64 = if (order == 3) 1 else tie / (span * span);
+        // The part of the cell that the scope covers.
+        const part: [2]f64 = switch (scope) {
+            .all => .{ 0, 1 },
+            .section => |index| if (cell.section == index) .{ 0, 1 } else continue,
+            .between => |ends| if (cell.section >= ends[0] and cell.section < ends[1]) .{ 0, 1 } else continue,
+            .time_range => |range| blk: {
+                const from = lasts(mesh, x, 0, cell.section) + span * cell.start;
+                const covered = [2]f64{ @max(0, (range[0] - from) / h), @min(1, (range[1] - from) / h) };
+                if (!(covered[1] > covered[0])) continue;
+                break :blk covered;
+            },
+            .event, .time => unreachable,
+        };
+        for ([_]usize{ 3, 2 }) |derivative| {
+            const share: f64 = if (derivative == order) 1 else if (order == 3) tie / (span * span) else continue;
             for (nodes, weights) |s, quadrature| {
-                const row = derivativeRow(order, h, s);
+                const row = derivativeRow(derivative, h, part[0] + (part[1] - part[0]) * s);
                 for (0..3) |axis| {
                     const columns = cellColumns(mesh, cell, axis);
                     var places: [6]usize = undefined;
@@ -709,15 +784,18 @@ fn smoothness(mesh: *const mesh_module.Mesh, x: []const f64, place: []const usiz
                         entries[k] += entries[k + 3];
                         places[k + 3] = none;
                     };
-                    const weight = share * quadrature * h;
-                    profile.add(hessian, &places, &entries, weight);
+                    const weight = factor * share * quadrature * h * (part[1] - part[0]);
+                    // The square's own second derivative and slope, as the layout's soft terms give theirs.
+                    profile.add(hessian, &places, &entries, 2 * weight);
                     for (places, entries) |p, entry| {
-                        if (p != none) gradient[p] += weight * entry * value;
+                        if (p != none) gradient[p] += 2 * weight * entry * value;
                     }
+                    if (derivative == order) sum += weight * value * value;
                 }
             }
         }
     }
+    return sum;
 }
 
 /// The row that takes (p0, v0, a0, p1, v1, a1) of a quintic piece of duration h to its second or third derivative

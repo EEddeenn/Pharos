@@ -34,7 +34,6 @@ pub const Check = struct {
     operation: Operation,
     equality: bool = false,
     weight: f64 = 1,
-    square: bool = true,
     integral: bool = false,
     average_scope: ?model.Scope = null,
 
@@ -123,19 +122,17 @@ pub fn prepare(arena: std.mem.Allocator, plan: *const model.Plan) std.mem.Alloca
                 },
                 .target, .objective => {
                     const objective = definition.comparison == .objective;
-                    const reduce = if (objective) definition.comparison.objective.reduce else model.Reduce.mean_square;
-                    const direction: f64 = if (objective and definition.comparison.objective.sense == .maximize) -1 else 1;
+                    const reduce = if (objective) definition.comparison.objective else model.Reduce.mean_square;
                     // The square of a norm is the sum of the squares of its components. Written so, each term is the
                     // square of a quantity that is linear in the path, which is what the solver's step models.
-                    const split = objective and reduce != .value and isNorm(definition.quantity);
+                    const split = objective and isNorm(definition.quantity);
                     const count: usize = if (split) (if (definition.quantity == .horizontal_speed) 2 else 3) else quantities.components(definition.quantity);
                     for (0..count) |component| try checks.append(arena, .{
                         .scope = rule.scope,
                         .operation = .{ .quantity = .{ .rule = index, .comparison = if (objective) .objective else .target, .component = component, .split_norm = split } },
-                        .weight = direction * rule.weight,
-                        .square = !objective or reduce != .value,
+                        .weight = rule.weight,
                         .integral = reduce == .integral_square,
-                        .average_scope = if ((definition.quantity != .duration or reduce == .integral_square) and quantities.interval(rule.scope)) rule.scope else null,
+                        .average_scope = if (quantities.interval(rule.scope)) rule.scope else null,
                     });
                 },
             },
@@ -358,12 +355,24 @@ pub const Kind = enum {
     frame,
     /// A bound that cannot bind: no row.
     vacuous,
-    /// None of these, or a soft rule's.
+    /// None of these.
     no,
 };
 
 fn height(quantity: model.Quantity) bool {
     return quantity == .altitude or quantity == .climb_rate or quantity == .vertical_acceleration;
+}
+
+/// The order of the derivative whose square a rule makes least over an interval (the jerk's 3, the
+/// acceleration's 2), where the rule is such an objective: a plan's own word on its smoothness. The convex tier
+/// integrates it exactly, as it does its own smoothness where a plan states no soft rule (`convex.smoothness`).
+pub fn smoothed(rule: model.Rule) ?usize {
+    if (rule.definition != .quantity or rule.definition.quantity.comparison != .objective or !quantities.interval(rule.scope)) return null;
+    return switch (rule.definition.quantity.quantity) {
+        .jerk3d => 3,
+        .acceleration3d, .acceleration_ecef => 2,
+        else => null,
+    };
 }
 
 pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
@@ -386,7 +395,6 @@ pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
         },
         .quantity => |operation| {
             const rule = prepared.plan.rules[operation.rule];
-            if (rule.kind() != .hard) return .no;
             const quantity = rule.definition.quantity.quantity;
             if (quantity == .time or quantity == .duration) return .constant;
             const vector = quantities.components(quantity) == 3;
@@ -394,16 +402,17 @@ pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
             if (rhs) |given| if (given == .event) {
                 // Another event's value: linear where both are vectors of the path, and linear in the frame where
                 // both are heights or their rates.
-                const other = given.event.quantity;
-                if (vector != (quantities.components(other) == 3)) return .no;
-                if (!vector and !(height(quantity) and height(other))) return .no;
+                const referred = given.event.quantity;
+                if (vector != (quantities.components(referred) == 3)) return .no;
+                if (!vector and !(height(quantity) and height(referred))) return .no;
             };
             if (vector) return .linear;
             if (courseAtEvent(rule)) return .frame;
             if (isNorm(quantity)) {
                 const framed = quantity == .horizontal_speed;
-                // A rest, by its components.
+                // By its components: a rest, or the least of a square.
                 if (operation.split_norm) return if (framed) .frame else .linear;
+                if (rule.kind() != .hard) return .no;
                 const bound = switch (rhs.?) {
                     .scalar => |v| v,
                     else => return .no,
@@ -419,14 +428,19 @@ pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
     }
 }
 
-/// Whether the convex tier takes the plan (with its events' times held), and whether some check needs the frame.
-pub const Shape = struct { convex: bool = true, frame: bool = false };
+/// Whether the convex tier takes the plan (with its events' times held); whether some check needs the frame held
+/// where the path is; and whether some target or objective does: the programme is then made again until an
+/// answer moves nothing.
+pub const Shape = struct { convex: bool = true, frame: bool = false, soft: bool = false };
 
 pub fn shape(prepared: *const Prepared) Shape {
     var result: Shape = .{};
     for (prepared.checks) |check| switch (kindOf(prepared, check)) {
         .no => return .{ .convex = false },
-        .frame => result.frame = true,
+        .frame => {
+            result.frame = true;
+            if (prepared.isObjective(check)) result.soft = true;
+        },
         else => {},
     };
     return result;

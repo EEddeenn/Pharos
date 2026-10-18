@@ -61,6 +61,7 @@ pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
     const rules = try ctx.arena.alloc(model.Rule, raw.rules.len);
     for (raw.rules, rules, 0..) |given, *out, i| out.* = try rule(c, given, try node.element(ctx, "rules", i));
     try directions(ctx, events, rules);
+    try smoothness(ctx, sections, rules);
     return .{
         .name = raw.name,
         .coordinates = .{ .altitude = raw.coordinates.altitude },
@@ -226,7 +227,8 @@ fn ordered(a: model.Value, b: model.Value) bool {
 
 fn rule(c: Context, raw: read.RawRule, path: []const u8) Error!model.Rule {
     const selected = try scope(c, raw.scope, try node.join(c.ctx, path, "scope"));
-    var out: model.Rule = .{ .id = raw.id, .scope = selected, .scale = raw.scale, .weight = raw.weight, .definition = undefined };
+    if (raw.kind == .hard and raw.scale != null) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "scale"), "a hard rule takes no scale", .{});
+    var out: model.Rule = .{ .id = raw.id, .scope = selected, .scale = raw.scale orelse 1, .weight = raw.weight, .definition = undefined };
     if (raw.relation) |relation| {
         const invalid = "a relation rule is hard or target and takes no quantity, comparison, reduction or sense";
         if (raw.quantity != null or raw.eq != null or raw.range != null or raw.value != null or raw.reduce != null or raw.sense != null) return fail(c.ctx, .out_of_range, path, invalid, .{});
@@ -253,6 +255,7 @@ fn rule(c: Context, raw: read.RawRule, path: []const u8) Error!model.Rule {
     const quantity = raw.quantity orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "quantity"), "a rule requires quantity or relation", .{});
     if (!quantities.scopeAllowed(quantity, selected)) return fail(c.ctx, .out_of_range, path, "{s} requires {s} scope", .{ model.Quantity.words.get(quantity), if (quantity == .time) "an event" else "an interval" });
     var q: model.QuantityRule = .{ .quantity = quantity, .comparison = undefined };
+    if (raw.kind != .hard and (quantity == .time or quantity == .duration)) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "quantity"), "{s} takes no target and no objective: a time is stated by a hard rule", .{model.Quantity.words.get(quantity)});
     switch (raw.kind) {
         .hard => {
             if ((raw.eq == null) == (raw.range == null) or raw.value != null or raw.reduce != null or raw.sense != null) return fail(c.ctx, .out_of_range, path, "a hard quantity rule takes exactly one of eq or range", .{});
@@ -271,10 +274,9 @@ fn rule(c: Context, raw: read.RawRule, path: []const u8) Error!model.Rule {
         },
         .objective => {
             if (raw.eq != null or raw.range != null or raw.value != null) return fail(c.ctx, .out_of_range, path, "an objective takes reduce and sense instead of a comparison", .{});
-            const reduction = raw.reduce orelse .value;
+            const reduction = raw.reduce orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "reduce"), "required for an objective", .{});
             if (!quantities.interval(selected) and reduction == .integral_square) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "reduce"), "integralSquare requires an interval scope", .{});
-            if (quantities.components(quantity) == 3 and reduction == .value) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "reduce"), "a vector objective requires meanSquare or integralSquare", .{});
-            q.comparison = .{ .objective = .{ .reduce = reduction, .sense = raw.sense orelse .minimize } };
+            q.comparison = .{ .objective = reduction };
         },
     }
     // Directions are the path's own: the speed along the course is the horizontal speed, and is never negative.
@@ -371,6 +373,42 @@ fn directions(ctx: *const node.Ctx, events: []const model.Event, rules: []const 
         };
         if (asked) return fail(ctx, .out_of_range, try node.element(ctx, "rules", i), "a direction of travel is asked where the plan holds the path at rest: a path at rest has none", .{});
     }
+}
+
+/// A plan's own targets and objectives stand in place of the smoothest path, and are taken only where the plan
+/// itself says how smooth each section is to be: by an objective of the jerk or of the acceleration, or by a hard
+/// rule that holds the section still (at rest, as `rests` counts a rest of the whole velocity, or at a place it
+/// states), over all, over the section or between events on either side of it. A rule over a time range, at an
+/// event or at a time counts for no section; a course, a turning or a guide holds a leg's shape and not its timing.
+fn smoothness(ctx: *const node.Ctx, sections: []const model.Section, rules: []const model.Rule) Error!void {
+    for (rules) |given| {
+        if (given.kind() != .hard) break;
+    } else return;
+    const open = try ctx.arena.alloc(bool, sections.len);
+    @memset(open, true);
+    for (rules) |given| {
+        const whole: []bool = switch (given.scope) {
+            .section => |index| open[index .. index + 1],
+            .between => |ends| open[ends[0]..ends[1]],
+            .all => open,
+            .event, .time, .time_range => continue,
+        };
+        if (given.definition != .quantity) continue;
+        const q = given.definition.quantity;
+        const settles = switch (q.comparison) {
+            .objective => q.quantity == .jerk3d or q.quantity == .acceleration3d or q.quantity == .acceleration_ecef,
+            // A horizontal speed of zero leaves the height free.
+            else => rests(given) and q.quantity != .horizontal_speed,
+        };
+        if (settles) @memset(whole, false);
+    }
+    var lacking: std.ArrayList(u8) = .empty;
+    var count: usize = 0;
+    for (sections, open) |section, lacks| if (lacks) {
+        try lacking.print(ctx.arena, "{s}\"{s}\"", .{ if (count == 0) "" else ", ", section.id });
+        count += 1;
+    };
+    if (count > 0) return fail(ctx, .out_of_range, "rules", "a plan with a target or an objective states its own smoothness over every section: an objective of jerk3d, acceleration3d or accelerationEcef, a hard rule that holds speed3d at zero, or an equality of velocityEcef to zero or of position to a place it states, scoped all, section or between (a timeRange does not count); section{s} {s} {s} none", .{ if (count == 1) "" else "s", lacking.items, if (count == 1) "has" else "have" });
 }
 
 fn guess(c: Context, raw: ?read.RawGuess, altitude: model.Altitude, event_count: usize) Error!model.InitialGuess {

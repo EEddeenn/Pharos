@@ -155,16 +155,15 @@ pub const Range = struct {
 };
 
 pub const Reduce = enum {
-    value,
     mean_square,
     integral_square,
 
-    pub const words: std.EnumArray(Reduce, []const u8) = .init(.{ .value = "value", .mean_square = "meanSquare", .integral_square = "integralSquare" });
+    pub const words: std.EnumArray(Reduce, []const u8) = .init(.{ .mean_square = "meanSquare", .integral_square = "integralSquare" });
 };
 
+/// An objective is made least: the key says nothing else, and nothing of it is kept.
 pub const Sense = enum {
     minimize,
-    maximize,
 
     pub const words = core.dictionary.tagNames(Sense);
 };
@@ -183,7 +182,7 @@ pub const QuantityRule = struct {
         eq: Value,
         range: Range,
         target: Value,
-        objective: struct { reduce: Reduce, sense: Sense },
+        objective: Reduce,
     },
 };
 
