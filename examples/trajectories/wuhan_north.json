@@ -6,89 +6,34 @@
     "datum": "WGS84",
     "altitude": "EGM96"
   },
-  "geometry": {
-    "points": [
-      {
-        "id": "A",
-        "position": {
-          "latitude": 30.5292,
-          "longitude": 114.3642,
-          "altitude": 40
-        }
-      },
-      {
-        "id": "B",
-        "position": {
-          "latitude": 30.545436,
-          "longitude": 114.3642,
-          "altitude": 40
-        }
-      }
-    ]
+  "places": [
+    {
+      "id": "A",
+      "latitude": 30.5292,
+      "longitude": 114.3642,
+      "altitude": 40
+    },
+    {
+      "id": "B",
+      "latitude": 30.545436,
+      "longitude": 114.3642,
+      "altitude": 40
+    }
+  ],
+  "start": {
+    "at": "A"
   },
-  "events": [
+  "segments": [
     {
-      "id": "start"
-    },
-    {
-      "id": "finish"
-    }
-  ],
-  "sections": [
-    {
-      "id": "north",
-      "from": "start",
-      "to": "finish"
-    }
-  ],
-  "rules": [
-    {
-      "id": "start-position",
-      "kind": "hard",
-      "scope": {
-        "event": "start"
-      },
-      "quantity": "position",
-      "eq": {
-        "point": "A"
-      }
-    },
-    {
-      "id": "finish-position",
-      "kind": "hard",
-      "scope": {
-        "event": "finish"
-      },
-      "quantity": "position",
-      "eq": {
-        "point": "B"
-      }
-    },
-    {
-      "id": "finish-time",
-      "kind": "hard",
-      "scope": {
-        "event": "finish"
-      },
-      "quantity": "time",
-      "eq": 60
-    },
-    {
-      "id": "speed-limit",
-      "kind": "hard",
-      "scope": {
-        "all": true
-      },
-      "quantity": "speed3d",
-      "range": {
-        "max": 40
+      "through": {
+        "places": [
+          {
+            "at": "B",
+            "time": 60,
+            "event": "finish"
+          }
+        ]
       }
     }
-  ],
-  "initialGuess": {
-    "eventTimes": {
-      "start": 0,
-      "finish": 60
-    }
-  }
+  ]
 }

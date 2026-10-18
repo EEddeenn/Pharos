@@ -6,159 +6,59 @@
     "datum": "WGS84",
     "altitude": "EGM96"
   },
-  "geometry": {
-    "points": [
-      {
-        "id": "A",
-        "position": {
-          "latitude": 30.5292,
-          "longitude": 114.3642,
-          "altitude": 40
-        }
-      },
-      {
-        "id": "B",
-        "position": {
-          "latitude": 30.5302,
-          "longitude": 114.3642,
-          "altitude": 40
-        }
-      },
-      {
-        "id": "C",
-        "position": {
-          "latitude": 30.5312,
-          "longitude": 114.3642,
-          "altitude": 40
-        }
-      }
-    ]
+  "places": [
+    {
+      "id": "A",
+      "latitude": 30.5292,
+      "longitude": 114.3642,
+      "altitude": 40
+    },
+    {
+      "id": "B",
+      "latitude": 30.5302,
+      "longitude": 114.3642,
+      "altitude": 40
+    },
+    {
+      "id": "C",
+      "latitude": 30.5312,
+      "longitude": 114.3642,
+      "altitude": 40
+    }
+  ],
+  "start": {
+    "at": "A",
+    "speed": 0
   },
-  "events": [
+  "segments": [
     {
-      "id": "start"
-    },
-    {
-      "id": "arrive"
-    },
-    {
-      "id": "depart"
-    },
-    {
-      "id": "finish"
-    }
-  ],
-  "sections": [
-    {
-      "id": "approach",
-      "from": "start",
-      "to": "arrive"
-    },
-    {
-      "id": "dwell",
-      "from": "arrive",
-      "to": "depart"
-    },
-    {
-      "id": "leave",
-      "from": "depart",
-      "to": "finish"
-    }
-  ],
-  "rules": [
-    {
-      "id": "start-position",
-      "kind": "hard",
-      "scope": {
-        "event": "start"
-      },
-      "quantity": "position",
-      "eq": {
-        "point": "A"
+      "through": {
+        "places": [
+          {
+            "at": "B",
+            "time": 15,
+            "event": "arrive"
+          }
+        ],
+        "end": "rest"
       }
     },
     {
-      "id": "stop-position",
-      "kind": "hard",
-      "scope": {
-        "section": "dwell"
-      },
-      "quantity": "position",
-      "eq": {
-        "point": "B"
+      "id": "depart",
+      "stay": {},
+      "time": 20
+    },
+    {
+      "through": {
+        "places": [
+          {
+            "at": "C",
+            "time": 35,
+            "event": "finish"
+          }
+        ],
+        "end": "rest"
       }
-    },
-    {
-      "id": "finish-position",
-      "kind": "hard",
-      "scope": {
-        "event": "finish"
-      },
-      "quantity": "position",
-      "eq": {
-        "point": "C"
-      }
-    },
-    {
-      "id": "arrive-time",
-      "kind": "hard",
-      "scope": {
-        "event": "arrive"
-      },
-      "quantity": "time",
-      "eq": 15
-    },
-    {
-      "id": "depart-time",
-      "kind": "hard",
-      "scope": {
-        "event": "depart"
-      },
-      "quantity": "time",
-      "eq": 20
-    },
-    {
-      "id": "finish-time",
-      "kind": "hard",
-      "scope": {
-        "event": "finish"
-      },
-      "quantity": "time",
-      "eq": 35
-    },
-    {
-      "id": "start-rest",
-      "kind": "hard",
-      "scope": {
-        "event": "start"
-      },
-      "quantity": "velocityEcef",
-      "eq": [
-        0,
-        0,
-        0
-      ]
-    },
-    {
-      "id": "finish-rest",
-      "kind": "hard",
-      "scope": {
-        "event": "finish"
-      },
-      "quantity": "velocityEcef",
-      "eq": [
-        0,
-        0,
-        0
-      ]
     }
-  ],
-  "initialGuess": {
-    "eventTimes": {
-      "start": 0,
-      "arrive": 15,
-      "depart": 20,
-      "finish": 35
-    }
-  }
+  ]
 }

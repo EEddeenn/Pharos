@@ -12,7 +12,7 @@ pub const options: cli.Options(Name) = .init(.{
     .name = .{ .value = .text, .placeholder = "<TEXT>", .help = "the trajectory's name, UTF-8" },
     .lla = .{ .value = .text, .placeholder = "<LAT,LON,ALTITUDE>", .help = "degrees, and metres above the geoid" },
     .ecef = .{ .value = .text, .placeholder = "<X,Y,Z>", .help = "ECEF metres" },
-    .duration = .{ .value = .text, .placeholder = "<SECONDS>", .help = std.fmt.comptimePrint("the length of the stay, 0 to {d}", .{pharos_traj.trajectory.max_duration_s}) },
+    .duration = .{ .value = .text, .placeholder = "<SECONDS>", .help = std.fmt.comptimePrint("the length of the stay, from {d} to {d}", .{ pharos_traj.static.duration_range.min, pharos_traj.static.duration_range.max }) },
 });
 
 const Command = enum { build, static, info, check, @"export" };
@@ -28,13 +28,13 @@ const commands: std.EnumArray(Command, Takes) = .init(.{
 });
 
 pub const usage =
-    \\pharos-traj - solves, checks and visualizes Pharos trajectories
+    \\pharos-traj - builds, checks and visualizes Pharos trajectories
     \\
     \\Usage: pharos-traj <command> [arguments]
     \\
     \\Commands:
     \\  build <trajectory.json> [-o <FILE>] [--name <TEXT>]
-    \\      solve and verify a trajectory plan; default: the source file's name with .pht
+    \\      the path of a trajectory plan as a PHT; default: the source file's name with .pht
     \\  static (--lla <LAT,LON,ALTITUDE> | --ecef <X,Y,Z>) --duration <SECONDS> -o <FILE> [--name <TEXT>]
     \\      a receiver at rest
     \\  info <file.pht>

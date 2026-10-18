@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len != 3) return error.ExpectedTwoPaths;
     try emit(init.io, args[1], trajectory.Raw, .{
         .title = "Pharos trajectory plan",
-        .description = "The trajectory plan that pharos-traj build and pharos_traj_build solve. The plan reader validates events, sections and rules; the solver reports feasibility and verifies the resulting trajectory.",
+        .description = "The trajectory plan that pharos-traj build and pharos_traj_build read: a start, and the segments that follow it, each built from the state the one before leaves. The plan reader alone validates; the build then holds the path against the receiver's domain.",
     });
     try emit(init.io, args[2], scenario.Raw, .{
         .title = "Pharos scenario",

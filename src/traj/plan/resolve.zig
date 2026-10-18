@@ -1,741 +1,170 @@
+//! The plan as read made whole: names to places, lengths to times, the events named; every fault of the plan's
+//! text reported in one pass.
 const std = @import("std");
 const shared = @import("shared");
+const core = shared.core;
 const node = shared.json.node;
-const table = shared.json.table;
-const Key = table.Key;
+const Number = node.Number;
+const Escaped = core.diagnostics.Escaped;
+const Range = shared.json.table.Range;
 const model = @import("model.zig");
-const read = @import("read.zig");
 const geometry = @import("geometry.zig");
-const quantities = @import("quantities.zig");
-const Error = shared.core.diagnostics.InputError;
-const Ids = std.StringHashMapUnmanaged(usize);
+const read = @import("read.zig");
 
-const Context = struct {
+pub const Error = core.diagnostics.InputError;
+
+pub const format_word = "pharos.trajectory-plan";
+
+const Resolver = struct {
     ctx: *const node.Ctx,
-    points: Ids,
-    curves: Ids,
-    regions: Ids,
-    events: Ids,
-    sections: Ids,
+    ok: bool = true,
+    ids: std.StringHashMapUnmanaged(usize) = .empty,
+    /// Where each event's name is given, by name.
+    named: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-    fn index(self: Context, ids: Ids, id: []const u8, path: []const u8) Error!usize {
-        return ids.get(id) orelse return fail(self.ctx, .unknown_name, path, "unknown identifier \"{s}\"", .{id});
-    }
-};
-
-fn fail(ctx: *const node.Ctx, code: shared.core.diagnostics.Code, path: []const u8, comptime fmt: []const u8, args: anytype) Error {
-    ctx.diags.err(code, path, fmt, args) catch return error.OutOfMemory;
-    return error.InvalidInput;
-}
-
-fn names(ctx: *const node.Ctx, entries: anytype, path: []const u8) Error!Ids {
-    var result: Ids = .empty;
-    for (entries, 0..) |entry, i| {
-        const location = try node.join(ctx, try node.element(ctx, path, i), "id");
-        if (std.mem.trim(u8, entry.id, " \t\r\n").len == 0) return fail(ctx, .out_of_range, location, "an identifier must not be empty", .{});
-        const found = try result.getOrPut(ctx.arena, entry.id);
-        if (found.found_existing) return fail(ctx, .duplicate, location, "identifier \"{s}\" is already used by {s}[{d}]", .{ entry.id, path, found.value_ptr.* });
-        found.value_ptr.* = i;
-    }
-    return result;
-}
-
-pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
-    if (!std.mem.eql(u8, raw.format, "pharos.trajectory-plan")) return fail(ctx, .invalid_format, "format", "expected pharos.trajectory-plan", .{});
-    var c = try geometryContext(ctx, raw.geometry);
-    c.events = try names(ctx, raw.events, "events");
-    c.sections = try names(ctx, raw.sections, "sections");
-    _ = try names(ctx, raw.rules, "rules");
-    const resolved_geometry = try resolveGeometry(c, raw.geometry, raw.coordinates.altitude);
-    const events = try ctx.arena.alloc(model.Event, raw.events.len);
-    for (raw.events, events) |given, *out| out.* = .{ .id = given.id, .continuity = given.continuity };
-    if (raw.sections.len != events.len - 1) return fail(ctx, .out_of_range, "sections", "the chain needs exactly one section between every consecutive pair of events", .{});
-    const sections = try ctx.arena.alloc(model.Section, raw.sections.len);
-    for (raw.sections, sections, 0..) |given, *out, i| {
-        const path = try node.element(ctx, "sections", i);
-        const from = try c.index(c.events, given.from, try node.join(ctx, path, "from"));
-        const to = try c.index(c.events, given.to, try node.join(ctx, path, "to"));
-        if (from != i or to != i + 1) return fail(ctx, .out_of_range, path, "section {d} must join events[{d}] to events[{d}] in authored order", .{ i, i, i + 1 });
-        out.* = .{ .id = given.id };
-    }
-    const rules = try ctx.arena.alloc(model.Rule, raw.rules.len);
-    for (raw.rules, rules, 0..) |given, *out, i| out.* = try rule(c, given, try node.element(ctx, "rules", i));
-    try directions(ctx, events, rules);
-    try smoothness(ctx, sections, rules);
-    const initial_guess = try guess(c, raw.initial_guess, raw.coordinates.altitude, events.len);
-    const times = try eventTimes(ctx, events.len, rules);
-    return .{
-        .name = raw.name,
-        .coordinates = .{ .altitude = raw.coordinates.altitude },
-        .geometry = resolved_geometry,
-        .events = events,
-        .sections = sections,
-        .rules = rules,
-        .initial_guess = initial_guess,
-        .times = times.held,
-        .contradicting = times.contradicting,
-    };
-}
-
-/// What the hard rules of time allow each event's time: from `lo` to `hi`; and of each bound, every rule that has set
-/// it with the bounds of other events it was taken from (no rule for the order of the events, the first event's zero
-/// or the longest trajectory), so that the rules a contradiction takes can be named.
-const Brackets = struct {
-    arena: std.mem.Allocator,
-    lo: []f64,
-    hi: []f64,
-    lo_by: []std.ArrayList(Cause),
-    hi_by: []std.ArrayList(Cause),
-    rules: []const model.Rule,
-    /// The latest time a rule speaks of, which the path must reach, and the rule that speaks of it.
-    latest: f64,
-    latest_rule: ?usize,
-    /// Whether the upper bounds alone are narrowed, the least values left where they are: which events some rule
-    /// ends. An upper bound taken from a least value is then looser, and as finite.
-    upper: bool = false,
-    /// Whether each bound's causes are kept: while a contradiction may still be named.
-    naming: bool = true,
-    changed: bool = false,
-
-    const Bound = struct { event: usize, least: bool };
-    const Cause = struct { rule: ?usize = null, from: [2]?Bound = .{ null, null } };
-    /// A cycle of references whose factors multiply to under 1 settles geometrically: so many rounds settle one whose
-    /// factors multiply to about 0.9995 or less, and one that would take longer is left to the solve.
-    const most_rounds = 100_000;
-    /// Where the upper bounds start when the events some rule ends are looked for: no bound, but a number, from which
-    /// a cycle of references whose factors multiply to under 1 narrows to its own bound as it never would from none.
-    const unbounded = std.math.floatMax(f64);
-
-    fn low(self: *Brackets, event: usize, at_least: f64, cause: Cause) Error!void {
-        if (self.upper) return;
-        if (at_least > self.lo[event] + 1e-12 * @max(1, @abs(at_least))) {
-            self.lo[event] = at_least;
-            try self.record(&self.lo_by[event], cause);
-        }
+    fn err(self: *Resolver, code: core.diagnostics.Code, path: []const u8, comptime fmt: []const u8, args: anytype) Error!void {
+        try self.ctx.diags.err(code, path, fmt, args);
+        self.ok = false;
     }
 
-    fn high(self: *Brackets, event: usize, at_most: f64, cause: Cause) Error!void {
-        if (at_most < self.hi[event] - 1e-12 * @max(1, @abs(at_most))) {
-            self.hi[event] = at_most;
-            try self.record(&self.hi_by[event], cause);
-        }
-    }
-
-    /// Each cause once: a cycle sets a bound again and again by the same rules. Every cause is kept, since a later
-    /// one may be taken from a bound an earlier one set.
-    fn record(self: *Brackets, causes: *std.ArrayList(Cause), cause: Cause) Error!void {
-        self.changed = true;
-        if (!self.naming) return;
-        for (causes.items) |known| if (std.meta.eql(known, cause)) return;
-        try causes.append(self.arena, cause);
-    }
-
-    fn free(self: *const Brackets, event: usize) bool {
-        return self.hi[event] - self.lo[event] > 1e-9 * @max(1, @abs(self.lo[event]));
-    }
-
-    /// The first event whose bounds cross.
-    fn crossing(self: *const Brackets) ?usize {
-        for (self.lo, self.hi, 0..) |lo, hi, event| if (lo - hi > 1e-9 * @max(1, @abs(lo))) return event;
+    fn place(self: *Resolver, path: []const u8, id: []const u8) Error!?usize {
+        if (self.ids.get(id)) |index| return index;
+        try self.err(.unknown_name, path, "no place has the id \"{f}\"", .{Escaped{ .text = id }});
         return null;
     }
 
-    /// A time at `event` at least (or at most) `factor` times `other`'s plus `offset`, by rule `by`: what the other's
-    /// bounds make it (a factor below zero turns them over), and what this event's own bound leaves the other.
-    fn refer(self: *Brackets, event: usize, other: usize, factor: f64, offset: f64, least: bool, by: usize) Error!void {
-        const from_least = least == (factor > 0);
-        const source: ?Bound = if (factor == 0) null else .{ .event = other, .least = from_least };
-        const made = if (factor == 0) offset else factor * (if (from_least) self.lo[other] else self.hi[other]) + offset;
-        if (least) try self.low(event, made, .{ .rule = by, .from = .{ source, null } }) else try self.high(event, made, .{ .rule = by, .from = .{ source, null } });
-        if (factor == 0) return;
-        const back = ((if (least) self.hi[event] else self.lo[event]) - offset) / factor;
-        const cause: Cause = .{ .rule = by, .from = .{ .{ .event = event, .least = !least }, null } };
-        if (from_least) try self.high(other, back, cause) else try self.low(other, back, cause);
+    fn name(self: *Resolver, path: []const u8, event: []const u8) Error!void {
+        const found = try self.named.getOrPut(self.ctx.arena, event);
+        if (found.found_existing) return self.err(.duplicate, path, "the event \"{f}\" is named twice: {s} names it too", .{ Escaped{ .text = event }, found.value_ptr.* });
+        found.value_ptr.* = path;
     }
 
-    /// Narrowed by every hard rule of time until none narrows them more: a time at an event, a literal or another
-    /// event's time by a factor of either sign and an offset; a duration over a section, a span or the whole, a
-    /// literal or what an event's time makes it; the order of the events; and the latest time a rule speaks of.
-    fn narrow(self: *Brackets) Error!enum { settled, contradiction, unsettled } {
-        const last = self.lo.len - 1;
-        for (0..most_rounds) |_| {
-            self.changed = false;
-            for (self.rules, 0..) |given, index| {
-                if (given.kind() != .hard or given.definition != .quantity) continue;
-                const q = given.definition.quantity;
-                const bounds: [2]?model.Value = switch (q.comparison) {
-                    .eq => |v| .{ v, v },
-                    .range => |range| .{ range.min, range.max },
-                    .target, .objective => continue,
-                };
-                switch (q.quantity) {
-                    .time => {
-                        const event = given.scope.event.index;
-                        for (bounds, [2]bool{ true, false }) |bound, least| switch (bound orelse continue) {
-                            .scalar => |time| if (least) try self.low(event, time, .{ .rule = index }) else try self.high(event, time, .{ .rule = index }),
-                            .event => |reference| if (reference.quantity == .time) try self.refer(event, reference.event, reference.factor, reference.offset, least, index),
-                            else => {},
-                        };
-                    },
-                    .duration => {
-                        const span: [2]usize = switch (given.scope) {
-                            .section => |section| .{ section, section + 1 },
-                            .between => |ends| ends,
-                            .all => .{ 0, last },
-                            else => continue,
-                        };
-                        for (bounds, [2]bool{ true, false }) |bound, least| {
-                            // A duration that refers to the time of one of its own ends is a relation of the two ends
-                            // alone; one that refers to another event's time is held to what that time makes it, at
-                            // its least for a least duration and at its most for a most one.
-                            var source: ?Bound = null;
-                            const amount = switch (bound orelse continue) {
-                                .scalar => |number| number,
-                                .event => |reference| blk: {
-                                    if (reference.quantity != .time) continue;
-                                    const factor = reference.factor;
-                                    const offset = reference.offset;
-                                    if (reference.event == span[0]) {
-                                        try self.refer(span[1], span[0], 1 + factor, offset, least, index);
-                                        continue;
-                                    }
-                                    if (reference.event == span[1]) {
-                                        if (factor == 1) {
-                                            if (least) try self.high(span[0], -offset, .{ .rule = index }) else try self.low(span[0], -offset, .{ .rule = index });
-                                        } else try self.refer(span[1], span[0], 1 / (1 - factor), offset / (1 - factor), least == (factor < 1), index);
-                                        continue;
-                                    }
-                                    if (factor == 0) break :blk offset;
-                                    const from_least = least == (factor > 0);
-                                    source = .{ .event = reference.event, .least = from_least };
-                                    break :blk factor * (if (from_least) self.lo[reference.event] else self.hi[reference.event]) + offset;
-                                },
-                                else => continue,
-                            };
-                            if (least) {
-                                try self.low(span[1], self.lo[span[0]] + amount, .{ .rule = index, .from = .{ .{ .event = span[0], .least = true }, source } });
-                                try self.high(span[0], self.hi[span[1]] - amount, .{ .rule = index, .from = .{ .{ .event = span[1], .least = false }, source } });
-                            } else {
-                                try self.high(span[1], self.hi[span[0]] + amount, .{ .rule = index, .from = .{ .{ .event = span[0], .least = false }, source } });
-                                try self.low(span[0], self.lo[span[1]] - amount, .{ .rule = index, .from = .{ .{ .event = span[1], .least = true }, source } });
-                            }
-                        }
-                    },
-                    else => {},
-                }
-            }
-            try self.low(last, self.latest, .{ .rule = self.latest_rule });
-            for (1..self.lo.len) |event| try self.low(event, self.lo[event - 1], .{ .from = .{ .{ .event = event - 1, .least = true }, null } });
-            var event = last;
-            while (event > 0) : (event -= 1) try self.high(event - 1, self.hi[event], .{ .from = .{ .{ .event = event, .least = false }, null } });
-            if (!self.upper and self.crossing() != null) return .contradiction;
-            // Upper bounds only fall: once every event has one, which events some rule ends is known.
-            if (!self.changed or (self.upper and std.mem.max(f64, self.hi) < unbounded)) return .settled;
-        }
-        return .unsettled;
-    }
-
-    /// Every rule that has set a bound of the first event whose bounds cross, or a bound one of them was taken from:
-    /// the hard rules of time and duration, and the rule whose time the path must reach, that with the order of the
-    /// events and what a trajectory may last cannot hold together. Where one of the two bounds alone passes where the
-    /// other started (a time before the first event's, or past what a trajectory may last), its rules alone. A rule
-    /// whose bound a tighter one replaced is among them.
-    fn named(self: *const Brackets) Error![]const usize {
-        const event = self.crossing().?;
-        const seen = try self.arena.alloc(bool, 2 * self.lo.len);
-        @memset(seen, false);
-        const taken = try self.arena.alloc(bool, self.rules.len);
-        @memset(taken, false);
-        var pending: std.ArrayList(Bound) = .empty;
-        const lo = self.lo[event];
-        const hi = self.hi[event];
-        const top = if (event == 0) 0 else shared.trajectory.max_duration_s;
-        if (-hi > 1e-9 * @max(1, @abs(hi))) {
-            try pending.append(self.arena, .{ .event = event, .least = false });
-        } else if (lo - top > 1e-9 * @max(1, @abs(lo))) {
-            try pending.append(self.arena, .{ .event = event, .least = true });
-        } else try pending.appendSlice(self.arena, &.{ .{ .event = event, .least = true }, .{ .event = event, .least = false } });
-        while (pending.pop()) |bound| {
-            const slot = 2 * bound.event + @intFromBool(bound.least);
-            if (seen[slot]) continue;
-            seen[slot] = true;
-            for ((if (bound.least) self.lo_by[bound.event] else self.hi_by[bound.event]).items) |cause| {
-                if (cause.rule) |index| taken[index] = true;
-                for (cause.from) |from| if (from) |next| try pending.append(self.arena, next);
-            }
-        }
-        var list: std.ArrayList(usize) = .empty;
-        for (taken, 0..) |is, index| if (is) try list.append(self.arena, index);
-        return list.items;
+    /// A time that must come after the one before it.
+    fn after(self: *Resolver, path: []const u8, time: f64, before: f64) Error!void {
+        const range: Range = .{ .min = before, .open_min = true };
+        if (!range.holds(time)) try self.err(.out_of_range, path, "must be {f}, got {f}", .{ range, Number{ .value = time, .outside = range } });
     }
 };
 
-/// What the times' own step decides: each event's time, or where the rules of time contradict one another or put a
-/// time past what a trajectory may last the rules that take part; neither where it leaves the times to the solve.
-const Times = struct { held: []const f64 = &.{}, contradicting: []const usize = &.{} };
-
-/// The events' times, decided by the hard rules of time alone before any path is sought. An event whose time no rule
-/// ends is refused. Where the rules of time contradict one another, or put a time past what a trajectory may last,
-/// the rules that take part are named, and the solve says that no path meets them. Otherwise the windows a rule states
-/// are held first, each at its middle; then each run of events that only their neighbours' times bound is spaced
-/// evenly over what those leave it. Where the narrowing does not settle, or where a window's middle leaves another
-/// event no room or a section less than a section may last, nothing is held and the solve looks for the times as
-/// well.
-fn eventTimes(ctx: *const node.Ctx, count: usize, rules: []const model.Rule) Error!Times {
+pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
     const arena = ctx.arena;
-    var brackets: Brackets = .{
-        .arena = arena,
-        .lo = try arena.alloc(f64, count),
-        .hi = try arena.alloc(f64, count),
-        .lo_by = try arena.alloc(std.ArrayList(Brackets.Cause), count),
-        .hi_by = try arena.alloc(std.ArrayList(Brackets.Cause), count),
-        .rules = rules,
-        .latest = 0,
-        .latest_rule = null,
-    };
-    @memset(brackets.lo, 0);
-    @memset(brackets.lo_by, .empty);
-    @memset(brackets.hi_by, .empty);
-    // Whether a rule of time speaks of the event itself: a time at it, a duration that begins or ends at it, or a
-    // value of either that refers to its time.
-    const stated = try arena.alloc(bool, count);
-    @memset(stated, false);
-    for (rules, 0..) |given, index| {
-        const spoken: f64 = switch (given.scope) {
-            .time => |at| at,
-            .time_range => |range| range[1],
-            else => 0,
-        };
-        if (spoken > brackets.latest) {
-            brackets.latest = spoken;
-            brackets.latest_rule = index;
-        }
-        if (given.kind() != .hard or given.definition != .quantity) continue;
-        const q = given.definition.quantity;
-        switch (q.quantity) {
-            .time => stated[given.scope.event.index] = true,
-            .duration => switch (given.scope) {
-                .section => |section| @memset(stated[section .. section + 2], true),
-                .between => |ends| {
-                    stated[ends[0]] = true;
-                    stated[ends[1]] = true;
-                },
-                .all => {
-                    stated[0] = true;
-                    stated[count - 1] = true;
-                },
-                else => {},
-            },
-            else => continue,
-        }
-        const bounds: [2]?model.Value = switch (q.comparison) {
-            .eq => |v| .{ v, null },
-            .range => |range| .{ range.min, range.max },
-            .target, .objective => unreachable,
-        };
-        for (bounds) |bound| if (bound) |v| if (v == .event and v.event.quantity == .time) {
-            stated[v.event.event] = true;
-        };
-    }
-    // The events some rule ends, by the upper bounds alone: an event whose bound has not fallen from no bound at all.
-    var reach = brackets;
-    reach.upper = true;
-    reach.naming = false;
-    reach.hi = try arena.alloc(f64, count);
-    @memset(reach.hi, Brackets.unbounded);
-    reach.hi[0] = 0;
-    _ = try reach.narrow();
-    var open = false;
-    for (reach.hi, 0..) |hi, event| if (hi == Brackets.unbounded) {
-        try ctx.diags.err(.out_of_range, try node.element(ctx, "events", event), "no rule states this event's time: a hard rule of time or duration must end it", .{});
-        open = true;
-    };
-    if (open) return error.InvalidInput;
-    // No time lies past what a trajectory may last.
-    @memset(brackets.hi, shared.trajectory.max_duration_s);
-    brackets.hi[0] = 0;
-    switch (try brackets.narrow()) {
-        .settled => {},
-        .contradiction => return .{ .contradicting = try brackets.named() },
-        .unsettled => return .{},
-    }
-    brackets.naming = false;
-    // The windows a rule states first, each at its middle; then the runs between the times so decided.
-    for ([2]bool{ true, false }) |windows| for (1..count) |event| {
-        if (!brackets.free(event) or stated[event] != windows) continue;
-        var run: usize = 1;
-        if (!stated[event]) while (event + run < count and !stated[event + run] and brackets.free(event + run)) {
-            run += 1;
-        };
-        const held = brackets.lo[event] + (brackets.hi[event] - brackets.lo[event]) / @as(f64, @floatFromInt(run + 1));
-        brackets.lo[event] = held;
-        brackets.hi[event] = held;
-        if ((try brackets.narrow()) != .settled) return .{};
-    };
-    // A section shorter than a section may last leaves no room either.
-    for (brackets.lo[0 .. count - 1], brackets.lo[1..]) |before, after| if (after - before < model.min_section_s) return .{};
-    return .{ .held = brackets.lo };
-}
+    var r: Resolver = .{ .ctx = ctx };
+    if (!std.mem.eql(u8, raw.format, format_word)) try r.err(.invalid_format, "format", "must be \"" ++ format_word ++ "\", got \"{f}\"", .{Escaped{ .text = raw.format }});
+    const altitude = raw.coordinates.altitude;
+    const known = try places(ctx, altitude, raw.places, &r.ok);
+    for (known, 0..) |p, i| try r.ids.put(arena, p.id, i);
 
-fn geometryContext(ctx: *const node.Ctx, raw: read.RawGeometry) Error!Context {
+    const start_place = try r.place("start.at", raw.start.at);
+    const start: model.Start = blk: {
+        const speed = raw.start.speed orelse {
+            if (raw.start.course != null) try r.err(.out_of_range, "start.course", "a start with no speed takes no course", .{});
+            break :blk .free;
+        };
+        if (speed == 0) {
+            if (raw.start.course != null) try r.err(.out_of_range, "start.course", "a start at rest takes no course", .{});
+            break :blk .rest;
+        }
+        const course = raw.start.course orelse {
+            try r.err(.missing_field, "start.course", "required with a speed above 0", .{});
+            break :blk .free;
+        };
+        const index = start_place orelse break :blk .free;
+        const frame = core.coord.EnuFrame.at(core.coord.ecefToLla(known[index].ecef));
+        const k = core.constants.deg2rad(course);
+        const north = model.Vector.fromArray(frame.rows[1]);
+        const east = model.Vector.fromArray(frame.rows[0]);
+        break :blk .{ .moving = north.scale(@cos(k) * speed).add(east.scale(@sin(k) * speed)) };
+    };
+
+    var events: std.ArrayList(model.Event) = .empty;
+    try events.append(arena, .{ .name = "start", .time = 0, .segment = null });
+    try r.named.put(arena, "start", "the start");
+    const segments = try arena.alloc(model.Segment, raw.segments.len);
+    var now: f64 = 0;
+    // Why the segment before ends moving, where it does: a stay must begin at rest, as the plan states it.
+    var moving: ?[]const u8 = switch (start) {
+        .rest => null,
+        .free => "the start states no speed",
+        .moving => "the start states a speed",
+    };
+    for (raw.segments, segments, 0..) |given, *out, i| {
+        const path = try node.element(ctx, "segments", i);
+        out.* = .{ .id = given.id, .end = now, .motion = .stay };
+        const kinds = @as(u8, @intFromBool(given.stay != null)) + @intFromBool(given.through != null);
+        if (kinds != 1) {
+            try r.err(.out_of_range, path, "a segment takes one of stay, through; {d} given ({s})", .{ kinds, if (kinds == 0) "none" else "stay, through" });
+        } else if (given.stay != null) {
+            if (moving) |why| try r.err(.out_of_range, path, "a stay must begin at rest, and {s}", .{why});
+            if (given.@"for" != null and given.time != null) {
+                try r.err(.out_of_range, path, "a stay takes one of for, time; 2 given (for, time)", .{});
+            } else if (given.@"for") |length| {
+                out.end = now + length;
+                if (!(out.end > now)) try r.err(.out_of_range, try node.join(ctx, path, "for"), "must end the stay after it begins at {d} s, got {f}", .{ now, Number{ .value = length } });
+            } else if (given.time) |time| {
+                try r.after(try node.join(ctx, path, "time"), time, now);
+                out.end = @max(now, time);
+            } else try r.err(.missing_field, path, "a stay takes one of for, time; 0 given (none)", .{});
+            moving = null;
+        } else {
+            const through = given.through.?;
+            inline for (.{ "for", "time" }) |key| {
+                if (@field(given, key) != null) try r.err(.out_of_range, try node.join(ctx, path, key), "a through takes no " ++ key ++ ": the time of its last place ends it", .{});
+            }
+            const visits = try arena.alloc(model.Visit, through.places.len);
+            const places_path = try node.join(ctx, path, "through.places");
+            var last = now;
+            for (through.places, visits, 0..) |visit, *v, j| {
+                const visit_path = try node.element(ctx, places_path, j);
+                try r.after(try node.join(ctx, visit_path, "time"), visit.time, last);
+                last = @max(last, visit.time);
+                v.* = .{ .place = try r.place(try node.join(ctx, visit_path, "at"), visit.at) orelse 0, .time = visit.time };
+                const event = visit.event orelse visit.at;
+                try r.name(try node.join(ctx, visit_path, if (visit.event != null) "event" else "at"), event);
+                try events.append(arena, .{ .name = event, .time = visit.time, .segment = i, .visit = j });
+            }
+            out.* = .{ .id = given.id, .end = last, .motion = .{ .through = .{ .visits = visits, .end = through.end } } };
+            moving = if (through.end == .rest) null else try arena.print("{s} ends free", .{path});
+        }
+        // Only the first segment to end too late is told: the ones after it end no earlier.
+        if (out.end > shared.trajectory.max_duration_s and now <= shared.trajectory.max_duration_s) try r.err(.out_of_range, path, "ends {f} s from the start, and a trajectory lasts at most {d} s", .{ Number{ .value = out.end, .outside = .{ .max = shared.trajectory.max_duration_s } }, shared.trajectory.max_duration_s });
+        now = out.end;
+        if (given.id) |id| {
+            try r.name(try node.join(ctx, path, "id"), id);
+            try events.append(arena, .{ .name = id, .time = now, .segment = i });
+        }
+    }
+    if (!r.ok) return error.InvalidInput;
     return .{
-        .ctx = ctx,
-        .points = try names(ctx, raw.points, "geometry.points"),
-        .curves = try names(ctx, raw.curves orelse &.{}, "geometry.curves"),
-        .regions = try names(ctx, raw.regions orelse &.{}, "geometry.regions"),
-        .events = .empty,
-        .sections = .empty,
+        .name = raw.name,
+        .altitude = altitude,
+        .places = known,
+        .start_place = start_place.?,
+        .start = start,
+        .segments = segments,
+        .events = events.items,
     };
 }
 
-pub fn geometryInput(ctx: *const node.Ctx, raw: read.RawGeometryInput) Error!model.Geometry {
-    return resolveGeometry(try geometryContext(ctx, raw.geometry), raw.geometry, raw.coordinates.altitude);
-}
-
-fn resolveGeometry(c: Context, raw: read.RawGeometry, altitude: model.Altitude) Error!model.Geometry {
-    const ctx = c.ctx;
-    const raw_curves = raw.curves orelse &.{};
-    const raw_regions = raw.regions orelse &.{};
-    const points = try ctx.arena.alloc(model.Point, raw.points.len);
-    for (raw.points, points, 0..) |given, *out, i| {
-        const p = given.position.position();
-        const ecef = geometry.toEcef(p, altitude);
-        if (!shared.trajectory.positionInRange(ecef)) return fail(ctx, .out_of_range, try node.join(ctx, try node.element(ctx, "geometry.points", i), "position"), "position lies outside the trajectory geocentre-radius domain", .{});
-        out.* = .{ .id = given.id, .ecef = ecef };
+/// The places in ECEF; a place whose id another took, or that lies outside the receiver's domain, is reported and
+/// `ok` made false.
+pub fn places(ctx: *const node.Ctx, altitude: model.Altitude, given: []const read.RawPlace, ok: *bool) Error![]const model.Place {
+    const out = try ctx.arena.alloc(model.Place, given.len);
+    var seen: std.StringHashMapUnmanaged(usize) = .empty;
+    const domain: Range = .{ .min = shared.trajectory.min_radius_m, .max = shared.trajectory.max_radius_m };
+    for (given, out, 0..) |p, *place, i| {
+        const path = try node.element(ctx, "places", i);
+        const lla = geometry.lla(p.latitude, p.longitude, p.altitude, altitude);
+        place.* = .{ .id = p.id, .ecef = core.coord.llaToEcef(lla), .height = lla.height_m };
+        const found = try seen.getOrPut(ctx.arena, p.id);
+        if (found.found_existing) {
+            try ctx.diags.err(.duplicate, try node.join(ctx, path, "id"), "the id \"{f}\" is given to places[{d}] too", .{ Escaped{ .text = p.id }, found.value_ptr.* });
+            ok.* = false;
+        } else found.value_ptr.* = i;
+        const radius = place.ecef.norm();
+        if (!domain.holds(radius)) {
+            try ctx.diags.err(.out_of_range, try node.join(ctx, path, "altitude"), "the place's distance from the geocentre must be {f} m, got {f}", .{ domain, Number{ .value = radius, .outside = domain } });
+            ok.* = false;
+        }
     }
-    const curves = try ctx.arena.alloc(model.Curve, raw_curves.len);
-    for (raw_curves, curves, 0..) |given, *out, i| {
-        const path = try node.element(ctx, "geometry.curves", i);
-        if (given.type == .bezier and (given.points.len < 4 or (given.points.len - 1) % 3 != 0)) return fail(ctx, .out_of_range, try node.join(ctx, path, "points"), "a Bezier chain requires 3n+1 points for n >= 1", .{});
-        out.* = .{ .id = given.id, .kind = given.type, .points = try pointIndices(c, given.points, try node.join(ctx, path, "points")) };
-    }
-    const regions = try ctx.arena.alloc(model.Region, raw_regions.len);
-    for (raw_regions, regions, 0..) |given, *out, i| {
-        const path = try node.element(ctx, "geometry.regions", i);
-        out.* = .{ .id = given.id, .shape = switch (given.type) {
-            .circle => blk: {
-                if (given.points != null) return fail(ctx, .out_of_range, path, "a circle takes center and radius, not points", .{});
-                const center = given.center orelse return fail(ctx, .missing_field, try node.join(ctx, path, "center"), "required for a circle", .{});
-                const radius = given.radius orelse return fail(ctx, .missing_field, try node.join(ctx, path, "radius"), "required for a circle", .{});
-                break :blk .{ .circle = .{ .center = try c.index(c.points, center, try node.join(ctx, path, "center")), .radius = radius } };
-            },
-            .polygon => blk: {
-                if (given.center != null or given.radius != null) return fail(ctx, .out_of_range, path, "a polygon takes points, not center or radius", .{});
-                const references = given.points orelse return fail(ctx, .missing_field, try node.join(ctx, path, "points"), "required for a polygon", .{});
-                const indices = try pointIndices(c, references, try node.join(ctx, path, "points"));
-                if (!geometry.polygonValid(points, indices)) return fail(ctx, .out_of_range, try node.join(ctx, path, "points"), "polygon points must form a nondegenerate convex boundary in their local ENU frame", .{});
-                break :blk .{ .polygon = indices };
-            },
-        } };
-    }
-    return .{ .points = points, .curves = curves, .regions = regions };
-}
-
-fn pointIndices(c: Context, references: []const []const u8, path: []const u8) Error![]const usize {
-    const out = try c.ctx.arena.alloc(usize, references.len);
-    for (references, out, 0..) |id, *index, i| index.* = try c.index(c.points, id, try node.element(c.ctx, path, i));
     return out;
-}
-
-fn scope(c: Context, raw: read.RawScope, path: []const u8) Error!model.Scope {
-    const count = @as(u8, @intFromBool(raw.event != null)) + @intFromBool(raw.section != null) + @intFromBool(raw.between != null) + @intFromBool(raw.time != null) + @intFromBool(raw.time_range != null) + @intFromBool(raw.all != null);
-    if (count != 1) return fail(c.ctx, .out_of_range, path, "a scope selects exactly one of event, section, between, time, timeRange or all", .{});
-    if (raw.side != null and raw.event == null) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "side"), "side is only valid for an event scope", .{});
-    if (raw.event) |id| return .{ .event = .{ .index = try c.index(c.events, id, try node.join(c.ctx, path, "event")), .side = raw.side orelse .out } };
-    if (raw.section) |id| return .{ .section = try c.index(c.sections, id, try node.join(c.ctx, path, "section")) };
-    if (raw.between) |ids| {
-        const a = try c.index(c.events, ids[0], try node.element(c.ctx, try node.join(c.ctx, path, "between"), 0));
-        const b = try c.index(c.events, ids[1], try node.element(c.ctx, try node.join(c.ctx, path, "between"), 1));
-        if (a >= b) return fail(c.ctx, .out_of_range, path, "between requires two different events in chronological order", .{});
-        return .{ .between = .{ a, b } };
-    }
-    if (raw.time) |t| return .{ .time = t };
-    if (raw.time_range) |bounds| {
-        if (bounds[0] >= bounds[1]) return fail(c.ctx, .out_of_range, path, "timeRange requires increasing bounds", .{});
-        return .{ .time_range = .{ bounds[0], bounds[1] } };
-    }
-    if (!raw.all.?) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "all"), "all must be true", .{});
-    return .all;
-}
-
-const RawReference = struct {
-    point: ?[]const u8 = null,
-    event: ?[]const u8 = null,
-    quantity: ?model.Quantity = null,
-    side: ?model.Side = null,
-    factor: ?f64 = null,
-    offset: ?f64 = null,
-    pub const table = [_]Key{
-        .{ .name = "point", .doc = "point reference" },
-        .{ .name = "event", .doc = "event reference" },
-        .{ .name = "quantity", .doc = "referenced quantity" },
-        .{ .name = "side", .doc = "referenced event side" },
-        .{ .name = "factor", .range = .{}, .doc = "reference multiplier" },
-        .{ .name = "offset", .range = .{}, .doc = "reference offset" },
-    };
-};
-
-fn value(c: Context, raw: read.RawValue, quantity: model.Quantity) Error!model.Value {
-    const n = raw.node;
-    switch (n.value) {
-        .integer, .float, .number_string => {
-            if (quantities.components(quantity) != 1) return fail(c.ctx, .wrong_type, n.path, "{s} requires a three-component value", .{model.Quantity.words.get(quantity)});
-            const number = try n.number() orelse return error.InvalidInput;
-            if (!std.math.isFinite(number)) return fail(c.ctx, .out_of_range, n.path, "a rule value must be finite", .{});
-            return .{ .scalar = number };
-        },
-        .array => {
-            if (quantities.components(quantity) != 3) return fail(c.ctx, .wrong_type, n.path, "{s} requires a scalar value", .{model.Quantity.words.get(quantity)});
-            const vector = try read.RawVector.fromJson(n) orelse return error.InvalidInput;
-            if (quantity == .position and !shared.trajectory.positionInRange(vector.value)) return fail(c.ctx, .out_of_range, n.path, "position lies outside the trajectory geocentre-radius domain", .{});
-            return .{ .vector = vector.value };
-        },
-        .object => {
-            const obj = try n.object() orelse unreachable;
-            const reference = try table.read(RawReference, obj) orelse return error.InvalidInput;
-            if (reference.point) |id| {
-                if (quantity != .position) return fail(c.ctx, .wrong_type, n.path, "a point reference is only valid for position", .{});
-                if (reference.event != null or reference.quantity != null or reference.side != null or reference.factor != null or reference.offset != null) return fail(c.ctx, .out_of_range, n.path, "a point reference takes only point", .{});
-                return .{ .point = try c.index(c.points, id, try obj.childPath("point")) };
-            }
-            const event = reference.event orelse return fail(c.ctx, .missing_field, n.path, "a reference requires point or event", .{});
-            const q = reference.quantity orelse return fail(c.ctx, .missing_field, try obj.childPath("quantity"), "an event reference requires quantity", .{});
-            if (q == .duration) return fail(c.ctx, .out_of_range, try obj.childPath("quantity"), "duration is not defined at one event", .{});
-            if (!quantities.compatible(quantity, q)) return fail(c.ctx, .wrong_type, try obj.childPath("quantity"), "{s} and {s} have different dimensions or component counts", .{ model.Quantity.words.get(quantity), model.Quantity.words.get(q) });
-            const index = try c.index(c.events, event, try obj.childPath("event"));
-            const factor = reference.factor orelse 1;
-            const offset = reference.offset orelse 0;
-            // A value that refers with a factor of zero is its offset: a number.
-            if (factor == 0) return if (quantities.components(quantity) == 3) .{ .vector = .{ .x = offset, .y = offset, .z = offset } } else .{ .scalar = offset };
-            return .{ .event = .{ .event = index, .quantity = if (q == .forward_speed) .horizontal_speed else q, .side = reference.side orelse .out, .factor = factor, .offset = offset } };
-        },
-        else => return fail(c.ctx, .wrong_type, n.path, "expected a number, three-component vector, point reference or event reference", .{}),
-    }
-}
-
-fn ordered(a: model.Value, b: model.Value) bool {
-    if (a == .scalar and b == .scalar) return a.scalar <= b.scalar;
-    if (a == .vector and b == .vector) {
-        const lo = a.vector.toArray();
-        const hi = b.vector.toArray();
-        for (lo, hi) |x, y| if (x > y) return false;
-    }
-    return true;
-}
-
-fn rule(c: Context, raw: read.RawRule, path: []const u8) Error!model.Rule {
-    const selected = try scope(c, raw.scope, try node.join(c.ctx, path, "scope"));
-    if (raw.kind == .hard and raw.scale != null) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "scale"), "a hard rule takes no scale", .{});
-    var out: model.Rule = .{ .id = raw.id, .scope = selected, .scale = raw.scale orelse 1, .weight = raw.weight, .definition = undefined };
-    if (raw.relation) |relation| {
-        const invalid = "a relation rule is hard or target and takes no quantity, comparison, reduction or sense";
-        if (raw.quantity != null or raw.eq != null or raw.range != null or raw.value != null or raw.reduce != null or raw.sense != null) return fail(c.ctx, .out_of_range, path, invalid, .{});
-        out.definition = .{ .relation = .{ .kind = switch (raw.kind) {
-            .hard => .hard,
-            .target => .target,
-            .objective => return fail(c.ctx, .out_of_range, path, invalid, .{}),
-        }, .value = switch (relation.type) {
-            .follow_curve => blk: {
-                if (relation.region != null) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "relation"), "followCurve takes no region", .{});
-                const id = relation.curve orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "relation.curve"), "required for followCurve", .{});
-                const from = relation.from orelse 0;
-                const to = relation.to orelse 1;
-                break :blk .{ .follow_curve = .{ .curve = try c.index(c.curves, id, try node.join(c.ctx, path, "relation.curve")), .from = from, .to = to, .tolerance = relation.tolerance orelse 0 } };
-            },
-            .inside_region => blk: {
-                if (relation.curve != null or relation.from != null or relation.to != null or relation.tolerance != null) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "relation"), "insideRegion takes only type and region", .{});
-                const id = relation.region orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "relation.region"), "required for insideRegion", .{});
-                break :blk .{ .inside_region = try c.index(c.regions, id, try node.join(c.ctx, path, "relation.region")) };
-            },
-        } } };
-        return out;
-    }
-    const quantity = raw.quantity orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "quantity"), "a rule requires quantity or relation", .{});
-    if (!quantities.scopeAllowed(quantity, selected)) return fail(c.ctx, .out_of_range, path, "{s} requires {s} scope", .{ model.Quantity.words.get(quantity), if (quantity == .time) "an event" else "an interval" });
-    var q: model.QuantityRule = .{ .quantity = quantity, .comparison = undefined };
-    if (raw.kind != .hard and (quantity == .time or quantity == .duration)) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "quantity"), "{s} takes no target and no objective: a time is stated by a hard rule", .{model.Quantity.words.get(quantity)});
-    switch (raw.kind) {
-        .hard => {
-            if ((raw.eq == null) == (raw.range == null) or raw.value != null or raw.reduce != null or raw.sense != null) return fail(c.ctx, .out_of_range, path, "a hard quantity rule takes exactly one of eq or range", .{});
-            if (raw.eq) |given| q.comparison = .{ .eq = try value(c, given, quantity) } else {
-                const given = raw.range.?;
-                if (given.min == null and given.max == null) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "range"), "a range requires min or max", .{});
-                const bounds: model.Range = .{ .min = if (given.min) |v| try value(c, v, quantity) else null, .max = if (given.max) |v| try value(c, v, quantity) else null };
-                if (bounds.min != null and bounds.max != null and !ordered(bounds.min.?, bounds.max.?)) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "range"), "range min must not exceed max", .{});
-                q.comparison = .{ .range = bounds };
-            }
-        },
-        .target => {
-            if (raw.eq != null or raw.range != null or raw.reduce != null or raw.sense != null) return fail(c.ctx, .out_of_range, path, "a target quantity rule takes value, scale and weight", .{});
-            const given = raw.value orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "value"), "required for a target", .{});
-            q.comparison = .{ .target = try value(c, given, quantity) };
-        },
-        .objective => {
-            if (raw.eq != null or raw.range != null or raw.value != null) return fail(c.ctx, .out_of_range, path, "an objective takes reduce and sense instead of a comparison", .{});
-            const reduction = raw.reduce orelse return fail(c.ctx, .missing_field, try node.join(c.ctx, path, "reduce"), "required for an objective", .{});
-            if (!quantities.interval(selected) and reduction == .integral_square) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "reduce"), "integralSquare requires an interval scope", .{});
-            q.comparison = .{ .objective = reduction };
-        },
-    }
-    // Directions are the path's own: the speed along the course is the horizontal speed, and is never negative.
-    if (quantity == .forward_speed) {
-        const most: ?model.Value = switch (q.comparison) {
-            .eq, .target => |v| v,
-            .range => |range| range.max,
-            .objective => null,
-        };
-        if (most) |v| if (v == .scalar and v.scalar < 0) return fail(c.ctx, .out_of_range, path, "forwardSpeed below zero is reverse motion, which is not supported: the course is the path's own", .{});
-        q.quantity = .horizontal_speed;
-    }
-    out.definition = .{ .quantity = q };
-    return out;
-}
-
-/// Whether a rule holds the speed at zero wherever it applies.
-fn rests(given: model.Rule) bool {
-    if (given.definition != .quantity) return false;
-    const q = given.definition.quantity;
-    const most: model.Value = switch (q.comparison) {
-        .eq => |v| v,
-        .range => |range| range.max orelse return false,
-        .target, .objective => return false,
-    };
-    return switch (q.quantity) {
-        .speed3d, .horizontal_speed => most == .scalar and most.scalar == 0,
-        .velocity_ecef => q.comparison == .eq and most == .vector and most.vector.x == 0 and most.vector.y == 0 and most.vector.z == 0,
-        .position => q.comparison == .eq and most != .event and quantities.interval(given.scope),
-        else => false,
-    };
-}
-
-/// Whether some rule holds the speed at zero from one fixed time to another.
-fn restsBetween(rules: []const model.Rule, from: f64, to: f64) bool {
-    for (rules) |given| {
-        if (!rests(given)) continue;
-        const held: [2]f64 = switch (given.scope) {
-            .time => |time| .{ time, time },
-            .time_range => |range| range,
-            else => continue,
-        };
-        if (held[0] <= from and to <= held[1]) return true;
-    }
-    return false;
-}
-
-/// A direction of travel has no value where the path is at rest. Where the plan's own rules hold the speed at zero,
-/// an equality, a target or an objective at that very event or time, and an equality over the whole of such a
-/// stretch, ask for what is not there: they are refused. A limit holds there, whatever its value, and so does a
-/// soft rule over such a stretch, and any rule over a journey that only sets out from rest or comes to rest.
-fn directions(ctx: *const node.Ctx, events: []const model.Event, rules: []const model.Rule) Error!void {
-    const in = try ctx.arena.alloc(bool, events.len);
-    const out = try ctx.arena.alloc(bool, events.len);
-    const sections = try ctx.arena.alloc(bool, events.len - 1);
-    @memset(in, false);
-    @memset(out, false);
-    @memset(sections, false);
-    for (rules) |given| if (rests(given)) switch (given.scope) {
-        .event => |event| (if (event.side == .in) in else out)[event.index] = true,
-        .section => |index| sections[index] = true,
-        .between => |ends| @memset(sections[ends[0]..ends[1]], true),
-        .all => @memset(sections, true),
-        .time, .time_range => {},
-    };
-    for (sections, 0..) |rest, i| if (rest) {
-        out[i] = true;
-        in[i + 1] = true;
-    };
-    for (events, in, out, 0..) |event, *before, *after, i| if (i == 0 or i + 1 == events.len or event.continuity != .c0) {
-        before.* = before.* or after.*;
-        after.* = before.*;
-    };
-    const whole = std.mem.allEqual(bool, sections, true);
-    for (rules, 0..) |given, i| {
-        if (given.definition != .quantity) continue;
-        const q = given.definition.quantity;
-        const still = quantities.directed(q.quantity) and switch (given.scope) {
-            .event => |event| (if (event.side == .in) in else out)[event.index],
-            .section => |index| sections[index],
-            .between => |ends| std.mem.allEqual(bool, sections[ends[0]..ends[1]], true),
-            .all => whole,
-            .time => |time| whole or restsBetween(rules, time, time),
-            .time_range => |range| whole or restsBetween(rules, range[0], range[1]),
-        };
-        var asked = still and (q.comparison == .eq or (q.comparison != .range and !quantities.interval(given.scope)));
-        const sides: [2]?model.Value = switch (q.comparison) {
-            .eq, .target => |v| .{ v, null },
-            .range => |range| .{ range.min, range.max },
-            .objective => .{ null, null },
-        };
-        for (sides) |side| if (side) |v| {
-            if (!still and v == .event and quantities.directed(v.event.quantity) and (if (v.event.side == .in) in else out)[v.event.event]) asked = true;
-        };
-        if (asked) return fail(ctx, .out_of_range, try node.element(ctx, "rules", i), "a direction of travel is asked where the plan holds the path at rest: a path at rest has none", .{});
-    }
-}
-
-/// A plan's own targets and objectives stand in place of the smoothest path, and are taken only where the plan
-/// itself says how smooth each section is to be: by an objective of the jerk or of the acceleration, or by a hard
-/// rule that holds the section still (at rest, as `rests` counts a rest of the whole velocity, or at a place it
-/// states), over all, over the section or between events on either side of it. A rule over a time range, at an
-/// event or at a time counts for no section; a course, a turning or a guide holds a leg's shape and not its timing.
-fn smoothness(ctx: *const node.Ctx, sections: []const model.Section, rules: []const model.Rule) Error!void {
-    for (rules) |given| {
-        if (given.kind() != .hard) break;
-    } else return;
-    const open = try ctx.arena.alloc(bool, sections.len);
-    @memset(open, true);
-    for (rules) |given| {
-        const whole: []bool = switch (given.scope) {
-            .section => |index| open[index .. index + 1],
-            .between => |ends| open[ends[0]..ends[1]],
-            .all => open,
-            .event, .time, .time_range => continue,
-        };
-        if (given.definition != .quantity) continue;
-        const q = given.definition.quantity;
-        const settles = switch (q.comparison) {
-            .objective => q.quantity == .jerk3d or q.quantity == .acceleration3d or q.quantity == .acceleration_ecef,
-            // A horizontal speed of zero leaves the height free.
-            else => rests(given) and q.quantity != .horizontal_speed,
-        };
-        if (settles) @memset(whole, false);
-    }
-    var lacking: std.ArrayList(u8) = .empty;
-    var count: usize = 0;
-    for (sections, open) |section, lacks| if (lacks) {
-        try lacking.print(ctx.arena, "{s}\"{s}\"", .{ if (count == 0) "" else ", ", section.id });
-        count += 1;
-    };
-    if (count > 0) return fail(ctx, .out_of_range, "rules", "a plan with a target or an objective states its own smoothness over every section: an objective of jerk3d, acceleration3d or accelerationEcef, a hard rule that holds speed3d at zero, or an equality of velocityEcef to zero or of position to a place it states, scoped all, section or between (a timeRange does not count); section{s} {s} {s} none", .{ if (count == 1) "" else "s", lacking.items, if (count == 1) "has" else "have" });
-}
-
-fn guess(c: Context, raw: ?read.RawGuess, altitude: model.Altitude, event_count: usize) Error!model.InitialGuess {
-    const times = try c.ctx.arena.alloc(?f64, event_count);
-    @memset(times, null);
-    const given = raw orelse return .{ .event_times = times, .states = &.{} };
-    if (given.event_times) |entries| for (entries.entries) |entry| {
-        const path = try node.join(c.ctx, "initialGuess.eventTimes", entry.id);
-        const index = try c.index(c.events, entry.id, path);
-        if (index == 0 and entry.value != 0) return fail(c.ctx, .out_of_range, path, "the first event is fixed at zero seconds", .{});
-        times[index] = entry.value;
-    };
-    var previous: f64 = 0;
-    for (times[1..], 1..) |time, i| if (time) |t| {
-        if (t <= previous) return fail(c.ctx, .out_of_range, "initialGuess.eventTimes", "given event times must increase; event {d} has time {d}", .{ i, t });
-        previous = t;
-    };
-    const raw_states = given.states orelse &.{};
-    const states = try c.ctx.arena.alloc(model.GuessState, raw_states.len);
-    const seen = try c.ctx.arena.alloc(bool, event_count);
-    @memset(seen, false);
-    for (raw_states, states, 0..) |entry, *out, i| {
-        const path = try node.element(c.ctx, "initialGuess.states", i);
-        const event = try c.index(c.events, entry.event, try node.join(c.ctx, path, "event"));
-        if (seen[event]) return fail(c.ctx, .duplicate, try node.join(c.ctx, path, "event"), "an initial state for this event is already given", .{});
-        seen[event] = true;
-        const ecef = if (entry.position) |v| geometry.toEcef(v.position(), altitude) else null;
-        if (ecef) |v| if (!shared.trajectory.positionInRange(v)) return fail(c.ctx, .out_of_range, try node.join(c.ctx, path, "position"), "position lies outside the trajectory geocentre-radius domain", .{});
-        out.* = .{ .event = event, .ecef = ecef, .velocity_ecef = if (entry.velocity_ecef) |v| v.value else null, .acceleration_ecef = if (entry.acceleration_ecef) |v| v.value else null };
-    }
-    return .{ .event_times = times, .states = states };
 }

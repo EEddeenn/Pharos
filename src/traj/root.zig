@@ -3,7 +3,6 @@ pub const core = @import("shared").core;
 pub const trajectory = @import("shared").trajectory;
 pub const cli = @import("shared").cli;
 pub const plan = @import("plan.zig");
-pub const solve = @import("solve.zig");
 pub const source = @import("source.zig");
 pub const inspect = @import("inspect.zig");
 pub const static = @import("static.zig");

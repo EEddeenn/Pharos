@@ -8,6 +8,7 @@ const Trajectory = trajectory.Trajectory;
 const Diagnostics = pharos_traj.core.diagnostics.Diagnostics;
 const cli = pharos_traj.cli;
 const Console = cli.Console;
+const Number = cli.Number;
 const args_mod = @import("args.zig");
 const Args = args_mod.Args;
 
@@ -31,16 +32,14 @@ const Error = error{OutOfMemory};
 fn build(allocator: std.mem.Allocator, arena: std.mem.Allocator, io: Io, args: args_mod.Build, console: Console) Error!u8 {
     const text = try cli.readFile(io, arena, args.input, cli.max_input_bytes, console) orelse return 1;
     var diags: Diagnostics = .{ .arena = arena, .source = args.input };
-    const built = pharos_traj.source.build(allocator, arena, text, .{}, &diags) catch |e| {
+    const built = pharos_traj.source.build(allocator, arena, text, &diags) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory;
         cli.printDiagnostics(console, &diags);
         return 1;
     };
     cli.printDiagnostics(console, &diags);
-    const report = built.report;
-    console.info("Solve {s}: {d} iterations, objective {d}, maximum violation {d}, stationarity {d}", .{ @tagName(report.status), report.iterations, report.objective, report.max_violation, report.stationarity });
-    if (!report.verified) {
-        console.fail("The trajectory candidate has not passed verification", .{});
+    if (!built.valid) {
+        console.fail("The path leaves the receiver's domain: no PHT is written", .{});
         return 1;
     }
     var traj = built.trajectory;
@@ -48,19 +47,20 @@ fn build(allocator: std.mem.Allocator, arena: std.mem.Allocator, io: Io, args: a
     return save(io, arena, traj, args.output orelse try cli.withExtension(arena, args.input, "pht"), console);
 }
 
-const latitude_range = std.fmt.comptimePrint("a latitude within -{d}..{d} degrees", .{ pharos_traj.static.max_latitude_deg, pharos_traj.static.max_latitude_deg });
-const longitude_range = std.fmt.comptimePrint("a longitude within -{d}..{d} degrees", .{ pharos_traj.static.max_longitude_deg, pharos_traj.static.max_longitude_deg });
-const position_range = std.fmt.comptimePrint("a position {d}..{d} m from the geocentre", .{ trajectory.min_radius_m, trajectory.max_radius_m });
-const duration_range = std.fmt.comptimePrint("0..{d} seconds", .{trajectory.max_duration_s});
+const latitude_range = std.fmt.comptimePrint("a latitude from {d} to {d} degrees", .{ pharos_traj.static.latitude_range.min, pharos_traj.static.latitude_range.max });
+const longitude_range = std.fmt.comptimePrint("a longitude from {d} to {d} degrees", .{ pharos_traj.static.longitude_range.min, pharos_traj.static.longitude_range.max });
+const position_range = std.fmt.comptimePrint("a position from {d} to {d} m from the geocentre", .{ trajectory.min_radius_m, trajectory.max_radius_m });
+const duration_range = std.fmt.comptimePrint("from {d} to {d} seconds", .{ pharos_traj.static.duration_range.min, pharos_traj.static.duration_range.max });
 
 fn static(arena: std.mem.Allocator, io: Io, args: args_mod.Static, console: Console) Error!u8 {
     const traj = pharos_traj.static.build(arena, args.name orelse "", args.at.value, args.duration_s.value) catch |e| {
-        const refusal = switch (e) {
+        const duration = args.duration_s.found;
+        const refusal: cli.Refusal = switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.LatitudeOutOfRange => args.at.found.expects(latitude_range),
             error.LongitudeOutOfRange => args.at.found.expects(longitude_range),
             error.PositionOutOfRange => args.at.found.expects(position_range),
-            error.DurationOutOfRange => args.duration_s.found.expects(duration_range),
+            error.DurationOutOfRange => .{ .outside = .{ .option = duration.spelling, .range = duration_range, .got = duration.value } },
         };
         console.fail("{f}", .{refusal});
         return 1;
@@ -80,13 +80,13 @@ fn check(arena: std.mem.Allocator, io: Io, input: []const u8, console: Console) 
     const traj = try load(io, arena, input, console) orelse return 1;
     cli.reportTrajectory(console, &traj, input);
     const st = pharos_traj.stats.of(traj);
-    console.info("Speed up to {d:.3} m/s, acceleration up to {d:.3} m/s^2, jerk up to {d:.3} m/s^3", .{ st.max_speed_mps, st.max_acceleration_mps2, st.max_jerk_mps3 });
-    console.info("Altitude from {d:.3} to {d:.3} m", .{ st.min_altitude_m, st.max_altitude_m });
+    console.info("Speed up to {f} m/s, acceleration up to {f} m/s^2, jerk up to {f} m/s^3", .{ Number{ .value = st.max_speed_mps }, Number{ .value = st.max_acceleration_mps2 }, Number{ .value = st.max_jerk_mps3 } });
+    console.info("Altitude from {f} to {f} m", .{ Number{ .value = st.min_altitude_m }, Number{ .value = st.max_altitude_m } });
     if (st.largest_acceleration_step_s) |at| {
-        console.info("Acceleration steps: {d}, the largest {d:.3} m/s^2 at {d:.3} s", .{ st.acceleration_steps, st.largest_acceleration_step_mps2, at });
+        console.info("Acceleration steps: {d}, the largest {f} m/s^2 at {f} s", .{ st.acceleration_steps, Number{ .value = st.largest_acceleration_step_mps2 }, Number{ .value = at } });
     }
     if (st.first_velocity_step_s) |at| {
-        console.warn("Velocity steps: {d}, the first at {d:.3} s (a receiver cannot follow a step)", .{ st.velocity_steps, at });
+        console.warn("Velocity steps: {d}, the first at {f} s (a receiver cannot follow a step)", .{ st.velocity_steps, Number{ .value = at } });
     }
     return 0;
 }

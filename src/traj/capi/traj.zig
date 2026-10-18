@@ -5,6 +5,8 @@ const coord = core.coord;
 const shared_trajectory = @import("shared").trajectory;
 const Trajectory = shared_trajectory.Trajectory;
 const Diagnostics = @import("shared").core.diagnostics.Diagnostics;
+const Number = @import("shared").json.node.Number;
+const Range = @import("shared").json.table.Range;
 const stationary = @import("../static.zig");
 const source = @import("../source.zig");
 const inspect = @import("../inspect.zig");
@@ -21,7 +23,7 @@ pub const Diag = capi.Diag;
 
 pub const Handle = struct {
     arena: std.heap.ArenaAllocator,
-    content: union(enum) { none, loaded: Trajectory, solved: source.Result } = .none,
+    content: union(enum) { none, loaded: Trajectory, built: source.Result } = .none,
     c_diags: []Diag = &.{},
     pht_bytes: ?[]u8 = null,
     kml_bytes: ?[]u8 = null,
@@ -32,15 +34,15 @@ pub const Handle = struct {
         return switch (self.content) {
             .none => null,
             .loaded => |traj| traj,
-            .solved => |built| built.trajectory,
+            .built => |built| built.trajectory,
         };
     }
 
-    fn verified(self: *const Handle) bool {
+    fn valid(self: *const Handle) bool {
         return switch (self.content) {
             .none => false,
             .loaded => true,
-            .solved => |built| built.report.verified,
+            .built => |built| built.valid,
         };
     }
 };
@@ -89,14 +91,6 @@ fn finish(h: *Handle, diags: *const Diagnostics, status: Status, out: *?*Handle)
 }
 
 pub fn pharos_traj_build(json: ?[*]const u8, len: usize, out: ?*?*Handle) callconv(.c) Status {
-    return build(json, len, .{}, out);
-}
-
-pub fn pharos_traj_build_within(json: ?[*]const u8, len: usize, max_work: usize, out: ?*?*Handle) callconv(.c) Status {
-    return build(json, len, .{ .max_work = max_work }, out);
-}
-
-fn build(json: ?[*]const u8, len: usize, options: source.Options, out: ?*?*Handle) Status {
     common.thread_error.begin();
     const o = out orelse return .arg;
     o.* = null;
@@ -104,12 +98,12 @@ fn build(json: ?[*]const u8, len: usize, options: source.Options, out: ?*?*Handl
     const h = create() orelse return nomem(&common.thread_error);
     const arena = h.arena.allocator();
     var diags = Diagnostics.init(arena);
-    const built = source.build(allocator, arena, bytes, options, &diags) catch |e| {
+    const built = source.build(allocator, arena, bytes, &diags) catch |e| {
         if (e == error.OutOfMemory) return nomemDestroy(h);
         return finish(h, &diags, .input, o);
     };
-    h.content = .{ .solved = built };
-    return finish(h, &diags, if (h.verified()) .ok else .input, o);
+    h.content = .{ .built = built };
+    return finish(h, &diags, if (built.valid) .ok else .input, o);
 }
 
 pub fn pharos_traj_read(bytes: ?[*]const u8, len: usize, out: ?*?*Handle) callconv(.c) Status {
@@ -136,10 +130,10 @@ pub fn pharos_traj_static(lat_deg: f64, lon_deg: f64, altitude_m: f64, duration_
     const traj = stationary.build(h.arena.allocator(), "", .{ .lla = .{ .lat_deg = lat_deg, .lon_deg = lon_deg, .altitude_m = altitude_m } }, duration_s) catch |e| {
         switch (e) {
             error.OutOfMemory => return nomemDestroy(h),
-            error.LatitudeOutOfRange => common.thread_error.set("lat_deg must lie within -{d}..{d}, got {d}", .{ stationary.max_latitude_deg, stationary.max_latitude_deg, lat_deg }),
-            error.LongitudeOutOfRange => common.thread_error.set("lon_deg must lie within -{d}..{d}, got {d}", .{ stationary.max_longitude_deg, stationary.max_longitude_deg, lon_deg }),
-            error.PositionOutOfRange => common.thread_error.set("altitude_m places the receiver outside {d}..{d} m from the geocentre, got {d}", .{ shared_trajectory.min_radius_m, shared_trajectory.max_radius_m, altitude_m }),
-            error.DurationOutOfRange => common.thread_error.set("duration_s must lie within 0..{d}, got {d}", .{ shared_trajectory.max_duration_s, duration_s }),
+            error.LatitudeOutOfRange => outside("lat_deg", stationary.latitude_range, lat_deg),
+            error.LongitudeOutOfRange => outside("lon_deg", stationary.longitude_range, lon_deg),
+            error.PositionOutOfRange => common.thread_error.set("altitude_m must put the receiver {f} m from the geocentre, got {f}", .{ Range{ .min = shared_trajectory.min_radius_m, .max = shared_trajectory.max_radius_m }, Number{ .value = altitude_m } }),
+            error.DurationOutOfRange => outside("duration_s", stationary.duration_range, duration_s),
         }
         pharos_traj_destroy(h);
         return .arg;
@@ -147,6 +141,10 @@ pub fn pharos_traj_static(lat_deg: f64, lon_deg: f64, altitude_m: f64, duration_
     h.content = .{ .loaded = traj };
     o.* = h;
     return .ok;
+}
+
+fn outside(comptime name: []const u8, range: Range, value: f64) void {
+    common.thread_error.set(name ++ " must be {f}, got {f}", .{ range, Number{ .value = value, .outside = range } });
 }
 
 pub fn pharos_traj_diag_count(h: ?*const Handle) callconv(.c) usize {
@@ -234,14 +232,11 @@ pub fn pharos_traj_inspect(h: ?*Handle, sample_count: usize, out: ?*?[*]const u8
     const built = switch (t.content) {
         .none => return noTrajectory(t),
         .loaded => return .ok,
-        .solved => |built| built,
+        .built => |built| built,
     };
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const inspection = inspect.of(arena.allocator(), built, sample_count) catch |err| switch (err) {
-        error.OutOfMemory => return nomem(&t.err),
-        error.InvalidSampleCount => unreachable,
-    };
+    const inspection = inspect.of(arena.allocator(), built, sample_count) catch return nomem(&t.err);
     const bytes = std.json.Stringify.valueAlloc(allocator, inspection, .{}) catch return nomem(&t.err);
     if (t.inspection_bytes) |previous| allocator.free(previous);
     t.inspection_bytes = bytes;
@@ -258,8 +253,8 @@ fn serialized(h: ?*Handle, comptime format: enum { pht, kml }, out: ?*?[*]const 
     dst.* = null;
     count.* = 0;
     const traj = t.trajectory() orelse return noTrajectory(t);
-    if (format == .pht and !t.verified()) {
-        t.err.set("the trajectory candidate has not passed verification", .{});
+    if (format == .pht and !t.valid()) {
+        t.err.set("the path leaves the receiver's domain, so no PHT is written of it", .{});
         return .input;
     }
     const saved = switch (format) {
