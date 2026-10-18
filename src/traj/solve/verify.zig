@@ -59,6 +59,8 @@ pub fn check(arena: std.mem.Allocator, prepared: *const rules.Prepared, candidat
         }
         // A least value of a norm at or under zero holds whatever the path: there is nothing to settle.
         if (rules.kindOf(prepared, term) == .vacuous) continue;
+        // A course held over an interval is the optimiser's row along it as well; the course itself is the verifier's.
+        if (term.operation == .ahead and term.scope != .event) continue;
         switch (term.scope) {
             .event => |event| context.point(term, candidate.path.eventLocation(event)),
             .time => |time| context.point(term, timeLocation(&candidate.path, time)),
@@ -518,7 +520,8 @@ const Context = struct {
         };
         if (rhs != null) {
             p = p.add(Polynomial.constant(-(if (squared_norm) target * target else target)));
-            if (squared_norm) p = p.scaled(1 / (if (rhs.? == .scalar) @max(rule.scale, @abs(target)) else rule.scale));
+            // The norm held on its own scale: a tolerance on its square over 2b + tolerance is the tolerance on it.
+            if (squared_norm) p = p.scaled(1 / (2 * @abs(target) + tolerance * rule.scale));
         }
         return p.scaled((if (operation.comparison == .max) @as(f64, -1) else 1) / rule.scale);
     }

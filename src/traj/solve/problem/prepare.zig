@@ -397,7 +397,8 @@ const Compiler = struct {
                 .point = point_index,
                 .equality = descriptor.equality,
                 .weight = descriptor.weight * (if (sampling.weights) |weights| weights[sample] else quadrature(self.locations.items[point_index], sample, points.len)),
-                .margin = if (objective or descriptor.equality) 0 else if (descriptor.ruleIndex()) |rule| self.margins[rule] else 0,
+                // A band is as wide as the verifier's tolerance: a margin, which grows with an overrun, would empty it.
+                .margin = if (objective or descriptor.equality or descriptor.band != 0) 0 else if (descriptor.ruleIndex()) |rule| self.margins[rule] else 0,
             };
             if (objective) try self.objectives.append(self.allocator, term) else try self.constraints.append(self.allocator, term);
             self.checkQuantities(point_index, descriptor);

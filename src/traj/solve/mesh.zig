@@ -10,7 +10,7 @@ const trajectory = shared.trajectory;
 const Jet = kernel.Scalar.Jet;
 
 pub const time_scale: f64 = 10;
-pub const min_duration: f64 = 1e-3;
+pub const min_duration = model.min_section_s;
 pub const Error = error{ OutOfMemory, InvalidMesh };
 pub const Node = struct { variables: [9]usize };
 pub const Cell = candidate.Cell;

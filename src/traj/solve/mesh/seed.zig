@@ -89,8 +89,12 @@ pub fn initial(arena: std.mem.Allocator, plan: *const model.Plan, incoming: []Je
         @memset(positions, fallback);
     }
     mergeRestPositions(positions, priority, resting);
-    for (durations, 0..) |*duration, i| duration.* = std.math.clamp(positions[i + 1].?.sub(positions[i].?).norm() / 10, 1, trajectory.max_duration_s);
-    try seedTimes(arena, plan, durations);
+    if (plan.times.len > 0) {
+        for (durations, 0..) |*duration, i| duration.* = boundedDuration(plan.times[i + 1] - plan.times[i]);
+    } else {
+        for (durations, 0..) |*duration, i| duration.* = std.math.clamp(positions[i + 1].?.sub(positions[i].?).norm() / 10, 1, trajectory.max_duration_s);
+        try seedTimes(arena, plan, durations);
+    }
 
     for (incoming, outgoing, positions, 0..) |*before, *after, position, i| {
         if (!finiteVector(position.?)) return error.InvalidMesh;

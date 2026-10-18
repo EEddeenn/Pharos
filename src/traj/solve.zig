@@ -31,7 +31,8 @@ pub const Status = enum { converged, iterationLimit, workLimit, infeasible, nume
 pub const Tier = enum { nonlinear, convex };
 pub const Report = struct {
     tier: Tier,
-    /// The cells of the mesh the answer stands on, and the meshes the answer took.
+    /// The cells of the mesh the answer stands on, and the meshes the answer took (one solved again with the limits
+    /// of the direction of travel as rows counted again).
     cells: usize,
     passes: usize,
     /// How many of those meshes' optima the verifier refused (the convex tier's; the nonlinear solve has no optimum
@@ -40,7 +41,8 @@ pub const Report = struct {
     /// `infeasible` is said only where it is known of every path: of hard rules whose stated values contradict one
     /// another, and by the convex tier of a row no unknown moves. Its finest mesh that holds no path, like a
     /// nonlinear solve that finds none, ends with `iterationLimit`; the tier names the rules then, unless its own
-    /// floor is among the rows that cannot hold together.
+    /// floor is among the rows that cannot hold together. So does a tier whose rows are made again in passes and
+    /// end with no path the verifier passes.
     status: Status,
     feasible: bool,
     verified: bool,
@@ -164,6 +166,7 @@ pub fn build(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
                 for (built_mesh.conflict) |rule| if (rule) |index| {
                     named[index] = true;
                 };
+                for (plan.contradicting) |index| named[index] = true;
                 try sayNone(diagnostics, named, null);
             } else {
                 if (invalid) |issue| try diagnostics.err(.invalid_segment, "rules", "candidate cannot be stored as a trajectory: {f}", .{issue});
@@ -196,17 +199,30 @@ fn sayRests(diagnostics: *shared.core.diagnostics.Diagnostics, rests: []const ?f
 fn sayNone(diagnostics: *shared.core.diagnostics.Diagnostics, named: []const bool, cells: ?usize) shared.core.diagnostics.InputError!void {
     var count: usize = 0;
     for (named) |is| count += @intFromBool(is);
-    const others = if (count > 1) try diagnostics.arena.print(" together with the {d} other rule{s} named with it", .{ count - 1, if (count == 2) "" else "s" }) else "";
+    const with = try others(diagnostics, count);
     const verb = if (count == 1) "is" else "are";
     for (named, 0..) |is, index| if (is) {
         const at = try diagnostics.arena.print("rules[{d}]", .{index});
         if (cells) |number| {
-            try diagnostics.err(.invalid_segment, at, "the convex tier finds no path of {d} pieces that meets this rule{s} and what the plan fixes", .{ number, others });
-        } else try diagnostics.err(.invalid_segment, at, "no path meets this rule{s} and what the plan fixes", .{others});
+            try diagnostics.err(.invalid_segment, at, "the convex tier finds no path of {d} pieces that meets this rule{s} and what the plan fixes", .{ number, with });
+        } else try diagnostics.err(.invalid_segment, at, "no path meets this rule{s} and what the plan fixes", .{with});
     };
     if (cells) |number| {
         try diagnostics.err(.invalid_segment, "rules", "the convex tier finds no path of {d} pieces that meets the hard rules: {d} of them {s} named", .{ number, count, verb });
     } else try diagnostics.err(.invalid_segment, "rules", "no path meets the hard rules: {d} of them {s} named", .{ count, verb });
+}
+
+/// That rows made again in passes ended with no path the verifier passes: at each rule named, not decided.
+fn sayUndecided(diagnostics: *shared.core.diagnostics.Diagnostics, named: []const bool) shared.core.diagnostics.InputError!void {
+    var count: usize = 0;
+    for (named) |is| count += @intFromBool(is);
+    const with = try others(diagnostics, count);
+    for (named, 0..) |is, index| if (is) try diagnostics.err(.invalid_segment, try diagnostics.arena.print("rules[{d}]", .{index}), "the solve found no path that meets this rule{s}: not decided", .{with});
+}
+
+/// How a rule's finding names the others named with it, where there are others.
+fn others(diagnostics: *shared.core.diagnostics.Diagnostics, count: usize) shared.core.diagnostics.InputError![]const u8 {
+    return if (count > 1) try diagnostics.arena.print(" together with the {d} other rule{s} named with it", .{ count - 1, if (count == 2) "" else "s" }) else "";
 }
 
 /// The convex tier: the answer of a plan whose events' times are held and whose rules are convex in the path, a
@@ -218,14 +234,18 @@ fn sayNone(diagnostics: *shared.core.diagnostics.Diagnostics, named: []const boo
 /// is not decided, and names those rules, or none where the tier's floor is among them. A finer mesh is made only
 /// of as many cells as `refined_cells` allows.
 fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, plan: model.Plan, prepared_rules: *const rules.Prepared, options: Options, diagnostics: *shared.core.diagnostics.Diagnostics) shared.core.diagnostics.InputError!?Result {
-    const shape = rules.shape(prepared_rules);
-    if (!shape.convex) return null;
+    const every = rules.shape(prepared_rules);
+    if (!every.convex) return null;
     var preparation = std.heap.ArenaAllocator.init(allocator);
     defer preparation.deinit();
     var warm_start = std.heap.ArenaAllocator.init(allocator);
     defer warm_start.deinit();
     const memory = preparation.allocator();
-    const tier_rules = try rules.floored(memory, prepared_rules.*);
+    const whole = try rules.floored(memory, try rules.banded(memory, prepared_rules.*, verify.tolerance));
+    // The smoothest path is made without the limits of the direction of travel, and the verifier holds it against
+    // them; where it breaks one, they become rows (made again in passes) and the same mesh is solved again from it.
+    var tier_rules = if (every.directions) try rules.smoothest(memory, whole) else whole;
+    var shape = if (every.directions) rules.shape(&tier_rules) else every;
     const margins = try memory.alloc(f64, plan.rules.len);
     @memset(margins, 0);
     const counts = try memory.alloc(usize, plan.sections.len);
@@ -268,6 +288,17 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
         const verified = !built_mesh.inconsistent and validation.feasible and validation.verified and invalid == null;
         const spent = solved.outcome == .spent or work >= options.max_work;
         if (solved.outcome == .optimal and !verified) overruns += 1;
+        if (!verified and every.directions and !shape.directions and solved.outcome == .optimal and invalid == null and pass < 5 and !spent) {
+            const broken = for (plan.rules, validation.rules) |rule, report| {
+                if (rules.directionLimit(rule) and report.violation > verify.tolerance) break true;
+            } else false;
+            if (broken) {
+                tier_rules = whole;
+                shape = every;
+                previous = try current.path.clone(warm_start.allocator());
+                continue;
+            }
+        }
         // The rules of the rows that cannot hold together, and the sections they stand on.
         @memset(named, false);
         var refine = false;
@@ -282,10 +313,12 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
             for (built_mesh.conflict) |rule| if (rule) |index| {
                 named[index] = true;
             };
+            for (plan.contradicting) |index| named[index] = true;
         } else if ((solved.outcome == .none or solved.outcome == .unmet) and !verified) {
             for (solved.conflict) |row| {
                 const term = prepared.layout.constraints[row];
-                const check = tier_rules.checks[term.check().?];
+                // A guide's progress is no check: the guide's own rows stand for its rule.
+                const check = tier_rules.checks[term.check() orelse continue];
                 if (check.ruleIndex()) |rule| named[rule] = true;
                 if (check.operation == .floor) floored = true;
                 // A path that ends before a time some rule speaks of: that rule, and the one that ends the path.
@@ -375,7 +408,7 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
                 .cells = cells,
                 .passes = pass + 1,
                 .overruns = overruns,
-                .status = if (verified) .converged else if (known) .infeasible else if (solved.outcome == .invalid) .numericalFailure else if (undecided) .iterationLimit else if (spent) .workLimit else if (solved.outcome == .undecided or floored) .iterationLimit else .verificationFailed,
+                .status = if (verified) .converged else if (known) .infeasible else if (solved.outcome == .invalid) .numericalFailure else if (undecided) .iterationLimit else if (spent) .workLimit else if (solved.outcome == .undecided or floored or shape.again) .iterationLimit else .verificationFailed,
                 .feasible = !built_mesh.inconsistent and validation.feasible and invalid == null,
                 .verified = verified,
                 .settled = solved.outcome == .optimal,
@@ -388,10 +421,19 @@ fn convexBuild(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
         };
         if (!verified) {
             try sayRests(diagnostics, validation.rests);
-            if (known or undecided) {
+            if (known or (undecided and !shape.again)) {
                 try sayNone(diagnostics, named, if (known) null else cells);
             } else {
                 if (invalid) |issue| try diagnostics.err(.invalid_segment, "rules", "candidate cannot be stored as a trajectory: {f}", .{issue});
+                // Rows made again in passes say nothing of the plan where they end with no path the verifier passes,
+                // not even of paths of this mesh: not decided, and the rules in the way (but where the floor is of
+                // them), or that the last path breaks, are named.
+                if (shape.again and result.report.status == .iterationLimit) {
+                    for (validation.rules, validation.rests, named) |report, rest, *is| {
+                        is.* = rest == null and ((is.* and !floored) or (report.kind == .hard and report.violation > verify.tolerance));
+                    }
+                    try sayUndecided(diagnostics, named);
+                }
                 if (result.report.status == .workLimit) {
                     try diagnostics.err(.invalid_segment, "rules", "trajectory solve reached its work bound of {d} before a candidate passed every check: maximum normalized violation {d}", .{ options.max_work, result.report.max_violation });
                 } else try diagnostics.err(.invalid_segment, "rules", "trajectory solve {s}: maximum normalized violation {d}", .{ @tagName(result.report.status), result.report.max_violation });

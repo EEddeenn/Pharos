@@ -147,6 +147,19 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
         }
         first = end;
     }
+    // Where the rules of time contradict one another (`model.Plan.contradicting`), no path meets them.
+    if (plan.contradicting.len > 0) contradiction(built, null, null);
+    // Every other duration is what the plan's times make it (`model.Plan.times`), where a section may last that
+    // long. Those times are the times' step's, not the plan's own numbers (a window's middle is among them): such a
+    // section says nothing below.
+    const held = try arena.alloc(bool, durations.len);
+    @memset(held, false);
+    if (plan.times.len > 0) for (durations, held, 0..) |column, *is, section| {
+        const value = (plan.times[section + 1] - plan.times[section]) / time_scale;
+        if (lower[column] == upper[column] or value < lower[column] or value > upper[column]) continue;
+        fixBound(built, owners, null, column, value);
+        is.* = true;
+    };
     // A section whose two ends and whose duration are fixed is no slower, on average, than its chord over its
     // duration: a hard maximum of speed3d below that has no solution, whatever the path. The test is the
     // verifier's own (rules.residual): the normalised violation of that mean speed against its tolerance.
@@ -159,7 +172,7 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
         const span = sectionSpan(rule.scope, plan.sections.len) orelse continue;
         for (span[0]..span[1]) |section| {
             const duration = built.mesh.durations[section];
-            if (lower[duration] != upper[duration]) continue;
+            if (lower[duration] != upper[duration] or held[section]) continue;
             const a = nodes[built.mesh.event_out[section]].variables;
             const b = nodes[built.mesh.event_in[section + 1]].variables;
             var squared: f64 = 0;

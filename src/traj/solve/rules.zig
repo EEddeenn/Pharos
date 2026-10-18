@@ -1,6 +1,7 @@
 const std = @import("std");
 const shared = @import("shared");
 const rest_speed = @import("kernel/domain.zig").rest_speed;
+const verifier = @import("verify.zig");
 const Scalar = @import("kernel.zig").Scalar;
 const plan_module = @import("../plan.zig");
 const model = plan_module.model;
@@ -10,8 +11,8 @@ pub const Comparison = enum { eq, min, max, target, objective };
 pub const Mode = enum { optimization, verification };
 pub const Operation = union(enum) {
     quantity: struct { rule: usize, comparison: Comparison, component: usize, split_norm: bool = false },
-    /// Beside a hard course of a stated number at an event, which the optimiser holds as no velocity across it:
-    /// the velocity there goes along that course, at least as fast as a direction of travel needs (`rest_speed`).
+    /// Beside a hard course of a stated number, which the optimiser holds as no velocity across it: the velocity
+    /// goes along that course, at an event at least as fast as a direction of travel needs (`rest_speed`).
     ahead: usize,
     curve: struct { rule: usize, component: usize },
     region: struct { rule: usize, edge: usize },
@@ -36,6 +37,9 @@ pub const Check = struct {
     weight: f64 = 1,
     integral: bool = false,
     average_scope: ?model.Scope = null,
+    /// How far, in the rule's normalised measure, a limit the convex tier makes of an equality lets the path from
+    /// its value (`banded`).
+    band: f64 = 0,
 
     pub fn ruleIndex(self: Check) ?usize {
         return switch (self.operation) {
@@ -161,7 +165,7 @@ pub fn prepare(arena: std.mem.Allocator, plan: *const model.Plan) std.mem.Alloca
                 },
             },
         }
-        if (courseAtEvent(rule)) try checks.append(arena, .{ .scope = rule.scope, .operation = .{ .ahead = index } });
+        if (heldCourse(rule)) try checks.append(arena, .{ .scope = rule.scope, .operation = .{ .ahead = index } });
     }
     try checks.append(arena, .{ .scope = .{ .time = 0 }, .operation = .{ .coverage = required_time } });
     try checks.append(arena, .{ .scope = .{ .time = 0 }, .operation = .maximum_duration });
@@ -185,7 +189,7 @@ pub fn value(comptime K: type, prepared: *const Prepared, rhs: model.Value, samp
 pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampler: anytype, comptime mode: Mode) K.Number {
     const A = K.Arithmetic;
     return switch (check.operation) {
-        .ahead => |index| A.sub(onCourse(K, sampler.point(), prepared.plan.rules[index].definition.quantity.comparison.eq.scalar).along, A.constant(rest_speed)),
+        .ahead => |index| A.sub(onCourse(K, sampler.point(), prepared.plan.rules[index].definition.quantity.comparison.eq.scalar).along, A.constant(if (check.scope == .event) rest_speed else 0)),
         .coverage => |required| A.scale(A.sub(sampler.eventTime(prepared.plan.events.len - 1), A.constant(required)), 0.1),
         .maximum_duration => A.scale(A.sub(A.constant(shared.trajectory.max_duration_s), sampler.eventTime(prepared.plan.events.len - 1)), 0.1),
         .floor => |altitude| A.sub(sampler.point().quantity(.altitude)[0], A.constant(altitude)),
@@ -216,7 +220,7 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
             const definition = rule.definition.quantity;
             // The optimiser holds a course at an event as no velocity across it: that is linear in the velocity,
             // which an angle is not.
-            if (mode == .optimization and courseAtEvent(rule)) break :blk A.scale(onCourse(K, sampler.point(), definition.comparison.eq.scalar).across, 1 / rule.scale);
+            if (mode == .optimization and heldCourse(rule)) break :blk A.scale(onCourse(K, sampler.point(), definition.comparison.eq.scalar).across, 1 / rule.scale);
             // Where the path is at rest a quantity that hangs on the direction of travel has no value. There a row
             // of the optimiser holds nothing, and neither does a step at an event (above); what a rule's own value
             // is there the verifier decides.
@@ -250,10 +254,14 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
                     .scalar => |v| @max(rule.scale, @abs(v)),
                     else => rule.scale,
                 };
-                result = A.scale(A.sub(A.mul(q, q), A.mul(target, target)), 1 / magnitude);
+                // The verifier holds the norm itself: over 2b plus its tolerance, a tolerance on the square is that
+                // tolerance on the norm, whatever the bound b.
+                const measure = if (mode == .verification) 2 * A.value(target) + verifier.tolerance * rule.scale else magnitude;
+                result = A.scale(A.sub(A.mul(q, q), A.mul(target, target)), 1 / measure);
             }
             if (operation.comparison == .max) result = A.neg(result);
-            break :blk A.scale(result, 1 / rule.scale);
+            const normalised = A.scale(result, 1 / rule.scale);
+            break :blk if (check.band == 0) normalised else A.add(normalised, A.constant(check.band));
         },
         .curve => |operation| blk: {
             const rule = prepared.plan.rules[operation.rule];
@@ -280,9 +288,9 @@ fn undirected(rule: model.Rule, comparison: Comparison, sampler: anytype) bool {
     return rhs == .event and quantities.directed(rhs.event.quantity) and sampler.atRest(.{ .index = rhs.event.event, .side = rhs.event.side });
 }
 
-/// A hard course of a stated number at an event.
-fn courseAtEvent(rule: model.Rule) bool {
-    if (rule.scope != .event or rule.definition != .quantity) return false;
+/// A hard course of a stated number, at an event or over an interval.
+fn heldCourse(rule: model.Rule) bool {
+    if (rule.definition != .quantity) return false;
     const definition = rule.definition.quantity;
     return definition.quantity == .course and definition.comparison == .eq and definition.comparison.eq == .scalar;
 }
@@ -305,26 +313,60 @@ const floor_m = -7000;
 /// maximum of horizontal speed is met more easily under the ground, where the same ground track is shorter, and
 /// the smoothest path under one dives. No other rule of the tier's gains so. The floor is to keep the path in the
 /// receiver's domain, not from what the plan states: it is no higher than the lowest altitude a hard rule states,
-/// as a place's or as an altitude's own number, at any scope. A value that refers to another event states none.
+/// as a place's or as an altitude's own number, at any scope, or along a guide the path follows. A value that refers
+/// to another event states none.
 pub fn floored(arena: std.mem.Allocator, prepared: Prepared) std.mem.Allocator.Error!Prepared {
     for (prepared.plan.rules) |rule| {
         if (rule.kind() == .hard and rule.definition == .quantity and rule.definition.quantity.quantity == .horizontal_speed and rule.definition.quantity.comparison == .range and rule.definition.quantity.comparison.range.max != null) break;
     } else return prepared;
     var altitude: f64 = floor_m;
     for (prepared.plan.rules) |rule| {
-        if (rule.kind() != .hard or rule.definition != .quantity) continue;
-        const q = rule.definition.quantity;
-        const stated: [2]?model.Value = switch (q.comparison) {
-            .eq => |rhs| .{ rhs, null },
-            .range => |range| .{ range.min, range.max },
-            else => continue,
-        };
-        for (stated) |given| if (statedAltitude(prepared, q.quantity, given)) |number| {
-            altitude = @min(altitude, number);
-        };
+        if (rule.kind() != .hard) continue;
+        switch (rule.definition) {
+            .relation => |relation| switch (relation.value) {
+                .follow_curve => |follow| altitude = @min(altitude, guideLowest(prepared, follow.curve, follow.from, follow.to)),
+                .inside_region => {},
+            },
+            .quantity => |q| {
+                const stated: [2]?model.Value = switch (q.comparison) {
+                    .eq => |rhs| .{ rhs, null },
+                    .range => |range| .{ range.min, range.max },
+                    else => continue,
+                };
+                for (stated) |given| if (statedAltitude(prepared, q.quantity, given)) |number| {
+                    altitude = @min(altitude, number);
+                };
+            },
+        }
     }
     var result = prepared;
     result.checks = try std.mem.concat(arena, Check, &.{ prepared.checks, &.{.{ .scope = .all, .operation = .{ .floor = altitude } }} });
+    return result;
+}
+
+/// For the convex tier: a hard equality of a height or of its rates over an interval as two limits, the band of
+/// `tolerance` about its value, which the verifier passes as the equality. Held as an equality at the tier's
+/// points, it would leave the path between them no room, or none at all.
+pub fn banded(arena: std.mem.Allocator, prepared: Prepared, tolerance: f64) std.mem.Allocator.Error!Prepared {
+    var checks: std.ArrayList(Check) = .empty;
+    for (prepared.checks) |check| {
+        if (check.operation == .quantity and check.operation.quantity.comparison == .eq and quantities.interval(check.scope)) {
+            const rule = prepared.plan.rules[check.operation.quantity.rule];
+            if (rule.kind() == .hard and height(rule.definition.quantity.quantity)) {
+                for ([_]Comparison{ .min, .max }) |comparison| {
+                    var limit = check;
+                    limit.operation.quantity.comparison = comparison;
+                    limit.equality = false;
+                    limit.band = tolerance;
+                    try checks.append(arena, limit);
+                }
+                continue;
+            }
+        }
+        try checks.append(arena, check);
+    }
+    var result = prepared;
+    result.checks = checks.items;
     return result;
 }
 
@@ -338,8 +380,35 @@ fn statedAltitude(prepared: Prepared, quantity: model.Quantity, given: ?model.Va
         .event => return null,
     };
     if (quantity != .position) return null;
+    return altitudeAt(prepared, place.toArray());
+}
+
+/// The lowest altitude of the part of a hard guide the path follows. The tier takes a straight guide alone
+/// (`kindOf`), whose chord dips under the ground between its points: the guide is sampled, and the most the chord
+/// can dip between two samples is taken off.
+fn guideLowest(prepared: Prepared, curve: usize, from: f64, to: f64) f64 {
+    const samples = 64;
+    var lowest = std.math.inf(f64);
+    var step: f64 = 0;
+    var last: ?[3]f64 = null;
+    for (0..samples + 1) |k| {
+        const place = curveAt(Scalar, prepared.curves[curve], from + (to - from) * @as(f64, @floatFromInt(k)) / samples);
+        if (last) |previous| {
+            var squared: f64 = 0;
+            for (place, previous) |a, b| squared += (a - b) * (a - b);
+            step = @max(step, @sqrt(squared));
+        }
+        last = place;
+        lowest = @min(lowest, altitudeAt(prepared, place));
+    }
+    // The ellipsoid's least radius of curvature, the meridian's at the equator.
+    const radius = shared.core.constants.wgs_axis_a * (1 - shared.core.constants.wgs_e1_sqr);
+    return lowest - step * step / (8 * radius);
+}
+
+fn altitudeAt(prepared: Prepared, place: [3]f64) f64 {
     const still: [3]f64 = @splat(0);
-    var point = Scalar.Point.init(.{ .position = place.toArray(), .velocity = still, .acceleration = still, .jerk = still }, prepared.plan.coordinates.altitude);
+    var point = Scalar.Point.init(.{ .position = place, .velocity = still, .acceleration = still, .jerk = still }, prepared.plan.coordinates.altitude);
     return point.quantity(.altitude)[0];
 }
 
@@ -355,6 +424,9 @@ pub const Kind = enum {
     frame,
     /// A bound that cannot bind: no row.
     vacuous,
+    /// Convex only about a point: a row made again about each answer, in passes. Where such a programme finds no
+    /// path, that says nothing of the plan.
+    again,
     /// None of these.
     no,
 };
@@ -375,15 +447,48 @@ pub fn smoothed(rule: model.Rule) ?usize {
     };
 }
 
+/// A limit of a quantity of the direction of travel, at a point or over an interval: of its course, its turn rate,
+/// turn radius or lateral acceleration, its forward acceleration or jerk. The convex tier makes its smoothest path
+/// without such limits and the verifier holds that path against them; where it breaks one, they become rows made
+/// again in passes (`convexBuild`).
+pub fn directionLimit(rule: model.Rule) bool {
+    if (rule.kind() != .hard or rule.definition != .quantity) return false;
+    const q = rule.definition.quantity;
+    return q.comparison == .range and quantities.directed(q.quantity);
+}
+
+/// The checks of the smoothest path: those of `prepared` without the limits of the direction of travel.
+pub fn smoothest(arena: std.mem.Allocator, prepared: Prepared) std.mem.Allocator.Error!Prepared {
+    var checks: std.ArrayList(Check) = .empty;
+    for (prepared.checks) |check| {
+        if (check.operation == .quantity and directionLimit(prepared.plan.rules[check.operation.quantity.rule])) continue;
+        try checks.append(arena, check);
+    }
+    var result = prepared;
+    result.checks = checks.items;
+    return result;
+}
+
 pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
     switch (check.operation) {
-        .curve, .corner => return .no,
+        .curve => |operation| {
+            // A straight guide: the place less its point on the line is linear in the path and in its progress along
+            // it, and a tolerance bounds that vector's norm.
+            const rule = prepared.plan.rules[operation.rule];
+            const follow = rule.definition.relation.value.follow_curve;
+            const curve = prepared.curves[follow.curve];
+            if (rule.kind() != .hard or curve.kind != .polyline or curve.points.len != 2) return .no;
+            return if (follow.tolerance > 0) .cone else .linear;
+        },
+        .corner => return .again,
         .coverage, .maximum_duration => return .constant,
         .ahead, .floor => return .frame,
         .jump => |jump| return switch (jump.quantity) {
             .velocity_ecef, .acceleration_ecef => .linear,
             .climb_rate => .frame,
-            else => .no,
+            // The speed and the forward acceleration across an event under a limit of the forward acceleration or
+            // jerk: made again in passes.
+            else => .again,
         },
         .region => |operation| {
             const rule = prepared.plan.rules[operation.rule];
@@ -399,50 +504,60 @@ pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
             if (quantity == .time or quantity == .duration) return .constant;
             const vector = quantities.components(quantity) == 3;
             const rhs = if (operation.split_norm) null else rightHand(rule, operation.comparison);
+            const hard = rule.kind() == .hard;
             if (rhs) |given| if (given == .event) {
                 // Another event's value: linear where both are vectors of the path, and linear in the frame where
-                // both are heights or their rates.
+                // both are heights or their rates; any other a hard rule holds is made again in passes.
                 const referred = given.event.quantity;
                 if (vector != (quantities.components(referred) == 3)) return .no;
-                if (!vector and !(height(quantity) and height(referred))) return .no;
+                if (!vector and !(height(quantity) and height(referred))) return if (hard) .again else .no;
             };
             if (vector) return .linear;
-            if (courseAtEvent(rule)) return .frame;
+            if (heldCourse(rule)) return .frame;
             if (isNorm(quantity)) {
                 const framed = quantity == .horizontal_speed;
                 // By its components: a rest, or the least of a square.
                 if (operation.split_norm) return if (framed) .frame else .linear;
-                if (rule.kind() != .hard) return .no;
-                const bound = switch (rhs.?) {
-                    .scalar => |v| v,
-                    else => return .no,
-                };
+                if (!hard) return .no;
+                const bound = rhs.?.scalar;
+                // A least or an exact value of a norm is made again about each answer: along the way the path then
+                // goes, which is no looser than the rule.
                 return switch (operation.comparison) {
                     .max => if (bound > 0) (if (framed) Kind.frame else Kind.cone) else Kind.no,
-                    .min => if (bound <= 0) Kind.vacuous else Kind.no,
-                    else => Kind.no,
+                    .min => if (bound <= 0) Kind.vacuous else Kind.again,
+                    else => Kind.again,
                 };
             }
+            if (directionLimit(rule)) return .again;
+            // An equality of a quantity of the direction of travel at a point: made again in passes.
+            if (hard and quantities.directed(quantity) and !quantities.interval(rule.scope)) return .again;
             return if (height(quantity)) .frame else .no;
         },
     }
 }
 
 /// Whether the convex tier takes the plan (with its events' times held); whether some check needs the frame held
-/// where the path is; and whether some target or objective does: the programme is then made again until an
-/// answer moves nothing.
-pub const Shape = struct { convex: bool = true, frame: bool = false, soft: bool = false };
+/// where the path is, or is made again in passes; whether some target or objective does: the programme is then
+/// made again until an answer moves nothing; whether some row is made again in passes (`Kind.again`), where a
+/// programme that ends with no path the verifier passes has decided nothing; and whether some check is a limit of
+/// the direction of travel (`directionLimit`).
+pub const Shape = struct { convex: bool = true, frame: bool = false, soft: bool = false, again: bool = false, directions: bool = false };
 
 pub fn shape(prepared: *const Prepared) Shape {
     var result: Shape = .{};
-    for (prepared.checks) |check| switch (kindOf(prepared, check)) {
-        .no => return .{ .convex = false },
-        .frame => {
-            result.frame = true;
-            if (prepared.isObjective(check)) result.soft = true;
-        },
-        else => {},
-    };
+    for (prepared.checks) |check| {
+        const kind = kindOf(prepared, check);
+        switch (kind) {
+            .no => return .{ .convex = false },
+            .frame, .again => {
+                result.frame = true;
+                if (prepared.isObjective(check)) result.soft = true;
+                if (kind == .again) result.again = true;
+                if (check.operation == .quantity and directionLimit(prepared.plan.rules[check.operation.quantity.rule])) result.directions = true;
+            },
+            else => {},
+        }
+    }
     return result;
 }
 

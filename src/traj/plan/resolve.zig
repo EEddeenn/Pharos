@@ -62,6 +62,8 @@ pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
     for (raw.rules, rules, 0..) |given, *out, i| out.* = try rule(c, given, try node.element(ctx, "rules", i));
     try directions(ctx, events, rules);
     try smoothness(ctx, sections, rules);
+    const initial_guess = try guess(c, raw.initial_guess, raw.coordinates.altitude, events.len);
+    const times = try eventTimes(ctx, events.len, rules);
     return .{
         .name = raw.name,
         .coordinates = .{ .altitude = raw.coordinates.altitude },
@@ -69,8 +71,310 @@ pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
         .events = events,
         .sections = sections,
         .rules = rules,
-        .initial_guess = try guess(c, raw.initial_guess, raw.coordinates.altitude, events.len),
+        .initial_guess = initial_guess,
+        .times = times.held,
+        .contradicting = times.contradicting,
     };
+}
+
+/// What the hard rules of time allow each event's time: from `lo` to `hi`; and of each bound, every rule that has set
+/// it with the bounds of other events it was taken from (no rule for the order of the events, the first event's zero
+/// or the longest trajectory), so that the rules a contradiction takes can be named.
+const Brackets = struct {
+    arena: std.mem.Allocator,
+    lo: []f64,
+    hi: []f64,
+    lo_by: []std.ArrayList(Cause),
+    hi_by: []std.ArrayList(Cause),
+    rules: []const model.Rule,
+    /// The latest time a rule speaks of, which the path must reach, and the rule that speaks of it.
+    latest: f64,
+    latest_rule: ?usize,
+    /// Whether the upper bounds alone are narrowed, the least values left where they are: which events some rule
+    /// ends. An upper bound taken from a least value is then looser, and as finite.
+    upper: bool = false,
+    /// Whether each bound's causes are kept: while a contradiction may still be named.
+    naming: bool = true,
+    changed: bool = false,
+
+    const Bound = struct { event: usize, least: bool };
+    const Cause = struct { rule: ?usize = null, from: [2]?Bound = .{ null, null } };
+    /// A cycle of references whose factors multiply to under 1 settles geometrically: so many rounds settle one whose
+    /// factors multiply to about 0.9995 or less, and one that would take longer is left to the solve.
+    const most_rounds = 100_000;
+    /// Where the upper bounds start when the events some rule ends are looked for: no bound, but a number, from which
+    /// a cycle of references whose factors multiply to under 1 narrows to its own bound as it never would from none.
+    const unbounded = std.math.floatMax(f64);
+
+    fn low(self: *Brackets, event: usize, at_least: f64, cause: Cause) Error!void {
+        if (self.upper) return;
+        if (at_least > self.lo[event] + 1e-12 * @max(1, @abs(at_least))) {
+            self.lo[event] = at_least;
+            try self.record(&self.lo_by[event], cause);
+        }
+    }
+
+    fn high(self: *Brackets, event: usize, at_most: f64, cause: Cause) Error!void {
+        if (at_most < self.hi[event] - 1e-12 * @max(1, @abs(at_most))) {
+            self.hi[event] = at_most;
+            try self.record(&self.hi_by[event], cause);
+        }
+    }
+
+    /// Each cause once: a cycle sets a bound again and again by the same rules. Every cause is kept, since a later
+    /// one may be taken from a bound an earlier one set.
+    fn record(self: *Brackets, causes: *std.ArrayList(Cause), cause: Cause) Error!void {
+        self.changed = true;
+        if (!self.naming) return;
+        for (causes.items) |known| if (std.meta.eql(known, cause)) return;
+        try causes.append(self.arena, cause);
+    }
+
+    fn free(self: *const Brackets, event: usize) bool {
+        return self.hi[event] - self.lo[event] > 1e-9 * @max(1, @abs(self.lo[event]));
+    }
+
+    /// The first event whose bounds cross.
+    fn crossing(self: *const Brackets) ?usize {
+        for (self.lo, self.hi, 0..) |lo, hi, event| if (lo - hi > 1e-9 * @max(1, @abs(lo))) return event;
+        return null;
+    }
+
+    /// A time at `event` at least (or at most) `factor` times `other`'s plus `offset`, by rule `by`: what the other's
+    /// bounds make it (a factor below zero turns them over), and what this event's own bound leaves the other.
+    fn refer(self: *Brackets, event: usize, other: usize, factor: f64, offset: f64, least: bool, by: usize) Error!void {
+        const from_least = least == (factor > 0);
+        const source: ?Bound = if (factor == 0) null else .{ .event = other, .least = from_least };
+        const made = if (factor == 0) offset else factor * (if (from_least) self.lo[other] else self.hi[other]) + offset;
+        if (least) try self.low(event, made, .{ .rule = by, .from = .{ source, null } }) else try self.high(event, made, .{ .rule = by, .from = .{ source, null } });
+        if (factor == 0) return;
+        const back = ((if (least) self.hi[event] else self.lo[event]) - offset) / factor;
+        const cause: Cause = .{ .rule = by, .from = .{ .{ .event = event, .least = !least }, null } };
+        if (from_least) try self.high(other, back, cause) else try self.low(other, back, cause);
+    }
+
+    /// Narrowed by every hard rule of time until none narrows them more: a time at an event, a literal or another
+    /// event's time by a factor of either sign and an offset; a duration over a section, a span or the whole, a
+    /// literal or what an event's time makes it; the order of the events; and the latest time a rule speaks of.
+    fn narrow(self: *Brackets) Error!enum { settled, contradiction, unsettled } {
+        const last = self.lo.len - 1;
+        for (0..most_rounds) |_| {
+            self.changed = false;
+            for (self.rules, 0..) |given, index| {
+                if (given.kind() != .hard or given.definition != .quantity) continue;
+                const q = given.definition.quantity;
+                const bounds: [2]?model.Value = switch (q.comparison) {
+                    .eq => |v| .{ v, v },
+                    .range => |range| .{ range.min, range.max },
+                    .target, .objective => continue,
+                };
+                switch (q.quantity) {
+                    .time => {
+                        const event = given.scope.event.index;
+                        for (bounds, [2]bool{ true, false }) |bound, least| switch (bound orelse continue) {
+                            .scalar => |time| if (least) try self.low(event, time, .{ .rule = index }) else try self.high(event, time, .{ .rule = index }),
+                            .event => |reference| if (reference.quantity == .time) try self.refer(event, reference.event, reference.factor, reference.offset, least, index),
+                            else => {},
+                        };
+                    },
+                    .duration => {
+                        const span: [2]usize = switch (given.scope) {
+                            .section => |section| .{ section, section + 1 },
+                            .between => |ends| ends,
+                            .all => .{ 0, last },
+                            else => continue,
+                        };
+                        for (bounds, [2]bool{ true, false }) |bound, least| {
+                            // A duration that refers to the time of one of its own ends is a relation of the two ends
+                            // alone; one that refers to another event's time is held to what that time makes it, at
+                            // its least for a least duration and at its most for a most one.
+                            var source: ?Bound = null;
+                            const amount = switch (bound orelse continue) {
+                                .scalar => |number| number,
+                                .event => |reference| blk: {
+                                    if (reference.quantity != .time) continue;
+                                    const factor = reference.factor;
+                                    const offset = reference.offset;
+                                    if (reference.event == span[0]) {
+                                        try self.refer(span[1], span[0], 1 + factor, offset, least, index);
+                                        continue;
+                                    }
+                                    if (reference.event == span[1]) {
+                                        if (factor == 1) {
+                                            if (least) try self.high(span[0], -offset, .{ .rule = index }) else try self.low(span[0], -offset, .{ .rule = index });
+                                        } else try self.refer(span[1], span[0], 1 / (1 - factor), offset / (1 - factor), least == (factor < 1), index);
+                                        continue;
+                                    }
+                                    if (factor == 0) break :blk offset;
+                                    const from_least = least == (factor > 0);
+                                    source = .{ .event = reference.event, .least = from_least };
+                                    break :blk factor * (if (from_least) self.lo[reference.event] else self.hi[reference.event]) + offset;
+                                },
+                                else => continue,
+                            };
+                            if (least) {
+                                try self.low(span[1], self.lo[span[0]] + amount, .{ .rule = index, .from = .{ .{ .event = span[0], .least = true }, source } });
+                                try self.high(span[0], self.hi[span[1]] - amount, .{ .rule = index, .from = .{ .{ .event = span[1], .least = false }, source } });
+                            } else {
+                                try self.high(span[1], self.hi[span[0]] + amount, .{ .rule = index, .from = .{ .{ .event = span[0], .least = false }, source } });
+                                try self.low(span[0], self.lo[span[1]] - amount, .{ .rule = index, .from = .{ .{ .event = span[1], .least = true }, source } });
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+            try self.low(last, self.latest, .{ .rule = self.latest_rule });
+            for (1..self.lo.len) |event| try self.low(event, self.lo[event - 1], .{ .from = .{ .{ .event = event - 1, .least = true }, null } });
+            var event = last;
+            while (event > 0) : (event -= 1) try self.high(event - 1, self.hi[event], .{ .from = .{ .{ .event = event, .least = false }, null } });
+            if (!self.upper and self.crossing() != null) return .contradiction;
+            // Upper bounds only fall: once every event has one, which events some rule ends is known.
+            if (!self.changed or (self.upper and std.mem.max(f64, self.hi) < unbounded)) return .settled;
+        }
+        return .unsettled;
+    }
+
+    /// Every rule that has set a bound of the first event whose bounds cross, or a bound one of them was taken from:
+    /// the hard rules of time and duration, and the rule whose time the path must reach, that with the order of the
+    /// events and what a trajectory may last cannot hold together. Where one of the two bounds alone passes where the
+    /// other started (a time before the first event's, or past what a trajectory may last), its rules alone. A rule
+    /// whose bound a tighter one replaced is among them.
+    fn named(self: *const Brackets) Error![]const usize {
+        const event = self.crossing().?;
+        const seen = try self.arena.alloc(bool, 2 * self.lo.len);
+        @memset(seen, false);
+        const taken = try self.arena.alloc(bool, self.rules.len);
+        @memset(taken, false);
+        var pending: std.ArrayList(Bound) = .empty;
+        const lo = self.lo[event];
+        const hi = self.hi[event];
+        const top = if (event == 0) 0 else shared.trajectory.max_duration_s;
+        if (-hi > 1e-9 * @max(1, @abs(hi))) {
+            try pending.append(self.arena, .{ .event = event, .least = false });
+        } else if (lo - top > 1e-9 * @max(1, @abs(lo))) {
+            try pending.append(self.arena, .{ .event = event, .least = true });
+        } else try pending.appendSlice(self.arena, &.{ .{ .event = event, .least = true }, .{ .event = event, .least = false } });
+        while (pending.pop()) |bound| {
+            const slot = 2 * bound.event + @intFromBool(bound.least);
+            if (seen[slot]) continue;
+            seen[slot] = true;
+            for ((if (bound.least) self.lo_by[bound.event] else self.hi_by[bound.event]).items) |cause| {
+                if (cause.rule) |index| taken[index] = true;
+                for (cause.from) |from| if (from) |next| try pending.append(self.arena, next);
+            }
+        }
+        var list: std.ArrayList(usize) = .empty;
+        for (taken, 0..) |is, index| if (is) try list.append(self.arena, index);
+        return list.items;
+    }
+};
+
+/// What the times' own step decides: each event's time, or where the rules of time contradict one another or put a
+/// time past what a trajectory may last the rules that take part; neither where it leaves the times to the solve.
+const Times = struct { held: []const f64 = &.{}, contradicting: []const usize = &.{} };
+
+/// The events' times, decided by the hard rules of time alone before any path is sought. An event whose time no rule
+/// ends is refused. Where the rules of time contradict one another, or put a time past what a trajectory may last,
+/// the rules that take part are named, and the solve says that no path meets them. Otherwise the windows a rule states
+/// are held first, each at its middle; then each run of events that only their neighbours' times bound is spaced
+/// evenly over what those leave it. Where the narrowing does not settle, or where a window's middle leaves another
+/// event no room or a section less than a section may last, nothing is held and the solve looks for the times as
+/// well.
+fn eventTimes(ctx: *const node.Ctx, count: usize, rules: []const model.Rule) Error!Times {
+    const arena = ctx.arena;
+    var brackets: Brackets = .{
+        .arena = arena,
+        .lo = try arena.alloc(f64, count),
+        .hi = try arena.alloc(f64, count),
+        .lo_by = try arena.alloc(std.ArrayList(Brackets.Cause), count),
+        .hi_by = try arena.alloc(std.ArrayList(Brackets.Cause), count),
+        .rules = rules,
+        .latest = 0,
+        .latest_rule = null,
+    };
+    @memset(brackets.lo, 0);
+    @memset(brackets.lo_by, .empty);
+    @memset(brackets.hi_by, .empty);
+    // Whether a rule of time speaks of the event itself: a time at it, a duration that begins or ends at it, or a
+    // value of either that refers to its time.
+    const stated = try arena.alloc(bool, count);
+    @memset(stated, false);
+    for (rules, 0..) |given, index| {
+        const spoken: f64 = switch (given.scope) {
+            .time => |at| at,
+            .time_range => |range| range[1],
+            else => 0,
+        };
+        if (spoken > brackets.latest) {
+            brackets.latest = spoken;
+            brackets.latest_rule = index;
+        }
+        if (given.kind() != .hard or given.definition != .quantity) continue;
+        const q = given.definition.quantity;
+        switch (q.quantity) {
+            .time => stated[given.scope.event.index] = true,
+            .duration => switch (given.scope) {
+                .section => |section| @memset(stated[section .. section + 2], true),
+                .between => |ends| {
+                    stated[ends[0]] = true;
+                    stated[ends[1]] = true;
+                },
+                .all => {
+                    stated[0] = true;
+                    stated[count - 1] = true;
+                },
+                else => {},
+            },
+            else => continue,
+        }
+        const bounds: [2]?model.Value = switch (q.comparison) {
+            .eq => |v| .{ v, null },
+            .range => |range| .{ range.min, range.max },
+            .target, .objective => unreachable,
+        };
+        for (bounds) |bound| if (bound) |v| if (v == .event and v.event.quantity == .time) {
+            stated[v.event.event] = true;
+        };
+    }
+    // The events some rule ends, by the upper bounds alone: an event whose bound has not fallen from no bound at all.
+    var reach = brackets;
+    reach.upper = true;
+    reach.naming = false;
+    reach.hi = try arena.alloc(f64, count);
+    @memset(reach.hi, Brackets.unbounded);
+    reach.hi[0] = 0;
+    _ = try reach.narrow();
+    var open = false;
+    for (reach.hi, 0..) |hi, event| if (hi == Brackets.unbounded) {
+        try ctx.diags.err(.out_of_range, try node.element(ctx, "events", event), "no rule states this event's time: a hard rule of time or duration must end it", .{});
+        open = true;
+    };
+    if (open) return error.InvalidInput;
+    // No time lies past what a trajectory may last.
+    @memset(brackets.hi, shared.trajectory.max_duration_s);
+    brackets.hi[0] = 0;
+    switch (try brackets.narrow()) {
+        .settled => {},
+        .contradiction => return .{ .contradicting = try brackets.named() },
+        .unsettled => return .{},
+    }
+    brackets.naming = false;
+    // The windows a rule states first, each at its middle; then the runs between the times so decided.
+    for ([2]bool{ true, false }) |windows| for (1..count) |event| {
+        if (!brackets.free(event) or stated[event] != windows) continue;
+        var run: usize = 1;
+        if (!stated[event]) while (event + run < count and !stated[event + run] and brackets.free(event + run)) {
+            run += 1;
+        };
+        const held = brackets.lo[event] + (brackets.hi[event] - brackets.lo[event]) / @as(f64, @floatFromInt(run + 1));
+        brackets.lo[event] = held;
+        brackets.hi[event] = held;
+        if ((try brackets.narrow()) != .settled) return .{};
+    };
+    // A section shorter than a section may last leaves no room either.
+    for (brackets.lo[0 .. count - 1], brackets.lo[1..]) |before, after| if (after - before < model.min_section_s) return .{};
+    return .{ .held = brackets.lo };
 }
 
 fn geometryContext(ctx: *const node.Ctx, raw: read.RawGeometry) Error!Context {

@@ -69,6 +69,9 @@ pub const Section = struct {
     id: []const u8,
 };
 
+/// The least a section may last, in seconds.
+pub const min_section_s: f64 = 1e-3;
+
 pub const Side = enum {
     in,
     out,
@@ -236,4 +239,9 @@ pub const Plan = struct {
     sections: []const Section,
     rules: []const Rule,
     initial_guess: InitialGuess,
+    /// Each event's time, as the hard rules of time decide it before any path is sought. Empty where they do not:
+    /// where those rules contradict one another or put a time past what a trajectory may last, and `contradicting`
+    /// then names the rules that take part; or where the times' step leaves the times to the solve.
+    times: []const f64 = &.{},
+    contradicting: []const usize = &.{},
 };

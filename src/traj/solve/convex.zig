@@ -7,9 +7,10 @@
 //! Where there is no path, a second programme (the least sum of what the rows are broken by) says so, and its
 //! multipliers name the rows that cannot hold together.
 //!
-//! A rule that is linear only once the local frame is held (an altitude, a horizontal speed) is linearised where
-//! the path is, and the programme is made again about its answer until the rows are what it said they would be,
-//! and, where a target or an objective is such, until an answer moves nothing.
+//! A rule that is linear only once the local frame is held (an altitude, a horizontal speed), or convex only about a
+//! point (a least speed, a turn rate), is linearised where the path is, and the programme is made again about its
+//! answer until the rows are what it said they would be, and, where a target or an objective is such, until an
+//! answer moves nothing.
 const std = @import("std");
 const model = @import("../plan.zig").model;
 const problem = @import("problem.zig");
@@ -54,8 +55,8 @@ const tie = 1e-6;
 /// The weight of the objective's curvature in the programme of least violation: it keeps that programme's answer
 /// one point, near where the step began.
 const hold = 0.1;
-/// The most programmes of one mesh.
-const most_passes = 8;
+/// The most programmes of one mesh: rows made again in passes may take as many to settle.
+const most_passes = 16;
 const none = std.math.maxInt(usize);
 
 /// A symmetric matrix kept by rows, each from its first coupled unknown to its diagonal.
@@ -447,11 +448,15 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
     const soft_places = try memory.alloc(usize, layout.soft_columns.len);
     for (soft_places, layout.soft_columns) |*out, column| out.* = place[column];
     // A bound that cannot bind is no row. Neither is a row that holds no unknown: it is a number, looked at where
-    // it is read.
+    // it is read. A row made again in passes may have no slope where the path begins: that is no number.
     const vacuous = try memory.alloc(bool, rows);
+    const remade = try memory.alloc(bool, rows);
     const kinds = try memory.alloc(RowKind, rows);
-    for (kinds, vacuous, layout.constraints, 0..) |*kind, *is, term, row| {
-        is.* = rules.kindOf(prepared, prepared.checks[term.check().?]) == .vacuous;
+    for (kinds, vacuous, remade, layout.constraints, 0..) |*kind, *is, *is_remade, term, row| {
+        // A row of no check is a guide's progress, which runs one way: linear.
+        const of: rules.Kind = if (term.check()) |index| rules.kindOf(prepared, prepared.checks[index]) else .linear;
+        is.* = of == .vacuous;
+        is_remade.* = of == .again;
         const empty = layout.row_offsets[row] == layout.row_offsets[row + 1];
         kind.* = if (is.* or empty) .skip else if (row < layout.equality_count) .equality else .inequality;
     }
@@ -604,8 +609,8 @@ pub fn solve(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, 
             return report;
         };
         // A row no unknown moves (the unknowns it lists have no part in it) is a number as well.
-        if (pass == 0) for (kinds, values, 0..) |*kind, number, row| {
-            if (kind.* == .skip) continue;
+        if (pass == 0) for (kinds, values, remade, 0..) |*kind, number, is_remade, row| {
+            if (kind.* == .skip or is_remade) continue;
             const moves = for (jacobian[layout.row_offsets[row]..layout.row_offsets[row + 1]]) |entry| {
                 if (entry != 0) break true;
             } else for (curved[layout.curved_offsets[row]..layout.curved_offsets[row + 1]]) |entry| {
