@@ -15,8 +15,13 @@ const geometry = @import("geometry.zig");
 const Ionosphere = @import("shared").stage.ionosphere.Ionosphere;
 const messages = @import("shared").stage.messages;
 const Power = @import("shared").stage.power.Power;
+const replan_epochs = @import("shared").stage.channels.replan_epochs;
 const ChannelStage = @import("channels.zig").Stage;
 const bundle = @import("shared").bundle;
+
+comptime {
+    std.debug.assert(replan_epochs % geometry.block_epochs == 0);
+}
 
 pub const Options = struct {
     seed: u64 = 0,
@@ -337,6 +342,12 @@ pub const Run = struct {
         const first: Epoch = .{ .ms = index * geometry.block_epochs };
         const count = @min(geometry.block_epochs, self.info.span.epochs - first.ms);
         self.geometry.beginBlock(first, count);
+        // Channels change only at re-plans, which open blocks; between them a block needs rows only for the channels held now.
+        const every = first.ms % replan_epochs == 0 or self.options.dumps.rows != null;
+        @memset(self.geometry.needed, every);
+        if (!every) for (self.channels.table.channels.items) |c| {
+            self.geometry.needed[c.track] = true;
+        };
         var with = samples;
         while (self.geometry.nextSegment(&self.events)) |segment| {
             self.segment = segment;

@@ -10,6 +10,7 @@ const geo = @import("shared").geo;
 const events = @import("events.zig");
 const Ionosphere = @import("shared").stage.ionosphere.Ionosphere;
 const Broadcast = @import("shared").stage.ionosphere.Broadcast;
+const replan_epochs = @import("shared").stage.channels.replan_epochs;
 
 pub const block_epochs: u32 = 100;
 
@@ -47,6 +48,7 @@ pub const Stage = struct {
     writing: u1 = 1,
     at: Epoch = .zero,
     rows_per_epoch: usize,
+    needed: []bool,
 
     pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle) Error!*Stage {
         const scenario = &b.scenario;
@@ -63,6 +65,7 @@ pub const Stage = struct {
             .ionosphere = ionosphere,
             .buffers = undefined,
             .rows_per_epoch = 0,
+            .needed = undefined,
         };
         self.observation = try geo.Observation.init(gpa, b, &self.allocation, &self.ionosphere.models, scenario.mask_out);
         errdefer self.observation.deinit(gpa);
@@ -71,6 +74,8 @@ pub const Stage = struct {
         const rows_a = try gpa.alloc(Row, rows_per_buffer);
         errdefer gpa.free(rows_a);
         const rows_b = try gpa.alloc(Row, rows_per_buffer);
+        errdefer gpa.free(rows_b);
+        self.needed = try gpa.alloc(bool, count);
         self.buffers = .{ .{ .rows = rows_a }, .{ .rows = rows_b } };
         self.rows_per_epoch = count;
         self.reset();
@@ -81,6 +86,7 @@ pub const Stage = struct {
         self.observation.deinit(self.gpa);
         self.ionosphere.deinit(self.gpa);
         for (self.buffers) |b| self.gpa.free(b.rows);
+        self.gpa.free(self.needed);
         self.gpa.destroy(self);
     }
 
@@ -139,9 +145,10 @@ pub const Stage = struct {
         const rows = buffer.rows[slot * self.rows_per_epoch ..][0..self.rows_per_epoch];
         const rx = geo.receiver.atMs(&self.b.trajectory, epoch.ms);
         const t = core.time.atEpoch(self.start, epoch);
-        for (self.observation.frame().tracks, rows) |*track, *row| {
+        const every = epoch.ms % replan_epochs == 0;
+        for (self.observation.frame().tracks, rows, self.needed) |*track, *row, needed| {
             row.sat = track.sat;
-            const ready = track.ready() orelse {
+            const ready = (if (every or needed) track.ready() else null) orelse {
                 row.seen = null;
                 continue;
             };
