@@ -41,7 +41,7 @@ pub inline fn group(seed: u64, g: u64) Pair4 {
         const lo = words(seed, g, 2) | @as(V4u, @splat(1));
         break :blk @mulAdd(V4, @floatFromInt(lo), @splat(1.0 / 4294967296.0), hi_f);
     } else hi_f;
-    const neg2ln = @mulAdd(V4, trig.logf(value), @splat(-2.0), @splat(ln_2_pow_64));
+    const neg2ln = @max(@mulAdd(V4, trig.logf(value), @splat(-2.0), @splat(ln_2_pow_64)), @as(V4, @splat(0.0)));
     const r = @sqrt(neg2ln);
     const sc = trig.sincosTurn(ang);
     return .{ .re = r * sc.c, .im = r * sc.s };
