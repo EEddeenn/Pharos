@@ -3,6 +3,20 @@ const types = @import("shared").core.types;
 const spec = @import("shared").gnss.spec;
 const codes = @import("shared").gnss.codes;
 
+pub const Axis = enum { both, re, im };
+
+fn axisOf(values: [8]spec.Gain, count: usize) Axis {
+    var any_re = false;
+    var any_im = false;
+    for (values[0..count]) |v| {
+        any_re = any_re or v.re != 0;
+        any_im = any_im or v.im != 0;
+    }
+    if (!any_im) return .re;
+    if (!any_re) return .im;
+    return .both;
+}
+
 pub const Table = struct {
     signal: types.Signal,
     sat: types.SatId,
@@ -12,6 +26,7 @@ pub const Table = struct {
     values: [8]spec.Gain,
     value_count: usize = 4,
     tdm: ?Tdm = null,
+    axis: Axis = .both,
 
     const Tdm = struct {
         pilot: []const u8,
@@ -64,6 +79,7 @@ pub const TableSet = struct {
                     .values = valueTable(row),
                     .value_count = row.valueCount(),
                     .tdm = if (code.tdm_periods_per_cycle) |periods| .{ .pilot = pilot.?, .periods = periods, .half = code.entriesPerPeriod() / 2 } else null,
+                    .axis = axisOf(valueTable(row), row.valueCount()),
                 };
                 made += 1;
             }

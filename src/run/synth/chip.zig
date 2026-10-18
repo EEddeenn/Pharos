@@ -134,7 +134,7 @@ pub const Nco = struct {
         const period_offsets: [4]u32 = n.period;
         const states = t.states;
         var st: V4u = .{ states[entries[0]], states[entries[1]], states[entries[2]], states[entries[3]] };
-        var mask: V4u = .{ n.masks[period_offsets[0]], n.masks[period_offsets[1]], n.masks[period_offsets[2]], n.masks[period_offsets[3]] };
+        var mask: V4u = if (@reduce(.And, n.period == @as(V4u, @splat(period_offsets[0])))) @splat(n.masks[period_offsets[0]]) else .{ n.masks[period_offsets[0]], n.masks[period_offsets[1]], n.masks[period_offsets[2]], n.masks[period_offsets[3]] };
         if (shape == .tdm) {
             mask &= @splat(1);
             const mux = t.tdm.?;

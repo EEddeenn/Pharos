@@ -20,33 +20,31 @@ inline fn splitmix(seed: u64, c: u64) u64 {
     return z ^ (z >> 31);
 }
 
-const Uniforms = struct { hi: V4u, lo: V4u, ang: V4u };
-
-inline fn groupUniforms(seed: u64, g: u64) Uniforms {
-    var w: [12]u32 = undefined;
-    inline for (0..6) |k| {
-        const v = splitmix(seed, g * 6 + k);
-        w[2 * k] = @truncate(v);
-        w[2 * k + 1] = @truncate(v >> 32);
-    }
-    return .{ .hi = w[0..4].*, .lo = w[4..8].*, .ang = w[8..12].* };
+inline fn words(seed: u64, g: u64, comptime k: u64) V4u {
+    const a = splitmix(seed, g * 6 + k);
+    const b = splitmix(seed, g * 6 + k + 1);
+    return .{ @truncate(a), @truncate(a >> 32), @truncate(b), @truncate(b >> 32) };
 }
 
 const Pair4 = struct { re: V4, im: V4 };
 
 const ln_2_pow_64 = 64.0 * 0.69314718055994530942;
 
-inline fn boxMuller4(u: Uniforms) Pair4 {
-    const lo = u.lo | @as(V4u, @splat(1));
-    const value = @mulAdd(V4, @floatFromInt(lo), @splat(1.0 / 4294967296.0), @floatFromInt(u.hi));
+// The low words, at most 1 in all, move a lane's value only below 2^25, where the spacing of floats drops under 4.
+const low_words_matter: V4 = @splat(33554432.0);
+
+pub inline fn group(seed: u64, g: u64) Pair4 {
+    const hi = words(seed, g, 0);
+    const ang = words(seed, g, 4);
+    const hi_f: V4 = @floatFromInt(hi);
+    const value = if (@reduce(.Or, hi_f < low_words_matter)) blk: {
+        const lo = words(seed, g, 2) | @as(V4u, @splat(1));
+        break :blk @mulAdd(V4, @floatFromInt(lo), @splat(1.0 / 4294967296.0), hi_f);
+    } else hi_f;
     const neg2ln = @mulAdd(V4, trig.logf(value), @splat(-2.0), @splat(ln_2_pow_64));
     const r = @sqrt(neg2ln);
-    const sc = trig.sincosTurn(u.ang);
+    const sc = trig.sincosTurn(ang);
     return .{ .re = r * sc.c, .im = r * sc.s };
-}
-
-inline fn group(seed: u64, g: u64) Pair4 {
-    return boxMuller4(groupUniforms(seed, g));
 }
 
 fn counterFill(seed: u64, first: u64, re: []f32, im: []f32) void {

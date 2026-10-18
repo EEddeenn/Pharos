@@ -19,9 +19,8 @@ pub const Rotor = struct {
     phase0: f64,
     step: f64,
 
-    pub fn init(phase0: f64, step: f64, n0: u32) Rotor {
+    pub fn init(r: *Rotor, phase0: f64, step: f64, n0: u32) void {
         std.debug.assert(n0 % stride == 0);
-        var r: Rotor = undefined;
         r.phase0 = phase0;
         r.step = step;
         const w1 = trig.sincos64(step);
@@ -37,7 +36,6 @@ pub const Rotor = struct {
         r.seed(grid);
         var n = grid;
         while (n < n0) : (n += stride) r.advance();
-        return r;
     }
 
     pub fn seed(r: *Rotor, n: u32) void {
