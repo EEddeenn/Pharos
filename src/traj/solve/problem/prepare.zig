@@ -18,7 +18,9 @@ const Batch = struct {
 };
 
 /// `margins` holds, for each rule, how far inside its range the rule's rows keep the path (see `solve.zig`).
-pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, prepared_rules: *const rules.Prepared, margins: []const f64, built: mesh_module.Build) std.mem.Allocator.Error!problem.Prepared {
+/// `convex` says that the rows are the convex tier's, whose events' times are all held: a fixed time is then a
+/// place in one cell, and a limit of a polynomial of the path stands on its control points.
+pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator, prepared_rules: *const rules.Prepared, margins: []const f64, built: mesh_module.Build, convex: bool) std.mem.Allocator.Error!problem.Prepared {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     const temporary = scratch.allocator();
@@ -31,6 +33,12 @@ pub fn prepare(allocator: std.mem.Allocator, result_allocator: std.mem.Allocator
         .curve_indices = try temporary.alloc(?usize, prepared_rules.plan.rules.len),
     };
     @memset(compiler.curve_indices, null);
+    if (convex) {
+        const times = try temporary.alloc(f64, built.mesh.durations.len + 1);
+        times[0] = 0;
+        for (built.mesh.durations, 0..) |column, section| times[section + 1] = times[section] + built.x[column] * mesh_module.time_scale;
+        compiler.times = times;
+    }
     for (prepared_rules.plan.events, 0..) |_, event| {
         _ = try compiler.point(.{ .event = .{ .index = event, .side = .in } });
         _ = try compiler.point(.{ .event = .{ .index = event, .side = .out } });
@@ -239,6 +247,8 @@ const Compiler = struct {
     margins: []const f64,
     mesh: *const mesh_module.Mesh,
     base_variables: usize,
+    /// The events' times, where every one of them is held.
+    times: ?[]const f64 = null,
     curve_indices: []?usize,
     variables: std.ArrayList(Bounds) = .empty,
     locations: std.ArrayList(problem.Location) = .empty,
@@ -254,6 +264,7 @@ const Compiler = struct {
             .cell => |cell| .{ .kind = .cell, .index = cell.index, .value = bits(cell.u) },
             .event => |event| .{ .kind = .event, .index = event.index, .value = @backingInt(event.side) },
             .time => |time| .{ .kind = .time, .index = 0, .value = bits(time) },
+            .control => unreachable,
         };
         const entry = try self.location_indices.getOrPut(self.allocator, key);
         if (entry.found_existing) return entry.value_ptr.*;
@@ -264,13 +275,42 @@ const Compiler = struct {
         return index;
     }
 
+    /// The start and the end of a cell, where the events' times are held.
+    fn cellSpan(self: *const Compiler, index: usize) [2]f64 {
+        const cell = self.mesh.cells[index];
+        const times = self.times.?;
+        const span = times[cell.section + 1] - times[cell.section];
+        return .{ times[cell.section] + span * cell.start, times[cell.section] + span * cell.end };
+    }
+
     fn samples(self: *Compiler, scope: model.Scope) std.mem.Allocator.Error![]const usize {
         for (self.samplings.items) |sampling| if (std.meta.eql(sampling.scope, scope)) return sampling.points;
         var points: std.ArrayList(usize) = .empty;
         switch (scope) {
             .event => |event| try points.append(self.allocator, try self.point(.{ .event = event })),
-            .time => |time| try points.append(self.allocator, try self.point(.{ .time = time })),
-            .time_range => |range| {
+            .time => |time| {
+                var location: problem.Location = .{ .time = time };
+                if (self.times != null) for (0..self.mesh.cells.len) |index| {
+                    const span = self.cellSpan(index);
+                    if (time > span[1] and index + 1 < self.mesh.cells.len) continue;
+                    if (time <= span[1]) location = .{ .cell = .{ .index = index, .u = @max(0, (time - span[0]) / (span[1] - span[0])) } };
+                    break;
+                };
+                try points.append(self.allocator, try self.point(location));
+            },
+            .time_range => |range| if (self.times != null) {
+                // Five points in each cell the range covers, over the part of the cell it covers.
+                for (0..self.mesh.cells.len) |index| {
+                    const span = self.cellSpan(index);
+                    const low = @max(range[0], span[0]);
+                    const high = @min(range[1], span[1]);
+                    if (!(high > low)) continue;
+                    for (0..subdivisions + 1) |k| {
+                        const time = low + (high - low) * @as(f64, @floatFromInt(k)) / subdivisions;
+                        try points.append(self.allocator, try self.point(.{ .cell = .{ .index = index, .u = (time - span[0]) / (span[1] - span[0]) } }));
+                    }
+                }
+            } else {
                 const count = @max(subdivisions, self.mesh.cells.len * subdivisions);
                 for (0..count + 1) |index| {
                     const fraction = @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(count));
@@ -295,8 +335,47 @@ const Compiler = struct {
         return points.items;
     }
 
+    /// For the convex tier, the control points of a rule's polynomial over its scope, where the rule is one that
+    /// control points hold: a place, a velocity, an acceleration, a 3D norm of one of them or of the jerk, a region.
+    fn controls(self: *Compiler, descriptor: rules.Check) std.mem.Allocator.Error!?[]const usize {
+        if (self.times == null) return null;
+        const order: u8 = switch (descriptor.operation) {
+            .region => 0,
+            .quantity => |operation| switch (self.rules.plan.rules[operation.rule].definition.quantity.quantity) {
+                .position => 0,
+                .velocity_ecef, .speed3d => 1,
+                .acceleration_ecef, .acceleration3d => 2,
+                .jerk3d => 3,
+                else => return null,
+            },
+            else => return null,
+        };
+        var points: std.ArrayList(usize) = .empty;
+        for (0..self.mesh.cells.len) |index| {
+            const cell = self.mesh.cells[index];
+            var span: [2]f64 = .{ 0, 1 };
+            switch (descriptor.scope) {
+                .section => |section| if (cell.section != section) continue,
+                .between => |events| if (cell.section < events[0] or cell.section >= events[1]) continue,
+                .all => {},
+                .time_range => |range| {
+                    const times = self.cellSpan(index);
+                    span = .{ @max(0, (range[0] - times[0]) / (times[1] - times[0])), @min(1, (range[1] - times[0]) / (times[1] - times[0])) };
+                    if (!(span[1] > span[0])) continue;
+                },
+                .event, .time => return null,
+            }
+            for (0..6 - order) |k| {
+                try points.append(self.allocator, self.locations.items.len);
+                try self.locations.append(self.allocator, .{ .control = .{ .index = index, .low = span[0], .high = span[1], .order = order, .k = @intCast(k) } });
+                try self.quantities.append(self.allocator, .empty);
+            }
+        }
+        return points.items;
+    }
+
     fn check(self: *Compiler, descriptor: rules.Check, index: usize) std.mem.Allocator.Error!void {
-        const points = try self.samples(descriptor.scope);
+        const points = try self.controls(descriptor) orelse try self.samples(descriptor.scope);
         const objective = self.rules.isObjective(descriptor);
         const duration = descriptor.operation == .quantity and self.rules.plan.rules[descriptor.operation.quantity.rule].definition.quantity.quantity == .duration;
         const sequence = if (descriptor.operation == .curve) try self.curve(descriptor.operation.curve.rule, points) else null;
@@ -348,6 +427,7 @@ const Compiler = struct {
     fn checkQuantities(self: *Compiler, point_index: usize, descriptor: rules.Check) void {
         switch (descriptor.operation) {
             .ahead => self.quantity(point_index, .horizontal_speed),
+            .floor => self.quantity(point_index, .altitude),
             .quantity => |operation| {
                 const rule = self.rules.plan.rules[operation.rule];
                 const value = rule.definition.quantity.quantity;
@@ -451,7 +531,7 @@ const Columns = struct {
             .time => switch (location) {
                 .event => |event| try self.durations(0, event.index),
                 .cell => |cell| try self.durations(0, self.mesh.cells[cell.index].section + 1),
-                .time => {},
+                .time, .control => {},
             },
             .duration => try self.scope(quantity_scope),
             else => try self.physical(location),
@@ -467,7 +547,7 @@ const Columns = struct {
         } else {
             const descriptor = compiler.rules.checks[value.check().?];
             switch (descriptor.operation) {
-                .ahead, .region => try self.physical(location),
+                .ahead, .region, .floor => try self.physical(location),
                 .curve => {
                     try self.physical(location);
                     try self.add(value.operation.curve.variable);
@@ -518,6 +598,7 @@ fn appendPoint(allocator: std.mem.Allocator, points: *std.ArrayList(usize), poin
 fn cellIndex(mesh: *const mesh_module.Mesh, location: problem.Location) usize {
     return switch (location) {
         .cell => |cell| cell.index,
+        .control => |control| control.index,
         .event => |event| if (event.index == 0)
             0
         else if (event.side == .out and event.index < mesh.sections.len)

@@ -13,7 +13,11 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
     const upper = built.upper;
     const aliases = try arena.alloc(usize, built.x.len);
     for (aliases, 0..) |*parent, i| parent.* = i;
-    for (plan.rules) |rule| {
+    // The rule that made a node's place one with its neighbour's (a stay): where another rule's place for that
+    // node is contradicted, it is this rule that stands against it.
+    const stays = try arena.alloc(?usize, nodes.len);
+    @memset(stays, null);
+    for (plan.rules, 0..) |rule, rule_index| {
         if (rule.kind() != .hard or rule.definition != .quantity) continue;
         const q = rule.definition.quantity;
         if ((q.quantity == .speed3d and zeroRule(q)) or literalPosition(plan, q) != null) {
@@ -22,6 +26,8 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
             const end = built.mesh.sections[span[1] - 1].end_cell;
             for (built.mesh.cells[begin..end]) |cell| {
                 for (0..3) |component| mergeAlias(aliases, nodes[cell.left].variables[component], nodes[cell.right].variables[component]);
+                stays[cell.left] = rule_index;
+                stays[cell.right] = rule_index;
             }
         } else if (q.quantity == .position and rule.scope == .event and q.comparison == .eq and q.comparison.eq == .event) {
             const reference = q.comparison.eq.event;
@@ -38,12 +44,18 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
     const times = try arena.alloc(?f64, plan.events.len);
     @memset(times, null);
     times[0] = 0;
-    for (plan.rules) |rule| {
+    // The rule that fixed each value, so that a rule that contradicts it can be named with it.
+    const owners = try arena.alloc(?usize, built.x.len);
+    @memset(owners, null);
+    const time_owners = try arena.alloc(?usize, plan.events.len);
+    @memset(time_owners, null);
+    for (plan.rules, 0..) |rule, rule_index| {
         if (rule.kind() != .hard or rule.definition != .quantity) continue;
         const q = rule.definition.quantity;
         if (rule.scope == .event) {
             const event = rule.scope.event;
-            const node = nodes[if (event.side == .in) built.mesh.event_in[event.index] else built.mesh.event_out[event.index]];
+            const node_index = if (event.side == .in) built.mesh.event_in[event.index] else built.mesh.event_out[event.index];
+            const node = nodes[node_index];
             switch (q.quantity) {
                 .position, .velocity_ecef, .acceleration_ecef => {
                     if (q.comparison != .eq) continue;
@@ -62,24 +74,33 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
                         else => unreachable,
                     };
                     const value = if (first == 0) vector.sub(built.mesh.origin) else vector;
-                    for (value.toArray(), first..) |component, axis| fixBound(built, node.variables[axis], component / built.mesh.scales[axis]);
+                    for (value.toArray(), first..) |component, axis| {
+                        // A place this node shares by a stay is the stay's to answer for.
+                        if (first == 0) if (stays[node_index]) |stay| if (lower[node.variables[axis]] == upper[node.variables[axis]]) {
+                            owners[node.variables[axis]] = stay;
+                        };
+                        fixBound(built, owners, rule_index, node.variables[axis], component / built.mesh.scales[axis]);
+                    }
                 },
                 .speed3d, .acceleration3d => if (zeroRule(q)) {
                     const first: usize = if (q.quantity == .speed3d) 3 else 6;
-                    for (first..first + 3) |component| fixBound(built, node.variables[component], 0);
+                    for (first..first + 3) |component| fixBound(built, owners, rule_index, node.variables[component], 0);
                 },
                 .time => if (q.comparison == .eq and q.comparison.eq == .scalar) {
                     const value = q.comparison.eq.scalar;
                     if (!std.math.isFinite(value) or value < 0 or value > trajectory.max_duration_s) {
-                        built.inconsistent = true;
+                        contradiction(built, rule_index, null);
                     } else if (times[event.index]) |old| {
-                        if (!sameFixed(old, value)) built.inconsistent = true;
-                    } else times[event.index] = value;
+                        if (!sameFixed(old, value)) contradiction(built, rule_index, time_owners[event.index]);
+                    } else {
+                        times[event.index] = value;
+                        time_owners[event.index] = rule_index;
+                    }
                 },
                 else => {},
             }
         } else if (q.quantity == .duration and rule.scope == .section and q.comparison == .eq and q.comparison.eq == .scalar) {
-            fixBound(built, built.mesh.durations[rule.scope.section], q.comparison.eq.scalar / time_scale);
+            fixBound(built, owners, rule_index, built.mesh.durations[rule.scope.section], q.comparison.eq.scalar / time_scale);
         } else if ((q.quantity == .speed3d and zeroRule(q)) or literalPosition(plan, q) != null) {
             const span = sectionSpan(rule.scope, plan.sections.len) orelse continue;
             const position = literalPosition(plan, q);
@@ -88,13 +109,14 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
             for (built.mesh.cells[begin..end]) |cell| {
                 for ([_]usize{ cell.left, cell.right }) |node| {
                     if (position) |value| for (value.sub(built.mesh.origin).toArray(), 0..) |component, axis| {
-                        fixBound(built, nodes[node].variables[axis], component / built.mesh.scales[axis]);
+                        fixBound(built, owners, rule_index, nodes[node].variables[axis], component / built.mesh.scales[axis]);
                     };
-                    for (3..9) |component| fixBound(built, nodes[node].variables[component], 0);
+                    for (3..9) |component| fixBound(built, owners, rule_index, nodes[node].variables[component], 0);
                 }
             }
         }
     }
+    built.end_rule = time_owners[plan.events.len - 1];
     var first: usize = 0;
     for (times[1..], 1..) |time, end| {
         const finish = time orelse continue;
@@ -105,28 +127,30 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
         var fixed: f64 = 0;
         var free_count: usize = 0;
         var free_column: usize = 0;
+        var other: ?usize = time_owners[first];
         for (built.mesh.durations[first..end]) |column| {
             minimum += lower[column] * time_scale;
             maximum += upper[column] * time_scale;
             if (lower[column] == upper[column]) {
                 fixed += lower[column] * time_scale;
+                other = owners[column] orelse other;
             } else {
                 free_count += 1;
                 free_column = column;
             }
         }
         if ((span < minimum and !sameFixed(finish, start + minimum)) or (span > maximum and !sameFixed(finish, start + maximum))) {
-            built.inconsistent = true;
+            contradiction(built, time_owners[end], other);
         } else if (free_count == 1) {
             const value = std.math.clamp((span - fixed) / time_scale, lower[free_column], upper[free_column]);
-            fixBound(built, free_column, value);
+            fixBound(built, owners, time_owners[end], free_column, value);
         }
         first = end;
     }
     // A section whose two ends and whose duration are fixed is no slower, on average, than its chord over its
     // duration: a hard maximum of speed3d below that has no solution, whatever the path. The test is the
     // verifier's own (rules.residual): the normalised violation of that mean speed against its tolerance.
-    for (plan.rules) |rule| {
+    for (plan.rules, 0..) |rule, rule_index| {
         if (rule.kind() != .hard or rule.definition != .quantity) continue;
         const q = rule.definition.quantity;
         if (q.quantity != .speed3d or q.comparison != .range) continue;
@@ -147,7 +171,7 @@ pub fn apply(arena: std.mem.Allocator, plan: *const model.Plan, built: *mesh.Bui
             }
             const seconds = lower[duration] * time_scale;
             const excess = (squared / (seconds * seconds) - bound.scalar * bound.scalar) / @max(rule.scale, bound.scalar) / rule.scale;
-            if (fixed and excess > 1e-5) built.inconsistent = true;
+            if (fixed and excess > 1e-5) contradiction(built, rule_index, owners[duration]);
         }
     }
     const columns = try arena.alloc(usize, aliases.len);
@@ -187,24 +211,31 @@ fn mergeAlias(aliases: []usize, a: usize, b: usize) void {
     aliases[@max(first, second)] = @min(first, second);
 }
 
-fn fixBound(built: *mesh.Build, column: usize, value: f64) void {
+/// The first contradiction found is the one that is named.
+fn contradiction(built: *mesh.Build, rule: ?usize, other: ?usize) void {
+    if (!built.inconsistent) built.conflict = .{ rule, other };
+    built.inconsistent = true;
+}
+
+fn fixBound(built: *mesh.Build, owners: []?usize, rule: ?usize, column: usize, value: f64) void {
     const lower = built.lower;
     const upper = built.upper;
     if (!std.math.isFinite(value) or
         (value < lower[column] and !sameFixed(value, lower[column])) or
         (value > upper[column] and !sameFixed(value, upper[column])))
     {
-        built.inconsistent = true;
+        contradiction(built, rule, owners[column]);
         return;
     }
     if (lower[column] == upper[column]) {
-        if (!sameFixed(value, lower[column])) built.inconsistent = true;
+        if (!sameFixed(value, lower[column])) contradiction(built, rule, owners[column]);
         return;
     }
     const fixed = std.math.clamp(value, lower[column], upper[column]);
     lower[column] = fixed;
     upper[column] = fixed;
     built.x[column] = fixed;
+    owners[column] = rule;
 }
 
 fn sameFixed(a: f64, b: f64) bool {

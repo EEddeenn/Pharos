@@ -203,7 +203,12 @@ fn value(c: Context, raw: read.RawValue, quantity: model.Quantity) Error!model.V
             const q = reference.quantity orelse return fail(c.ctx, .missing_field, try obj.childPath("quantity"), "an event reference requires quantity", .{});
             if (q == .duration) return fail(c.ctx, .out_of_range, try obj.childPath("quantity"), "duration is not defined at one event", .{});
             if (!quantities.compatible(quantity, q)) return fail(c.ctx, .wrong_type, try obj.childPath("quantity"), "{s} and {s} have different dimensions or component counts", .{ model.Quantity.words.get(quantity), model.Quantity.words.get(q) });
-            return .{ .event = .{ .event = try c.index(c.events, event, try obj.childPath("event")), .quantity = if (q == .forward_speed) .horizontal_speed else q, .side = reference.side orelse .out, .factor = reference.factor orelse 1, .offset = reference.offset orelse 0 } };
+            const index = try c.index(c.events, event, try obj.childPath("event"));
+            const factor = reference.factor orelse 1;
+            const offset = reference.offset orelse 0;
+            // A value that refers with a factor of zero is its offset: a number.
+            if (factor == 0) return if (quantities.components(quantity) == 3) .{ .vector = .{ .x = offset, .y = offset, .z = offset } } else .{ .scalar = offset };
+            return .{ .event = .{ .event = index, .quantity = if (q == .forward_speed) .horizontal_speed else q, .side = reference.side orelse .out, .factor = factor, .offset = offset } };
         },
         else => return fail(c.ctx, .wrong_type, n.path, "expected a number, three-component vector, point reference or event reference", .{}),
     }

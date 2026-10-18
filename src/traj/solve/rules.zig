@@ -1,6 +1,7 @@
 const std = @import("std");
 const shared = @import("shared");
 const rest_speed = @import("kernel/domain.zig").rest_speed;
+const Scalar = @import("kernel.zig").Scalar;
 const plan_module = @import("../plan.zig");
 const model = plan_module.model;
 const quantities = plan_module.quantities;
@@ -16,6 +17,9 @@ pub const Operation = union(enum) {
     region: struct { rule: usize, edge: usize },
     coverage: f64,
     maximum_duration,
+    /// The convex tier's alone (`floored`): the path is not under this altitude. No check of the verifier's, which
+    /// holds the receiver's domain itself.
+    floor: f64,
     jump: Step,
     /// Under a rule of turning, at an event where the velocity may step: of the horizontal velocities of its two
     /// sides nothing of one across the other (`component` 0), and the two not opposed (1). The direction of travel
@@ -187,6 +191,7 @@ pub fn residual(comptime K: type, prepared: *const Prepared, check: Check, sampl
         .ahead => |index| A.sub(onCourse(K, sampler.point(), prepared.plan.rules[index].definition.quantity.comparison.eq.scalar).along, A.constant(rest_speed)),
         .coverage => |required| A.scale(A.sub(sampler.eventTime(prepared.plan.events.len - 1), A.constant(required)), 0.1),
         .maximum_duration => A.scale(A.sub(A.constant(shared.trajectory.max_duration_s), sampler.eventTime(prepared.plan.events.len - 1)), 0.1),
+        .floor => |altitude| A.sub(sampler.point().quantity(.altitude)[0], A.constant(altitude)),
         .jump => |jump| blk: {
             if (jump.range) |range| {
                 const time = A.value(sampler.eventTime(jump.event));
@@ -294,6 +299,137 @@ fn onCourse(comptime K: type, point: *K.Point, course: f64) struct { along: K.Nu
         .along = A.add(A.scale(velocity[0], @sin(radians)), A.scale(velocity[1], @cos(radians))),
         .across = A.sub(A.scale(velocity[0], @cos(radians)), A.scale(velocity[1], @sin(radians))),
     };
+}
+
+/// The receiver's domain ends 6,350 km from the geocentre: 7 km under the ellipsoid at the poles, more elsewhere.
+const floor_m = -7000;
+
+/// For the convex tier: the checks with the floor as a row of its own, where some rule gains by depth. A hard
+/// maximum of horizontal speed is met more easily under the ground, where the same ground track is shorter, and
+/// the smoothest path under one dives. No other rule of the tier's gains so. The floor is to keep the path in the
+/// receiver's domain, not from what the plan states: it is no higher than the lowest altitude a hard rule states,
+/// as a place's or as an altitude's own number, at any scope. A value that refers to another event states none.
+pub fn floored(arena: std.mem.Allocator, prepared: Prepared) std.mem.Allocator.Error!Prepared {
+    for (prepared.plan.rules) |rule| {
+        if (rule.kind() == .hard and rule.definition == .quantity and rule.definition.quantity.quantity == .horizontal_speed and rule.definition.quantity.comparison == .range and rule.definition.quantity.comparison.range.max != null) break;
+    } else return prepared;
+    var altitude: f64 = floor_m;
+    for (prepared.plan.rules) |rule| {
+        if (rule.kind() != .hard or rule.definition != .quantity) continue;
+        const q = rule.definition.quantity;
+        const stated: [2]?model.Value = switch (q.comparison) {
+            .eq => |rhs| .{ rhs, null },
+            .range => |range| .{ range.min, range.max },
+            else => continue,
+        };
+        for (stated) |given| if (statedAltitude(prepared, q.quantity, given)) |number| {
+            altitude = @min(altitude, number);
+        };
+    }
+    var result = prepared;
+    result.checks = try std.mem.concat(arena, Check, &.{ prepared.checks, &.{.{ .scope = .all, .operation = .{ .floor = altitude } }} });
+    return result;
+}
+
+/// The altitude one of a hard rule's values states: an altitude's own number, or a place's. Null where it states
+/// none.
+fn statedAltitude(prepared: Prepared, quantity: model.Quantity, given: ?model.Value) ?f64 {
+    const place = switch (given orelse return null) {
+        .scalar => |number| return if (quantity == .altitude) number else null,
+        .vector => |vector| vector,
+        .point => |index| prepared.plan.geometry.points[index].ecef,
+        .event => return null,
+    };
+    if (quantity != .position) return null;
+    const still: [3]f64 = @splat(0);
+    var point = Scalar.Point.init(.{ .position = place.toArray(), .velocity = still, .acceleration = still, .jerk = still }, prepared.plan.coordinates.altitude);
+    return point.quantity(.altitude)[0];
+}
+
+/// What a check is in the unknowns of a path whose events' times are held (the convex tier's classifier).
+pub const Kind = enum {
+    /// A number: it holds or it does not, whatever the path.
+    constant,
+    /// Linear in the path.
+    linear,
+    /// A bound less the squared norm of a vector that is linear in the path.
+    cone,
+    /// Linear, or such a bound, once the local frame is held where the path is.
+    frame,
+    /// A bound that cannot bind: no row.
+    vacuous,
+    /// None of these, or a soft rule's.
+    no,
+};
+
+fn height(quantity: model.Quantity) bool {
+    return quantity == .altitude or quantity == .climb_rate or quantity == .vertical_acceleration;
+}
+
+pub fn kindOf(prepared: *const Prepared, check: Check) Kind {
+    switch (check.operation) {
+        .curve, .corner => return .no,
+        .coverage, .maximum_duration => return .constant,
+        .ahead, .floor => return .frame,
+        .jump => |jump| return switch (jump.quantity) {
+            .velocity_ecef, .acceleration_ecef => .linear,
+            .climb_rate => .frame,
+            else => .no,
+        },
+        .region => |operation| {
+            const rule = prepared.plan.rules[operation.rule];
+            if (rule.kind() != .hard) return .no;
+            return switch (prepared.regions[rule.definition.relation.value.inside_region].shape) {
+                .circle => .cone,
+                .polygon => .linear,
+            };
+        },
+        .quantity => |operation| {
+            const rule = prepared.plan.rules[operation.rule];
+            if (rule.kind() != .hard) return .no;
+            const quantity = rule.definition.quantity.quantity;
+            if (quantity == .time or quantity == .duration) return .constant;
+            const vector = quantities.components(quantity) == 3;
+            const rhs = if (operation.split_norm) null else rightHand(rule, operation.comparison);
+            if (rhs) |given| if (given == .event) {
+                // Another event's value: linear where both are vectors of the path, and linear in the frame where
+                // both are heights or their rates.
+                const other = given.event.quantity;
+                if (vector != (quantities.components(other) == 3)) return .no;
+                if (!vector and !(height(quantity) and height(other))) return .no;
+            };
+            if (vector) return .linear;
+            if (courseAtEvent(rule)) return .frame;
+            if (isNorm(quantity)) {
+                const framed = quantity == .horizontal_speed;
+                // A rest, by its components.
+                if (operation.split_norm) return if (framed) .frame else .linear;
+                const bound = switch (rhs.?) {
+                    .scalar => |v| v,
+                    else => return .no,
+                };
+                return switch (operation.comparison) {
+                    .max => if (bound > 0) (if (framed) Kind.frame else Kind.cone) else Kind.no,
+                    .min => if (bound <= 0) Kind.vacuous else Kind.no,
+                    else => Kind.no,
+                };
+            }
+            return if (height(quantity)) .frame else .no;
+        },
+    }
+}
+
+/// Whether the convex tier takes the plan (with its events' times held), and whether some check needs the frame.
+pub const Shape = struct { convex: bool = true, frame: bool = false };
+
+pub fn shape(prepared: *const Prepared) Shape {
+    var result: Shape = .{};
+    for (prepared.checks) |check| switch (kindOf(prepared, check)) {
+        .no => return .{ .convex = false },
+        .frame => result.frame = true,
+        else => {},
+    };
+    return result;
 }
 
 pub fn rightHand(rule: model.Rule, comparison: Comparison) ?model.Value {

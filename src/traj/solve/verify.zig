@@ -57,6 +57,8 @@ pub fn check(arena: std.mem.Allocator, prepared: *const rules.Prepared, candidat
             if (term.operation.quantity.component != 0) continue;
             term.operation.quantity.split_norm = false;
         }
+        // A least value of a norm at or under zero holds whatever the path: there is nothing to settle.
+        if (rules.kindOf(prepared, term) == .vacuous) continue;
         switch (term.scope) {
             .event => |event| context.point(term, candidate.path.eventLocation(event)),
             .time => |time| context.point(term, timeLocation(&candidate.path, time)),

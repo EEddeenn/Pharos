@@ -31,6 +31,11 @@ pub const Build = struct {
     lower: []f64,
     upper: []f64,
     inconsistent: bool = false,
+    /// Where `inconsistent`: the hard rule whose literal value could not be taken, and the rule that had fixed the
+    /// value it contradicts (each where one is known).
+    conflict: [2]?usize = .{ null, null },
+    /// The hard rule that gives the last event its time, where one does.
+    end_rule: ?usize = null,
 };
 
 const scales = [9]f64{ 100, 100, 100, 10, 10, 10, 1, 1, 1 };

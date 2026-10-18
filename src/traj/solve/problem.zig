@@ -11,6 +11,10 @@ pub const Location = union(enum) {
     cell: struct { index: usize, u: f64 },
     event: model.EventRef,
     time: f64,
+    /// Not a point of the path: control point `k` of the `order`-th derivative of a cell's place over the part
+    /// `low` to `high` of the cell. The derivative lies within its control points over that part, so a row that
+    /// is linear in it, or a bound on its norm, holds over the part where it holds at each of them.
+    control: struct { index: usize, low: f64, high: f64, order: u8, k: u8 },
 };
 
 pub const Term = struct {

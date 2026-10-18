@@ -109,6 +109,9 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
         pub const Point = struct {
             state: State,
             datum: model.Altitude,
+            /// The horizontal velocity is taken in the frame of where the path is, the place there held: its
+            /// derivatives are then those of the velocity alone, and it is linear in the path (the convex tier).
+            hold_frame: bool = false,
             frame_order: ?u2 = null,
             frame_cache: MovingFrame(2) = undefined,
             height_order: ?u2 = null,
@@ -224,9 +227,20 @@ pub fn Domain(comptime N: type, comptime Ops: type, comptime D: type) type {
                 return result;
             }
 
+            /// The local frame with the place held: a number where `local` gives a function of the unknowns.
+            fn held(self: *const Point, comptime order: u2) MovingFrame(order) {
+                var position: [3]Motion(order) = undefined;
+                for (0..3) |i| position[i] = .{
+                    .value = D.constant(take(self.state.position[i]).value),
+                    .first = if (order >= 1) take(self.state.velocity[i]) else {},
+                    .second = if (order >= 2) take(self.state.acceleration[i]) else {},
+                };
+                return movingFrame(order, position);
+            }
+
             fn horizontal(self: *Point, comptime order: u2) [2]Motion(order) {
                 if (self.horizontal_order == null or self.horizontal_order.? < order) {
-                    const local_frame = self.local(order);
+                    const local_frame = if (self.hold_frame) self.held(order) else self.local(order);
                     var velocity: [3]Motion(order) = undefined;
                     for (0..3) |i| velocity[i] = .{
                         .value = take(self.state.velocity[i]),

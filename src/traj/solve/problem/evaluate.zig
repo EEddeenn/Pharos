@@ -16,6 +16,8 @@ const Place = struct { cell: usize, u: f64 };
 
 pub const Workspace = struct {
     layout: *const problem.Layout,
+    /// Horizontal velocities are differentiated with the frame held where the path is (the convex tier's rows).
+    hold_frame: bool = false,
     times: []f64,
     places: []Place,
     scalar_points: []Scalar.Point,
@@ -68,6 +70,7 @@ pub const Workspace = struct {
         for (self.layout.mesh.durations, 0..) |column, i| self.times[i + 1] = self.times[i] + x[column] * mesh_module.time_scale;
         for (self.layout.locations, self.places) |location, *place| place.* = switch (location) {
             .cell => |cell| .{ .cell = cell.index, .u = cell.u },
+            .control => |control| .{ .cell = control.index, .u = 0.5 * (control.low + control.high) },
             .event => |event| blk: {
                 if (event.index == 0 or (event.side == .out and event.index < self.layout.mesh.sections.len)) break :blk .{ .cell = self.layout.mesh.sections[event.index].first_cell, .u = 0 };
                 break :blk .{ .cell = self.layout.mesh.sections[event.index - 1].end_cell - 1, .u = 1 };
@@ -221,6 +224,39 @@ pub const Workspace = struct {
     }
 };
 
+/// Control point `k` of the `order`-th derivative (by time) of a quintic over the part `low` to `high` of its
+/// cell: `coefficients` are the quintic's in the powers of the cell's own fraction, `h` the cell's duration. The
+/// derivative, taken in the powers of the part's fraction, is brought to the Bernstein basis of its degree.
+fn controlPoint(comptime K: type, coefficients: K.Hermite.Quintic, h: K.Number, order: u8, k: u8, low: f64, high: f64) K.Number {
+    const A = K.Arithmetic;
+    const degree: usize = 5 - order;
+    // The derivative's coefficients in the powers of the cell's fraction, each as a number times a coefficient.
+    var powers: [6]f64 = undefined;
+    for (0..degree + 1) |i| {
+        powers[i] = 1;
+        for (0..order) |step| powers[i] *= @floatFromInt(i + order - step);
+    }
+    var result = A.constant(0);
+    // Entry j of the part's own powers is the sum over i >= j of C(i, j) low^(i - j) (high - low)^j times entry i;
+    // control point k is the sum over j <= k of C(k, j) / C(degree, j) times entry j.
+    for (0..degree + 1) |i| {
+        var weight: f64 = 0;
+        for (0..@min(i, k) + 1) |j| {
+            weight += binomial(k, j) / binomial(degree, j) * binomial(i, j) * std.math.pow(f64, low, @floatFromInt(i - j)) * std.math.pow(f64, high - low, @floatFromInt(j));
+        }
+        result = A.add(result, A.scale(coefficients[i + order], weight * powers[i]));
+    }
+    var scale = A.constant(1);
+    for (0..order) |_| scale = A.mul(scale, h);
+    return A.div(result, scale);
+}
+
+fn binomial(n: usize, k: usize) f64 {
+    var result: f64 = 1;
+    for (0..k) |i| result *= @as(f64, @floatFromInt(n - i)) / @as(f64, @floatFromInt(i + 1));
+    return result;
+}
+
 /// Whether a batch is one point at a fixed time whose terms depend on the state there alone.
 fn timeOnly(layout: *const problem.Layout, batch: problem.Batch) bool {
     if (batch.points.len != 1 or layout.locations[batch.points[0]] != .time) return false;
@@ -307,8 +343,26 @@ fn Context(comptime K: type) type {
                     else => A.constant(place.u),
                 };
                 var state = self.cell(place.cell).at(u);
+                switch (layout.locations[index]) {
+                    .control => |control| {
+                        // The state is the cell's at the middle of the part, but for the one derivative the
+                        // row is of: that is its control point.
+                        const quintic = self.cell(place.cell);
+                        for (0..3) |axis| {
+                            const value = controlPoint(K, quintic.position[axis], quintic.duration, control.order, control.k, control.low, control.high);
+                            switch (control.order) {
+                                0 => state.position[axis] = value,
+                                1 => state.velocity[axis] = value,
+                                2 => state.acceleration[axis] = value,
+                                else => state.jerk[axis] = value,
+                            }
+                        }
+                    },
+                    else => {},
+                }
                 for (&state.position, layout.mesh.origin.toArray()) |*position, origin| position.* = A.add(position.*, A.constant(origin));
                 self.points[slot] = K.Point.init(state, layout.rules.plan.coordinates.altitude);
+                self.points[slot].hold_frame = self.workspace.hold_frame;
                 self.points[slot].prepareRequirements(layout.requirements[index]);
                 self.ready[slot] = true;
             }
@@ -323,6 +377,7 @@ fn Context(comptime K: type) type {
                     const piece = self.workspace.layout.mesh.cells[place.index];
                     break :blk A.add(self.eventTime(piece.section), A.scale(self.duration(piece.section), piece.start + place.u * (piece.end - piece.start)));
                 },
+                .control => |control| self.eventTime(self.workspace.layout.mesh.cells[control.index].section),
             };
         }
 
