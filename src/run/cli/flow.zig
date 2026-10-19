@@ -47,11 +47,11 @@ pub fn generate(gpa: std.mem.Allocator, io: Io, args: Args, console: Console) u8
     }
     const output_path = args.output orelse cli.withExtension(arena.allocator(), args.input, "bin") catch return cli.outOfMemory(console);
     if (dump_dir) |dir| {
-        if (!writeScenarioDump(gpa, io, dir, &b, console)) return 1;
+        if (!writeScenarioDump(arena.allocator(), io, dir, &b, console)) return 1;
     }
-    if (args.tag and !writeTag(gpa, io, run.info.samples, run.entryTime(), output_path, console)) return 1;
-    var blocks: Blocks = .{ .console = console, .before_replan = report(console, &b, run, args) };
-    return generateIf(gpa, io, run, &dumps, output_path, &blocks);
+    if (args.tag and !writeTag(arena.allocator(), io, run.info.samples, run.entryTime(), output_path, console)) return 1;
+    var progress: Progress = .{ .console = console, .before_replan = report(console, &b, run, args) };
+    return writeSamples(gpa, io, run, &dumps, output_path, &progress);
 }
 
 fn report(console: Console, b: *const Bundle, run: *Run, args: Args) ?usize {
@@ -90,16 +90,16 @@ fn warnNoChannel(console: Console, entry: Epoch) void {
     console.warn("No channel at epoch {d}: no satellite of a listed signal has a record there and stands above the elevation mask; the samples carry noise alone", .{entry.ms});
 }
 
-const Blocks = struct {
+const Progress = struct {
     console: Console,
     before_replan: ?usize,
 };
 
-fn generateIf(gpa: std.mem.Allocator, io: Io, run: *Run, dumps: *DumpFiles, output_path: []const u8, blocks: *Blocks) u8 {
-    const console = blocks.console;
+fn writeSamples(gpa: std.mem.Allocator, io: Io, run: *Run, dumps: *DumpFiles, output_path: []const u8, progress: *Progress) u8 {
+    const console = progress.console;
     console.flush();
     const t0 = Io.Clock.Timestamp.now(io, .awake);
-    const written = pharos_run.io.sink.writeRun(gpa, io, output_path, run, blocks, reportBlock) catch |e| {
+    const written = pharos_run.io.sink.writeRun(gpa, io, output_path, run, progress, reportBlock) catch |e| {
         if (e == error.OutOfMemory) return cli.outOfMemory(console);
         cli.cannotWrite(console, output_path, e);
         return 1;
@@ -114,9 +114,9 @@ fn generateIf(gpa: std.mem.Allocator, io: Io, run: *Run, dumps: *DumpFiles, outp
 
 fn reportSeekError(console: Console, run: *const Run, target: Epoch, e: engine.run.SeekError) void {
     switch (e) {
-        error.EpochOutOfRange => console.fail("--seek {d} lies beyond the run's {d} epochs", .{ target.ms, run.info.span.epochs }),
+        error.EpochOutOfRange => console.fail("--seek must be at most {d}, got {d}", .{ run.info.span.epochs, target.ms }),
         error.AdaptiveGain => console.fail("--seek needs --gain: {s}", .{engine.run.reason(e)}),
-        error.CommandsApplied => console.fail("--seek {d} is refused: {s}", .{ target.ms, engine.run.reason(e) }),
+        error.CommandsApplied => unreachable,
         else => |failure| reportStop(console, run, failure),
     }
 }
@@ -125,10 +125,10 @@ fn reportStop(console: Console, run: *const Run, e: engine.run.PullError) void {
     console.fail("Epoch {d} of {d} could not be generated: {s}", .{ run.epoch.ms, run.info.span.epochs, engine.run.reason(e) });
 }
 
-fn reportBlock(blocks: *Blocks, run: *Run, block: engine.run.Block) void {
+fn reportBlock(progress: *Progress, run: *Run, block: engine.run.Block) void {
     const entry = run.entryEpoch();
     while (run.nextEvent()) |ev| {
-        if (blocks.before_replan) |*held| switch (ev) {
+        if (progress.before_replan) |*held| switch (ev) {
             .channel_added => |c| if (c.epoch.ms == entry.ms) {
                 held.* += 1;
             },
@@ -137,13 +137,13 @@ fn reportBlock(blocks: *Blocks, run: *Run, block: engine.run.Block) void {
             },
             else => {},
         };
-        reportEvent(blocks.console, ev);
+        reportEvent(progress.console, ev);
     }
-    if (blocks.before_replan) |held| {
-        if (held == 0) warnNoChannel(blocks.console, entry);
-        blocks.before_replan = null;
+    if (progress.before_replan) |held| {
+        if (held == 0) warnNoChannel(progress.console, entry);
+        progress.before_replan = null;
     }
-    if (run.epoch.ms / progress_every_epochs != block.epoch_first.ms / progress_every_epochs) blocks.console.info("{d} / {d} ms generated", .{ run.epoch.ms, run.info.span.epochs });
+    if (run.epoch.ms / progress_every_epochs != block.epoch_first.ms / progress_every_epochs) progress.console.info("{d} / {d} ms generated", .{ run.epoch.ms, run.info.span.epochs });
 }
 
 fn printSummary(console: Console, run: *const Run, path: []const u8, bytes_on_file: u64, seconds: f64) void {
@@ -223,34 +223,31 @@ fn makeDumpDir(io: Io, dir: []const u8, console: Console) bool {
     return true;
 }
 
-fn writeScenarioDump(gpa: std.mem.Allocator, io: Io, dir: []const u8, b: *const Bundle, console: Console) bool {
-    var text: Io.Writer.Allocating = .init(gpa);
-    defer text.deinit();
+fn writeScenarioDump(arena: std.mem.Allocator, io: Io, dir: []const u8, b: *const Bundle, console: Console) bool {
+    var text: Io.Writer.Allocating = .init(arena);
     pharos_run.io.dump.writeScenario(&text.writer, b) catch {
         _ = cli.outOfMemory(console);
         return false;
     };
-    const path = Io.Dir.path.join(gpa, &.{ dir, "scenario.txt" }) catch {
+    const path = Io.Dir.path.join(arena, &.{ dir, "scenario.txt" }) catch {
         _ = cli.outOfMemory(console);
         return false;
     };
-    defer gpa.free(path);
     if (!cli.writeFile(io, path, text.written(), console)) return false;
     console.info("Scenario dump written: {f}", .{Escaped{ .text = path }});
     return true;
 }
 
-fn writeTag(gpa: std.mem.Allocator, io: Io, samples: Samples, first: GpsTime, output_path: []const u8, console: Console) bool {
+fn writeTag(arena: std.mem.Allocator, io: Io, samples: Samples, first: GpsTime, output_path: []const u8, console: Console) bool {
     var buffer: [pharos_run.io.tag.max_len]u8 = undefined;
     const text = pharos_run.io.tag.text(&buffer, samples, first) orelse {
         console.warn("The .tag format has no {s} format: no tag file written", .{samples.format.name()});
         return true;
     };
-    const path = gpa.print("{s}.tag", .{output_path}) catch {
+    const path = arena.print("{s}.tag", .{output_path}) catch {
         _ = cli.outOfMemory(console);
         return false;
     };
-    defer gpa.free(path);
     if (!cli.writeFile(io, path, text, console)) return false;
     console.info("Tag written: {f}", .{Escaped{ .text = path }});
     return true;

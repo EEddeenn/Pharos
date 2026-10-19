@@ -5,5 +5,4 @@ pub const run = @import("capi/run.zig");
 comptime {
     _ = common;
     _ = run;
-    _ = convert;
 }

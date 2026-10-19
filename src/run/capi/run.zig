@@ -101,8 +101,7 @@ pub fn pharos_run_create(data: ?[*]const u8, len: usize, o: ?*const Options, out
         discard(r);
         return read;
     }
-    const m = &r.b.scenario;
-    const samples = m.samples orelse {
+    const samples = r.b.scenario.samples orelse {
         common.thread_error.set("the bundle has no samples block: nothing to generate", .{});
         discard(r);
         return .bundle;
@@ -151,7 +150,12 @@ pub fn pharos_run_pull(r: ?*Handle, buf: ?[*]u8, cap: usize, max_epochs: u32, ou
     h.err.begin();
     const o = out orelse return .arg;
     const bytes = (buf orelse return .arg)[0..cap];
-    const block = h.run.pull(bytes, max_epochs) catch |e| return pullFailed(h, e);
+    const block = h.run.pull(bytes, max_epochs) catch {
+        if (max_epochs == 0) {
+            h.err.set("max_epochs must be at least 1, got 0", .{});
+        } else h.err.set("the buffer must hold at least {d} bytes, one epoch, got {d}", .{ h.run.info.bytes_per_epoch, cap });
+        return .arg;
+    };
     for (block.applied, 0..) |a, i| h.applied[i] = .{ .epoch = a.epoch.ms, .command = capi.command.toC(a.command) };
     const status: Status = if (block.failed) |e| pullFailed(h, e) else if (block.epochs == 0) .end else .ok;
     o.* = .{
@@ -168,10 +172,7 @@ pub fn pharos_run_pull(r: ?*Handle, buf: ?[*]u8, cap: usize, max_epochs: u32, ou
 
 fn pullFailed(h: *Handle, e: engine.run.PullError) Status {
     const status: Status = switch (e) {
-        error.BufferTooSmall => {
-            h.err.set("max_epochs is 0 or the buffer holds no epoch of {d} bytes", .{h.run.info.bytes_per_epoch});
-            return .arg;
-        },
+        error.BufferTooSmall => unreachable,
         error.OutOfMemory => return nomem(&h.err),
         error.MessageSet, error.MissingEarthOrientation, error.MissingTimeOffset, error.MissingUtcParameters => |f| capi.failed(Status, f),
         error.Internal => .internal,
@@ -185,7 +186,7 @@ pub fn pharos_run_seek(r: ?*Handle, epoch: u64) callconv(.c) Status {
     h.err.begin();
     h.run.seek(.{ .ms = epoch }) catch |e| switch (e) {
         error.EpochOutOfRange => {
-            h.err.set("epoch {d} lies beyond the run's {d} epochs", .{ epoch, h.run.info.span.epochs });
+            h.err.set("epoch must be at most {d}, got {d}", .{ h.run.info.span.epochs, epoch });
             return .arg;
         },
         error.AdaptiveGain => {
@@ -231,15 +232,15 @@ pub fn pharos_run_manifest_json(r: ?*Handle, f: ?*const ManifestFields, buf: ?[*
     const h = r orelse return .arg;
     h.err.begin();
     const fields = if (f) |given| given.* else ManifestFields{};
-    inline for (.{ fields.start_time_iso, fields.run_id, fields.output_path }, .{ "start_time_iso", "run_id", "output_path" }) |value, name| {
-        if (!std.unicode.utf8ValidateSlice(span(value))) {
+    inline for (@typeInfo(ManifestFields).@"struct".field_names) |name| {
+        if (!std.unicode.utf8ValidateSlice(span(@field(fields, name)))) {
             h.err.set("{s} is not UTF-8", .{name});
             return .arg;
         }
     }
     var text: Io.Writer.Allocating = .init(allocator);
     defer text.deinit();
-    io.manifest.write(allocator, &text.writer, &h.b, h.run.info.samples, h.run.info.span, h.run.ionosphere(), h.run.generatedSignals(), h.run.entryEpoch(), h.run.total_bytes, .{
+    io.manifest.write(allocator, &text.writer, &h.b, h.run, .{
         .start_time = span(fields.start_time_iso),
         .run_id = span(fields.run_id),
         .file = span(fields.output_path),
@@ -295,8 +296,7 @@ pub fn pharos_run_error(r: ?*const Handle) callconv(.c) [*:0]const u8 {
 pub fn pharos_run_destroy(r: ?*Handle) callconv(.c) void {
     const h = r orelse return;
     h.run.destroy();
-    h.arena.deinit();
-    allocator.destroy(h);
+    discard(h);
 }
 
 comptime {

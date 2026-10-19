@@ -14,9 +14,33 @@ pub const Command = extern struct {
     use_default: u32 = 0,
 };
 
-pub fn decode(given: Command, err: *ErrorBuffer) ?command.Command {
-    return fromC(given) orelse {
-        err.set("malformed command", .{});
+pub fn decode(c: Command, err: *ErrorBuffer) ?command.Command {
+    const kind = defined(command.Kind, "kind", c.kind, err) orelse return null;
+    const action: command.Action = switch (kind) {
+        .noise_floor_dbm_hz => .{ .noise_floor_dbm_hz = c.value },
+        .elevation_mask => .{ .elevation_mask = core.constants.deg2rad(c.value) },
+        .signal_power => blk: {
+            const system = defined(types.System, "system", c.system, err) orelse return null;
+            const target: command.Target = if (c.svid == 0)
+                .{ .whole = system }
+            else
+                .{ .sat = types.SatId.fromPrn(system, c.svid) catch {
+                    err.set("a {s} svid must be at most {d}, got {d}", .{ system.displayName(), system.capacity(), c.svid });
+                    return null;
+                } };
+            const level: ?command.PowerLevel = if (c.use_default != 0) null else .{
+                .unit = defined(command.PowerUnit, "unit", c.unit, err) orelse return null,
+                .value = c.value,
+            };
+            break :blk .{ .signal_power = .{ .target = target, .level = level } };
+        },
+    };
+    return .{ .apply_at_epoch = c.apply_at_epoch, .action = action };
+}
+
+fn defined(comptime E: type, comptime name: []const u8, value: u32, err: *ErrorBuffer) ?E {
+    return std.enums.fromInt(E, value) orelse {
+        err.set(name ++ " must be from 0 to {d}, got {d}", .{ std.meta.tags(E).len - 1, value });
         return null;
     };
 }
@@ -27,27 +51,6 @@ pub fn rejected(comptime S: type, err: *ErrorBuffer, e: error{ InvalidValue, Epo
         error.EpochPassed => "the command's epoch has passed",
     }});
     return .arg;
-}
-
-fn fromC(c: Command) ?command.Command {
-    const kind = std.enums.fromInt(command.Kind, c.kind) orelse return null;
-    const action: command.Action = switch (kind) {
-        .noise_floor_dbm_hz => .{ .noise_floor_dbm_hz = c.value },
-        .elevation_mask => .{ .elevation_mask = core.constants.deg2rad(c.value) },
-        .signal_power => blk: {
-            const system = std.enums.fromInt(types.System, c.system) orelse return null;
-            const target: command.Target = if (c.svid == 0)
-                .{ .whole = system }
-            else
-                .{ .sat = types.SatId.fromPrn(system, c.svid) catch return null };
-            const level: ?command.PowerLevel = if (c.use_default != 0) null else .{
-                .unit = std.enums.fromInt(command.PowerUnit, c.unit) orelse return null,
-                .value = c.value,
-            };
-            break :blk .{ .signal_power = .{ .target = target, .level = level } };
-        },
-    };
-    return .{ .apply_at_epoch = c.apply_at_epoch, .action = action };
 }
 
 pub fn toC(c: command.Command) Command {
