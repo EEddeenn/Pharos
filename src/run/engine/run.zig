@@ -42,7 +42,7 @@ pub const Dumps = struct {
 const StepError = @import("channels.zig").Error;
 
 pub const CreateError = StepError || error{ThreadSpawnFailed};
-pub const PullError = StepError || error{BufferTooSmall};
+pub const PullError = StepError;
 pub const SeekError = StepError || error{ EpochOutOfRange, AdaptiveGain, CommandsApplied };
 
 const Reasoned = PullError || SeekError || error{ThreadSpawnFailed};
@@ -50,7 +50,6 @@ const Reasoned = PullError || SeekError || error{ThreadSpawnFailed};
 pub fn reason(e: Reasoned) []const u8 {
     return switch (e) {
         error.MissingEarthOrientation, error.MissingTimeOffset, error.MissingUtcParameters, error.MessageSet => |failure| messages.reason(failure),
-        error.BufferTooSmall => "the buffer holds no whole epoch, or no epoch was asked for",
         error.ThreadSpawnFailed => "a worker thread could not be started",
         error.EpochOutOfRange => "the epoch lies beyond the end of the run",
         error.AdaptiveGain => "the adaptive AGC depends on every epoch before the target",

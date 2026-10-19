@@ -172,7 +172,6 @@ pub fn pharos_run_pull(r: ?*Handle, buf: ?[*]u8, cap: usize, max_epochs: u32, ou
 
 fn pullFailed(h: *Handle, e: engine.run.PullError) Status {
     const status: Status = switch (e) {
-        error.BufferTooSmall => unreachable,
         error.OutOfMemory => return nomem(&h.err),
         error.MessageSet, error.MissingEarthOrientation, error.MissingTimeOffset, error.MissingUtcParameters => |f| capi.failed(Status, f),
         error.Internal => .internal,

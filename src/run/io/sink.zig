@@ -34,7 +34,7 @@ pub fn writeRun(gpa: std.mem.Allocator, io: Io, path: []const u8, run: *Run, con
     var k: usize = 0;
     const failed: ?PullError = while (true) {
         const slot = pulled[k * half ..][0..half];
-        const block = run.pull(slot, pull_epochs) catch |e| break e;
+        const block = run.pull(slot, pull_epochs) catch unreachable;
         if (writing) |*w| write_failed = w.await(io);
         writing = if (write_failed == null) io.async(writeBlock, .{ &writer, slot[0..block.bytes] }) else null;
         afterBlock(context, run, block);
