@@ -223,7 +223,7 @@ pub fn warnAssumed(s: *const model.Scenario, set: *const NavSet, p: *const Plan,
         }
         any = any or signals.count() != 0;
     }
-    if (any) try diags.warn(.no_record, "ephemeris", "no record flown gives the group delay of {f}: each is taken as 0 s, in the signals and in a precise product's clock shift", .{Assumed{ .timelines = p.timelines, .signals = &assumed }});
+    if (any) try diags.warn(.group_delay_assumed, "ephemeris", "no record flown gives the group delay of {f}: each is taken as 0 s, in the signals and in a precise product's clock shift", .{Assumed{ .timelines = p.timelines, .signals = &assumed }});
 }
 
 const Assumed = struct {

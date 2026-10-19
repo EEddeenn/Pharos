@@ -27,6 +27,7 @@ pub const Code = enum(u16) {
     no_record = 17,
     invalid_format = 18,
     io_error = 19,
+    group_delay_assumed = 20,
 };
 
 pub const Diagnostic = struct {
