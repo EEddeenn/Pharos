@@ -12,8 +12,11 @@ pub fn air(set: *const NavSet, binding: *const Binding, carried: *const gnss.pay
     switch (binding.reference) {
         .kepler => {
             const reference = binding.kepler(set).?;
-            // A signal the satellite does not transmit is read with the family its signal names.
-            const health = reference.attributesFor(family orelse gnss.spec.get(signal).family).signalStatus(signal);
+            const declared = if (reference.declaration(signal, family)) |extra| extra.signalStatus(signal) else .unstated;
+            const health: gnss.health.Status = switch (signal) {
+                .b1c, .b2a, .b2b => if (wholeSatelliteUnhealthy(reference)) .degraded else declared,
+                else => declared,
+            };
             const status: gnss.air.Status = if (!health.flies()) .dead else if (family == null) .not_allocated else .on_air;
             // The B2b that carries PPP-B2b has no group delay of its own: it flies at B3I's, the BDS clock reference.
             if (family == .ppp_b2b) return .{ .status = status, .health = health, .delay_s = .initFill(0), .origin = .convention };
@@ -35,6 +38,14 @@ pub fn air(set: *const NavSet, binding: *const Binding, carried: *const gnss.pay
             };
         },
     }
+}
+
+/// A B-CNAV record's HS states the health of the whole satellite (BDS-OS-PS 3.0 5.3.3.2): it flags every B-CNAV signal.
+fn wholeSatelliteUnhealthy(reference: gnss.reference.Kepler) bool {
+    inline for (.{ .bcnav1, .bcnav2, .bcnav3 }) |source| {
+        if (reference.attribute(source)) |extra| if (@field(extra, @tagName(source)).signalsBad()) return true;
+    }
+    return false;
 }
 
 fn origin(signal: types.Signal, delay: ?f64) gnss.air.Origin {

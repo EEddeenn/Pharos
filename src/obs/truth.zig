@@ -203,9 +203,10 @@ pub const Truth = struct {
         const scenario = &self.b.scenario;
         const sampled = scenario.samples != null;
         const configured = scenario.signals.contains(query.signal);
-        const broadcasts = self.payload.transmits(query.sat, query.signal);
+        const carrier = self.payload.familyOf(query.sat, query.signal);
+        const broadcasts = carrier != null;
         // A signal the satellite does not transmit is shown with the family its signal names.
-        const family = self.payload.familyOf(query.sat, query.signal) orelse gnss.spec.get(query.signal).family;
+        const family = carrier orelse gnss.spec.get(query.signal).family;
         const mask = self.maskAt(query.epoch);
         const satellite = try self.geometry.target(query.epoch, query.sat, mask);
         self.powerAt(query.epoch);
@@ -246,7 +247,7 @@ pub const Truth = struct {
                 break :fallback &local;
             };
             const state = if (query.includes(.model) and provider.current != null) provider.stateAt(t) else null;
-            const projected = inspect_values.model.project(self.b, provider, state, query.sat, query.signal, family, t, .{ .model = query.includes(.model), .navigation = query.includes(.navigation) });
+            const projected = inspect_values.model.project(self.b, provider, state, query.sat, query.signal, carrier, t, .{ .model = query.includes(.model), .navigation = query.includes(.navigation) });
             result.model = projected.model;
             result.navigation = projected.navigation;
         }

@@ -20,15 +20,7 @@ pub fn forSource(e: reference.Kepler, comptime source: records.NavSource) record
     }
 
     out.extra = e.attribute(source) orelse switch (e.record.extra) {
-        .inav => |x| blk: {
-            const e5a = x.e5a orelse galileo.E5aDeclaration{ .hs = 0, .dvs = false, .sisa_index = galileo.sisa_napa };
-            break :blk .{ .fnav = .{
-                .sisa_index = e5a.sisa_index,
-                .iod_nav = x.iod_nav,
-                .e5a_hs = e5a.hs,
-                .e5a_dvs = e5a.dvs,
-            } };
-        },
+        .inav => |x| .{ .fnav = .{ .sisa_index = galileo.sisa_napa, .iod_nav = x.iod_nav, .e5a_hs = 0, .e5a_dvs = false } },
         else => unreachable,
     };
     @field(out.extra, @tagName(source)).iod_nav = switch (e.record.extra) {

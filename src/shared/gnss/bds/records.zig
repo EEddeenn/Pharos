@@ -81,14 +81,15 @@ pub const BcnavExtra = struct {
     hs_b2a: bool,
     hs_b2b: bool,
 
+    /// SIF, the health of its own signal (BDS-OS-PS 3.0 5.3.3.2); HS describes the whole satellite.
     pub fn signalStatus(self: BcnavExtra, signal: types.Signal) health.Status {
-        const bad = switch (signal) {
-            .b1c => self.hs_b1c,
-            .b2a => self.hs_b2a,
-            .b2b => self.hs_b2b,
-            else => return .unstated,
-        };
-        return health.flagged(bad);
+        const flags = switch (signal) {
+            .b1c => self.b1c,
+            .b2a => self.b2a,
+            .b2b => self.b2b,
+            else => null,
+        } orelse return .unstated;
+        return health.flagged(flags.sif);
     }
 
     pub fn healthy(_: BcnavExtra) bool {

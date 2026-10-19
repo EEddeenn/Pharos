@@ -1,4 +1,3 @@
-const std = @import("std");
 const types = @import("../core.zig").types;
 const records = @import("records.zig");
 
@@ -44,12 +43,30 @@ pub const Kepler = struct {
         return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), signal, component);
     }
 
-    pub fn attributesFor(self: Kepler, family: types.NavFamily) records.SourceExtra {
-        inline for (std.meta.tags(records.NavSource)) |source| {
-            if (family == source.family()) {
-                if (self.attribute(source)) |attributes| return attributes;
-            }
+    /// The record whose declaration gives a signal's health on the leg: the first in the signal's order that states the
+    /// signal's condition; the record of the family carrying the signal ends the search even where it states nothing.
+    pub fn declaration(self: Kepler, signal: types.Signal, carrier: ?types.NavFamily) ?records.SourceExtra {
+        for (healthOrder(signal)) |source| {
+            const extra = self.attribute(source) orelse continue;
+            if (source.family() == carrier or extra.signalStatus(signal) != .unstated) return extra;
         }
-        return self.record.extra;
+        return null;
     }
 };
+
+/// The families that declare a signal's health, in the order they are read: the signal's own first (IS-GPS-200N
+/// 6.4.6.1, SPS PS 2.3.2, BDS-OS-PS 3.0 5.3.3.2), but B-CNAV2's SIF(B1C) before B-CNAV1, as BDS-OS-PS 3.0 recommends.
+fn healthOrder(signal: types.Signal) []const records.NavSource {
+    return switch (signal) {
+        .l1ca => &.{ .lnav, .cnav },
+        .l1c => &.{ .cnav2, .cnav, .lnav },
+        .l2c, .l5 => &.{ .cnav, .lnav },
+        .b1i, .b2i, .b3i => &.{.d1d2},
+        .b1c => &.{ .bcnav2, .bcnav1, .d1d2 },
+        .b2a => &.{ .bcnav2, .d1d2 },
+        .b2b => &.{ .bcnav3, .d1d2 },
+        .e1, .e5b => &.{.inav},
+        .e5a => &.{.fnav},
+        .e6, .g1, .g2 => &.{},
+    };
+}

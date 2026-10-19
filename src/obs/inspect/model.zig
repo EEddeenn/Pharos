@@ -123,13 +123,13 @@ pub const Model = struct {
 pub const Health = struct {
     status: gnss.health.Status,
     serves_signal: bool,
-    family: types.NavFamily,
+    family: ?types.NavFamily,
 };
 
 pub const Accuracy = struct {
     availability: Availability = .available,
     reason: ?value.Reason = null,
-    family: types.NavFamily,
+    family: ?types.NavFamily = null,
     ura_index: ?u4 = null,
     ura_ed_index: ?i5 = null,
     ura_ned0_index: ?i5 = null,
@@ -233,10 +233,10 @@ pub const Navigation = struct {
 pub const Needs = struct { model: bool, navigation: bool };
 pub const Result = struct { model: ?Model = null, navigation: ?Navigation = null };
 
-pub fn project(b: *const bundle.Bundle, ephemeris: *const provider.Track, state: ?provider.State, sat: types.SatId, signal: types.Signal, family: types.NavFamily, t: GpsTime, needs: Needs) Result {
+pub fn project(b: *const bundle.Bundle, ephemeris: *const provider.Track, state: ?provider.State, sat: types.SatId, signal: types.Signal, carrier: ?types.NavFamily, t: GpsTime, needs: Needs) Result {
     return .{
         .model = if (needs.model) modelValue(b, ephemeris, state, sat, signal, t) else null,
-        .navigation = if (needs.navigation) if (ephemeris.current) |current| navigation(current, signal, family) else .{ .availability = .unavailable, .reason = .no_available_record } else null,
+        .navigation = if (needs.navigation) if (ephemeris.current) |current| navigation(current, signal, carrier) else .{ .availability = .unavailable, .reason = .no_available_record } else null,
     };
 }
 
@@ -308,19 +308,19 @@ fn ionosphere(configuration: bundle.ionosphere.Configuration, system: types.Syst
     return out;
 }
 
-fn navigation(current: shared.track.selection.Selection, signal: types.Signal, family: types.NavFamily) Navigation {
+fn navigation(current: shared.track.selection.Selection, signal: types.Signal, carrier: ?types.NavFamily) Navigation {
     const row = current.air[gnss.spec.slot(signal)];
     // The record's own reasons alone: the allocation is the channel's `broadcasts`.
     const serves = row.status == .on_air or row.status == .not_allocated;
     return switch (current.record) {
         .kepler => |reference| blk: {
-            const attributes = reference.attributesFor(family);
+            const declared = reference.declaration(signal, carrier);
             break :blk .{
                 .availability = .available,
                 .family = reference.record.source().family(),
                 .kepler = .of(reference),
-                .health = .{ .status = row.health, .serves_signal = serves, .family = @as(gnss.records.NavSource, attributes).family() },
-                .accuracy = accuracy(attributes, signal),
+                .health = .{ .status = row.health, .serves_signal = serves, .family = if (declared) |extra| @as(gnss.records.NavSource, extra).family() else null },
+                .accuracy = if (declared) |extra| accuracy(extra) else .{ .availability = .unavailable, .reason = .accuracy_not_stated },
             };
         },
         .glonass => |g| .{
@@ -333,7 +333,7 @@ fn navigation(current: shared.track.selection.Selection, signal: types.Signal, f
     };
 }
 
-fn accuracy(attributes: gnss.records.SourceExtra, signal: types.Signal) Accuracy {
+fn accuracy(attributes: gnss.records.SourceExtra) Accuracy {
     var out: Accuracy = .{ .family = @as(gnss.records.NavSource, attributes).family() };
     switch (attributes) {
         inline .lnav, .d1d2 => |a| out.ura_index = a.ura_index,
@@ -343,17 +343,7 @@ fn accuracy(attributes: gnss.records.SourceExtra, signal: types.Signal) Accuracy
             out.ura_ned1_index = a.ura.ned1;
             out.ura_ned2_index = a.ura.ned2;
         },
-        .inav => |a| {
-            if (signal == .e5a) {
-                if (a.e5a) |declaration| {
-                    out.sisa_index = declaration.sisa_index;
-                } else {
-                    out.availability = .unavailable;
-                    out.reason = .accuracy_not_stated_for_signal;
-                }
-            } else out.sisa_index = a.sisa_index;
-        },
-        .fnav => |a| out.sisa_index = a.sisa_index,
+        inline .inav, .fnav => |a| out.sisa_index = a.sisa_index,
         .bcnav1, .bcnav2, .bcnav3 => |a| {
             out.sismai_index = a.sismai;
             out.sisai_oe_index = a.sisai_oe;

@@ -14,16 +14,6 @@ pub fn sisaIndex(meters: f64) u8 {
     return @intCast(@divTrunc(cm - 200, 16) + 100);
 }
 
-pub const E5aDeclaration = struct {
-    hs: u2,
-    dvs: bool,
-    sisa_index: u8,
-
-    fn status(self: E5aDeclaration) health.Status {
-        return statusOf(self.hs, self.dvs);
-    }
-};
-
 fn signalUsable(hs: u2, dvs: bool) bool {
     return hs == 0 and !dvs;
 }
@@ -41,7 +31,6 @@ pub const InavExtra = struct {
     e5b_hs: u2,
     e1b_dvs: bool,
     e5b_dvs: bool,
-    e5a: ?E5aDeclaration = null,
 
     pub const almanac_health_bits: u9 = 0b001111;
 
@@ -60,7 +49,6 @@ pub const InavExtra = struct {
         return switch (signal) {
             .e1 => statusOf(self.e1b_hs, self.e1b_dvs),
             .e5b => statusOf(self.e5b_hs, self.e5b_dvs),
-            .e5a => if (self.e5a) |d| d.status() else .ok,
             else => .unstated,
         };
     }
@@ -89,9 +77,5 @@ pub const FnavExtra = struct {
 
     pub fn almanacHealth(self: FnavExtra) u9 {
         return @as(u9, self.e5a_hs) << 4;
-    }
-
-    pub fn declaration(self: FnavExtra) E5aDeclaration {
-        return .{ .hs = self.e5a_hs, .dvs = self.e5a_dvs, .sisa_index = self.sisa_index };
     }
 };

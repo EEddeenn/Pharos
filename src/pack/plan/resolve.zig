@@ -57,9 +57,6 @@ pub fn attributesAt(set: *const NavSet, e: *const records.KeplerEphemeris, t: Gp
         }
         if (latest) |donor| out.put(attributes(e, donor));
     }
-    if (out.inav) |*inav| {
-        if (out.fnav) |fnav| inav.e5a = fnav.declaration();
-    }
     return out;
 }
 
@@ -126,13 +123,7 @@ fn attributes(e: *const records.KeplerEphemeris, donor: *const records.KeplerEph
         },
         .cnav => |*x| x.ura = gpsUra(e),
         .cnav2 => |*x| x.ura = gpsUra(e),
-        .inav => |*x| {
-            const issue = galileoIssue(e);
-            if (!e.toe.eql(donor.toe) or x.iod_nav != issue) x.sisa_index = gnss.galileo.records.sisa_napa;
-            x.iod_nav = issue;
-            x.e5a = null;
-        },
-        .fnav => |*x| {
+        inline .inav, .fnav => |*x| {
             const issue = galileoIssue(e);
             if (!e.toe.eql(donor.toe) or x.iod_nav != issue) x.sisa_index = gnss.galileo.records.sisa_napa;
             x.iod_nav = issue;

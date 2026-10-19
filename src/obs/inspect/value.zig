@@ -21,7 +21,6 @@ pub const Reason = enum {
     system_not_enabled,
     ionosphere_disabled,
     accuracy_not_stated,
-    accuracy_not_stated_for_signal,
     no_active_publication,
     publication_not_yet_valid,
     publication_expired,

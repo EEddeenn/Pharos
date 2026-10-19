@@ -35,13 +35,14 @@ fn componentsOf(code: u5) Components {
         0b00011 => allComponents(.degraded),
         0b00100, 0b00101, 0b00110 => .{ .l1 = .degraded },
         0b00111, 0b01000, 0b01001 => .{ .l2 = .degraded },
-        0b01010, 0b01100 => .{ .l1 = .degraded, .l1c = .degraded },
-        0b01011 => .{ .l1 = .degraded, .l1c = .dead },
+        // Table 20-VIII's "L1 C" is L1 C/A: ICD-GPS-200C wrote it before L1C existed.
+        0b01010, 0b01100 => .{ .l1 = .degraded, .l1ca = .degraded },
+        0b01011 => .{ .l1 = .degraded, .l1ca = .dead },
         0b01101, 0b01111 => .{ .l2 = .degraded, .l2c = .degraded },
         0b01110 => .{ .l2 = .degraded, .l2c = .dead },
         0b10000, 0b10001, 0b10010 => .{ .l1 = .degraded, .l2 = .degraded },
-        0b10011, 0b10101 => .{ .l1 = .degraded, .l2 = .degraded, .l1c = .degraded, .l2c = .degraded },
-        0b10100 => .{ .l1 = .degraded, .l2 = .degraded, .l1c = .dead, .l2c = .dead },
+        0b10011, 0b10101 => .{ .l1 = .degraded, .l2 = .degraded, .l1ca = .degraded, .l2c = .degraded },
+        0b10100 => .{ .l1 = .degraded, .l2 = .degraded, .l1ca = .dead, .l2c = .dead },
         0b10110, 0b11000 => .{ .l1 = .degraded, .l1ca = .degraded, .l1c = .degraded },
         0b10111 => .{ .l1 = .dead, .l1ca = .dead, .l1c = .dead },
         0b11001, 0b11011 => .{ .l2 = .degraded, .l2c = .degraded },
@@ -117,7 +118,8 @@ pub const CnavExtra = struct {
 
     pub fn signalStatus(self: CnavExtra, signal: types.Signal) Status {
         const bad = switch (signal) {
-            .l1ca, .l1c => self.l1_health,
+            // The L1 bit speaks for L1 C/A and L1C at second hand (SPS PS 2.3.2.1 note 4): 0 says some code is OK.
+            .l1ca, .l1c => return if (self.l1_health) .degraded else .unstated,
             .l2c => self.l2_health,
             .l5 => self.l5_health,
             else => return .unstated,
@@ -154,8 +156,9 @@ pub const Cnav2Extra = struct {
         return true;
     }
 
-    pub fn almanacHealth(self: Cnav2Extra) u9 {
-        return if (self.l1_health) 0b01011 else 0;
+    // Table 20-VIII has no code for L1C alone.
+    pub fn almanacHealth(_: Cnav2Extra) u9 {
+        return 0;
     }
 };
 
