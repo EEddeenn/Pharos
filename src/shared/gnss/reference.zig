@@ -41,7 +41,7 @@ pub const Kepler = struct {
     }
 
     pub fn delay(self: Kepler, signal: types.Signal, component: types.Component) ?f64 {
-        return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), self.record.sat.prn(), signal, component);
+        return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), signal, component);
     }
 
     pub fn attributesFor(self: Kepler, family: types.NavFamily) records.SourceExtra {

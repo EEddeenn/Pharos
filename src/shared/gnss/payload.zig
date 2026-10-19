@@ -3,6 +3,7 @@ const types = @import("../core.zig").types;
 const GpsTime = @import("../core.zig").time.GpsTime;
 const spec = @import("spec.zig");
 const allocation = @import("allocation.zig");
+const bds_records = @import("bds/records.zig");
 
 const Signal = types.Signal;
 const SatId = types.SatId;
@@ -14,6 +15,11 @@ pub const Carried = std.EnumArray(Signal, ?NavFamily);
 pub fn familyAt(sat: SatId, signal: Signal, t: GpsTime) ?NavFamily {
     if (!allocation.transmits(sat, signal, t)) return null;
     return spec.get(signal).family;
+}
+
+/// PPP-B2b is the B2b message of the BDS GEO satellites: a GEO satellite carries it where it transmits B2b.
+pub fn pppB2b(sat: SatId, carried: *const Carried) bool {
+    return carried.get(.b2b) != null and bds_records.isGeo(sat.prn());
 }
 
 /// What each satellite transmits, frozen at the run start as the allocation is: the one answer to which family carries

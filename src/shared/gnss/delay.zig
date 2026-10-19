@@ -7,7 +7,6 @@ const gps = @import("gps/delay.zig");
 const bds = @import("bds/delay.zig");
 const galileo = @import("galileo/delay.zig");
 const glonass = @import("glonass/delay.zig");
-const bds_allocation = @import("bds/allocation.zig");
 
 const carrier_component: Component = .data;
 
@@ -17,11 +16,11 @@ pub fn carrierCode(signal: types.Signal) Code {
     return .{ .signal = spec.get(signal).carrierSignal(), .component = carrier_component };
 }
 
-pub fn forGroupDelays(group_delay: *const records.GroupDelays, source: records.NavSource, prn: u8, signal: types.Signal, component: Component) ?f64 {
+pub fn forGroupDelays(group_delay: *const records.GroupDelays, source: records.NavSource, signal: types.Signal, component: Component) ?f64 {
     if (source.system() != signal.system()) return null;
     return switch (signal.system()) {
         .gps => gps.forGroupDelays(group_delay, signal, component),
-        .bds => bds.forGroupDelays(group_delay, prn, signal, component),
+        .bds => bds.forGroupDelays(group_delay, signal, component),
         .gal => galileo.forGroupDelays(group_delay, source, signal),
         .glo => null,
     };
@@ -32,11 +31,10 @@ pub fn forGlonass(group_delay: *const records.GroupDelays, signal: types.Signal)
 }
 
 /// The delays a system sets by convention, not by its records: B3I and G1 are the BDS and GLONASS clock references,
-/// E6 is taken at E1/E5a's, and the B2b of a satellite carrying PPP-B2b at B3I's.
-pub fn convention(prn: u8, signal: types.Signal) bool {
+/// and E6 is taken at E1/E5a's.
+pub fn convention(signal: types.Signal) bool {
     return switch (signal) {
         .b3i, .e6, .g1 => true,
-        .b2b => bds_allocation.carriesPppB2b(prn),
         else => false,
     };
 }

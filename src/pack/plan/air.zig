@@ -12,32 +12,34 @@ pub fn air(set: *const NavSet, binding: *const Binding, carried: *const gnss.pay
     switch (binding.reference) {
         .kepler => {
             const reference = binding.kepler(set).?;
-            const data = reference.delay(signal, .data);
             // A signal the satellite does not transmit is read with the family its signal names.
             const health = reference.attributesFor(family orelse gnss.spec.get(signal).family).signalStatus(signal);
+            const status: gnss.air.Status = if (!health.flies()) .dead else if (family == null) .not_allocated else .on_air;
+            // The B2b that carries PPP-B2b has no group delay of its own: it flies at B3I's, the BDS clock reference.
+            if (signal == .b2b and gnss.payload.pppB2b(reference.record.sat, carried)) return .{ .status = status, .health = health, .delay_s = .initFill(0), .origin = .convention };
+            const data = reference.delay(signal, .data);
             return .{
-                .status = if (!health.flies()) .dead else if (family == null) .not_allocated else .on_air,
+                .status = status,
                 .health = health,
                 .delay_s = .init(.{ .data = data orelse 0, .pilot = reference.delay(signal, .pilot) orelse 0 }),
-                .origin = origin(reference.record.sat, signal, data),
+                .origin = origin(signal, data),
             };
         },
         .glonass => |i| {
-            const g = &set.glonass[i];
             const delay = gnss.delay.forGlonass(&binding.group_delay, signal);
             return .{
                 .status = if (family == null) .not_allocated else .on_air,
-                .health = gnss.health.flagged(!g.health),
+                .health = gnss.health.flagged(!set.glonass[i].health),
                 .delay_s = .initFill(delay orelse 0),
-                .origin = origin(g.sat, signal, delay),
+                .origin = origin(signal, delay),
             };
         },
     }
 }
 
-fn origin(sat: types.SatId, signal: types.Signal, delay: ?f64) gnss.air.Origin {
+fn origin(signal: types.Signal, delay: ?f64) gnss.air.Origin {
     if (delay == null) return .assumed;
-    return if (gnss.delay.convention(sat.prn(), signal)) .convention else .broadcast;
+    return if (gnss.delay.convention(signal)) .convention else .broadcast;
 }
 
 pub fn rows(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, binding: *const Binding, carried: *const gnss.payload.Carried) std.mem.Allocator.Error![]const Row {

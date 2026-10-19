@@ -328,7 +328,7 @@ fn publications(arena: std.mem.Allocator, b: *const bundle.Bundle, prepared: mes
     return out;
 }
 
-fn serviceValue(b: *const bundle.Bundle, sat: SatId, signal: Signal, family: NavFamily, sampled: bool, publication_enabled: bool) Service {
+fn serviceValue(b: *const bundle.Bundle, payload: *const gnss.payload.Payload, sat: SatId, signal: Signal, family: NavFamily, sampled: bool, publication_enabled: bool) Service {
     var out: Service = .{};
     if (signal == .e6) {
         out.kind = .has;
@@ -338,7 +338,7 @@ fn serviceValue(b: *const bundle.Bundle, sat: SatId, signal: Signal, family: Nav
             out.clockIntervalS = h.clock_interval_s;
             out.orbitIntervalS = h.orbit_interval_s;
         }
-    } else if (signal == .b2b and gnss.bds.allocation.carriesPppB2b(sat.prn())) {
+    } else if (signal == .b2b and gnss.payload.pppB2b(sat, payload.of(sat))) {
         out.kind = .ppp_b2b;
         if (b.scenario.ppp_b2b) |s| {
             out.enabled = true;
@@ -377,7 +377,7 @@ fn servicePublication(prepared: messages.Messages, sat: SatId, family: NavFamily
 pub fn project(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, prepared: messages.Messages, set: ?messages.MessageSet, boundary: GpsTime, until: GpsTime, query_time: GpsTime, sat: SatId, signal: Signal, family: NavFamily, sampled: bool, needs: Needs) error{OutOfMemory}!Result {
     return .{
         .messages = if (needs.messages) try projectMessages(arena, b, payload, prepared, set, boundary, until, query_time, sat, signal, family, sampled) else null,
-        .service = if (needs.service) serviceValue(b, sat, signal, family, sampled, sampled and b.scenario.signals.contains(signal) and servicePublication(prepared, sat, family, query_time)) else null,
+        .service = if (needs.service) serviceValue(b, payload, sat, signal, family, sampled, sampled and b.scenario.signals.contains(signal) and servicePublication(prepared, sat, family, query_time)) else null,
     };
 }
 
@@ -524,7 +524,7 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                     } };
                 },
                 .bcnav1, .bcnav2, .bcnav3 => {
-                    if (f == .bcnav3 and gnss.bds.allocation.carriesPppB2b(sat.prn())) {
+                    if (f == .bcnav3 and gnss.payload.pppB2b(sat, payload.of(sat))) {
                         out.availability = .not_applicable;
                         out.reason = .service_only;
                         return out;

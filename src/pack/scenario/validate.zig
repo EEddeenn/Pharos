@@ -218,9 +218,10 @@ fn allMasked(s: *const Request, system: core.types.System) bool {
 
 fn pppCarriersMasked(s: *const Request) bool {
     const masked = s.mask_out.get(.bds);
+    const payload = gnss.payload.at(s.start);
     var sats = core.types.System.bds.satellites();
     while (sats.next()) |sat| {
-        if (gnss.bds.allocation.carriesPppB2b(sat.prn()) and gnss.allocation.transmits(sat, .b2b, s.start) and !masked.contains(sat)) return false;
+        if (gnss.payload.pppB2b(sat, payload.of(sat)) and !masked.contains(sat)) return false;
     }
     return true;
 }

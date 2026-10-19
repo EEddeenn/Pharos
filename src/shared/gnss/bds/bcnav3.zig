@@ -1,7 +1,7 @@
 const time = @import("../../core.zig").time;
 const field = @import("../../codec.zig").field;
 const bcnav = @import("bcnav.zig");
-const allocation = @import("allocation.zig");
+const records = @import("records.zig");
 const ppp_b2b = @import("ppp_b2b.zig");
 const content = @import("bcnav3/content.zig");
 const coding = @import("bcnav3/coding.zig");
@@ -38,7 +38,7 @@ pub const Set = struct {
         var first: ?u8 = null;
         for (&data.sv, 1..) |*entry, number| {
             const prn: u8 = @intCast(number);
-            if (entry.* == null or allocation.carriesPppB2b(prn)) continue;
+            if (entry.* == null or records.isGeo(prn)) continue;
             if (first == null) first = prn;
             if (data.eop != null and data.utc != null) _ = try messageBits(self, prn, .{ .kind = .clock, .sow = 0, .wn = 0, .prns = @splat(0) });
         }
@@ -47,7 +47,7 @@ pub const Set = struct {
     }
 
     pub fn hasRecord(self: *const Set, prn: u8) bool {
-        return allocation.carriesPppB2b(prn) or (self.data.hasRecord(prn) and self.data.eop != null and self.data.utc != null);
+        return records.isGeo(prn) or (self.data.hasRecord(prn) and self.data.eop != null and self.data.utc != null);
     }
 };
 
@@ -70,7 +70,7 @@ fn slot(index: i64) Slot {
 }
 
 pub fn setCycle(prn: u8, index: i64) i64 {
-    return if (allocation.carriesPppB2b(prn)) index else @divFloor(index, order.len);
+    return if (records.isGeo(prn)) index else @divFloor(index, order.len);
 }
 
 fn almanacPrns(sow: u20) [6]u7 {
@@ -103,7 +103,7 @@ pub fn requireData(set: *const Set, prn: u8) error{ MissingEarthOrientation, Mis
 
 pub fn buildFrame(set: *const Set, prn: u8, index: i64) ?Frame {
     if (!set.hasRecord(prn)) return null;
-    if (allocation.carriesPppB2b(prn)) {
+    if (records.isGeo(prn)) {
         if (set.ppp_b2b) |source| if (source.frame(prn, index)) |f| return f;
         return encodePppFrame(&ppp_b2b.null_message, prn, false);
     }

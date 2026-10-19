@@ -63,7 +63,3 @@ fn change(prn: u8) time.GpsTime {
 pub fn signalsAt(prn: u8, t: time.GpsTime) Signals {
     return if (t.lessThan(change(prn))) before(prn) else after(prn);
 }
-
-pub fn carriesPppB2b(prn: u8) bool {
-    return records.isGeo(prn);
-}
