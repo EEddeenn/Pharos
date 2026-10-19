@@ -104,11 +104,11 @@ pub fn positionJet(pos: core.coord.Ecef, vel: core.coord.Ecef, acc: core.coord.E
     };
 }
 
-fn dot(a: Vector, b: Vector) Jet {
+pub fn dot(a: Vector, b: Vector) Jet {
     return a[0].mul(b[0]).add(a[1].mul(b[1])).add(a[2].mul(b[2]));
 }
 
-fn unit(v: Vector) Vector {
+pub fn unit(v: Vector) Vector {
     const magnitude = dot(v, v).sqrt();
     return .{ v[0].div(magnitude), v[1].div(magnitude), v[2].div(magnitude) };
 }
@@ -174,8 +174,12 @@ fn courseDeg(rad: f64) f64 {
     return if (wrapped >= 360) 0 else wrapped + 0;
 }
 
+/// The horizontal speed below which a velocity has no direction of travel: under a millimetre a second the direction
+/// is the rounding of the velocity, not a direction.
+const moving_mps = 1e-3;
+
 /// A state of the path read in its local frame. The quantities of the direction of travel are null where the
-/// horizontal velocity is nothing: there they have no value.
+/// horizontal speed is below `moving_mps`: there they have no value.
 pub const Reading = struct {
     altitude_m: f64,
     climb_mps: f64,
@@ -202,7 +206,8 @@ pub const Reading = struct {
             .ellipsoid => frame.height,
             .egm96 => frame.height.sub(core.geoid.Evaluator(Jet, Jet.Arithmetic).height(frame.up)),
         };
-        const moving = east.value != 0 or north.value != 0;
+        const horizontal = std.math.hypot(east.value, north.value);
+        const moving = horizontal >= moving_mps;
         const heading = Jet.atan2(east, north);
         const trig = heading.sinCos();
         const forward = east.mul(trig.sine).add(north.mul(trig.cosine));
@@ -210,14 +215,19 @@ pub const Reading = struct {
             .altitude_m = height.value,
             .climb_mps = height.first,
             .speed_mps = state.vel.norm(),
-            .horizontal_speed_mps = std.math.hypot(east.value, north.value),
+            .horizontal_speed_mps = horizontal,
             .acceleration_mps2 = state.acc.norm(),
             .jerk_mps3 = state.jerk.norm(),
             .course_deg = if (moving) courseDeg(heading.value) else null,
-            .turn_rate_degps = if (moving) constants.rad2deg(heading.first) else null,
-            .forward_acceleration_mps2 = if (moving) forward.first else null,
-            .forward_jerk_mps3 = if (moving) forward.second else null,
-            .lateral_acceleration_mps2 = if (moving) east.first * trig.cosine.value - north.first * trig.sine.value else null,
+            .turn_rate_degps = if (moving) finite(constants.rad2deg(heading.first)) else null,
+            .forward_acceleration_mps2 = if (moving) finite(forward.first) else null,
+            .forward_jerk_mps3 = if (moving) finite(forward.second) else null,
+            .lateral_acceleration_mps2 = if (moving) finite(east.first * trig.cosine.value - north.first * trig.sine.value) else null,
         };
     }
 };
+
+/// A rate of a path far outside the receiver's domain can overflow: it then has no value.
+fn finite(x: f64) ?f64 {
+    return if (std.math.isFinite(x)) x else null;
+}

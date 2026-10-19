@@ -38,6 +38,7 @@ const hermite_max_e3: f64 = 5.7736;
 const hermite_max_e4: f64 = 3.9403;
 
 pub fn reason(e: Error) []const u8 {
+    const radii = std.fmt.comptimePrint("from {d} to {d} m", .{ min_radius_m, max_radius_m });
     return switch (e) {
         error.NoKnots => "no knot",
         error.FirstKnotNotAtZero => "the first knot is not at 0 s",
@@ -45,11 +46,11 @@ pub fn reason(e: Error) []const u8 {
         error.TimeGoesBack => "a time goes back",
         error.TimeGivenThrice => "three knots share a time",
         error.PositionJump => "two knots at one time are at different positions",
-        error.TooLong => "a time exceeds 10^7 s",
-        error.PositionOutOfRange => "a position lies outside 6350 km to 200000 km from the geocentre",
+        error.TooLong => std.fmt.comptimePrint("a time must be at most {d} s", .{max_duration_s}),
+        error.PositionOutOfRange => "a position's distance from the geocentre must be " ++ radii,
         error.SpeedOutOfRange => "a speed exceeds 20000 m/s",
         error.AccelerationOutOfRange => "an acceleration exceeds 1000 m/s^2",
-        error.PathOutOfRange => "the path from the previous knot may leave the position, speed or acceleration range",
+        error.PathOutOfRange => std.fmt.comptimePrint("the path from the knot before may leave a distance from the geocentre {s}, a speed of at most {d} m/s or an acceleration of at most {d} m/s^2", .{ radii, max_speed_mps, max_acceleration_mps2 }),
     };
 }
 

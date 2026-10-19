@@ -161,7 +161,10 @@ pub const Object = struct {
 };
 
 pub fn unknownKey(ctx: *const Ctx, path: []const u8, takes: ?[]const u8) Error!void {
-    if (takes) |keys| return ctx.diags.err(.unknown_key, path, "unknown key; the keys here are {s}", .{keys});
+    if (takes) |keys| {
+        if (keys.len == 0) return ctx.diags.err(.unknown_key, path, "unknown key; this object takes no key", .{});
+        return ctx.diags.err(.unknown_key, path, "unknown key; the keys here are {s}", .{keys});
+    }
     try ctx.diags.err(.unknown_key, path, "unknown key", .{});
 }
 

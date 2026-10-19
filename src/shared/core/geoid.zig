@@ -177,8 +177,12 @@ pub const Cell = struct {
         var value: [4]f64 = undefined;
         var slope: [4]f64 = undefined;
         var curvature: [4]f64 = undefined;
+        // The longitude from the window's first post, the nearer way round the meridian (a point read from a cell
+        // it borders, across longitude 0, is a step or two from the window, not 1438).
+        const dx = g.x - @as(f64, @floatFromInt(self.west));
+        const local = dx - columns * @round((dx - 1.5) / columns);
         for (self.posts, 0..) |row, k| {
-            const s = spline(row, g.x - @as(f64, @floatFromInt(self.west)));
+            const s = spline(row, local);
             value[k] = s.value;
             slope[k] = s.slope;
             curvature[k] = s.curvature;

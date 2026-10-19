@@ -47,25 +47,33 @@ fn build(allocator: std.mem.Allocator, arena: std.mem.Allocator, io: Io, args: a
     return save(io, arena, traj, args.output orelse try cli.withExtension(arena, args.input, "pht"), console);
 }
 
-const latitude_range = std.fmt.comptimePrint("a latitude from {d} to {d} degrees", .{ pharos_traj.static.latitude_range.min, pharos_traj.static.latitude_range.max });
-const longitude_range = std.fmt.comptimePrint("a longitude from {d} to {d} degrees", .{ pharos_traj.static.longitude_range.min, pharos_traj.static.longitude_range.max });
-const position_range = std.fmt.comptimePrint("a position from {d} to {d} m from the geocentre", .{ trajectory.min_radius_m, trajectory.max_radius_m });
+const latitude_range = std.fmt.comptimePrint("from {d} to {d} degrees", .{ pharos_traj.static.latitude_range.min, pharos_traj.static.latitude_range.max });
+const longitude_range = std.fmt.comptimePrint("from {d} to {d} degrees", .{ pharos_traj.static.longitude_range.min, pharos_traj.static.longitude_range.max });
+const position_range = std.fmt.comptimePrint("from {d} to {d} m from the geocentre", .{ trajectory.min_radius_m, trajectory.max_radius_m });
 const duration_range = std.fmt.comptimePrint("from {d} to {d} seconds", .{ pharos_traj.static.duration_range.min, pharos_traj.static.duration_range.max });
 
 fn static(arena: std.mem.Allocator, io: Io, args: args_mod.Static, console: Console) Error!u8 {
     const traj = pharos_traj.static.build(arena, args.name orelse "", args.at.value, args.duration_s.value) catch |e| {
+        const at = args.at.found;
         const duration = args.duration_s.found;
         const refusal: cli.Refusal = switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.LatitudeOutOfRange => args.at.found.expects(latitude_range),
-            error.LongitudeOutOfRange => args.at.found.expects(longitude_range),
-            error.PositionOutOfRange => args.at.found.expects(position_range),
+            error.LatitudeOutOfRange => .{ .outside = .{ .option = try arena.print("{s}'s latitude", .{at.spelling}), .range = latitude_range, .got = part(at.value, 0) } },
+            error.LongitudeOutOfRange => .{ .outside = .{ .option = try arena.print("{s}'s longitude", .{at.spelling}), .range = longitude_range, .got = part(at.value, 1) } },
+            error.PositionOutOfRange => .{ .outside = .{ .option = try arena.print("{s}'s position", .{at.spelling}), .range = position_range, .got = at.value } },
             error.DurationOutOfRange => .{ .outside = .{ .option = duration.spelling, .range = duration_range, .got = duration.value } },
         };
         console.fail("{f}", .{refusal});
         return 1;
     };
     return save(io, arena, traj, args.output, console);
+}
+
+/// One number of an option's comma-separated three, as it was given.
+fn part(text: []const u8, index: usize) []const u8 {
+    var parts = std.mem.splitScalar(u8, text, ',');
+    for (0..index) |_| _ = parts.next();
+    return parts.next().?;
 }
 
 fn info(arena: std.mem.Allocator, io: Io, input: []const u8, console: Console) Error!u8 {

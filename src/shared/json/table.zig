@@ -175,7 +175,7 @@ fn keyNames(comptime Raw: type) []const u8 {
     comptime {
         var out: []const u8 = "";
         for (Raw.table, 0..) |key, i| out = out ++ (if (i == 0) "" else ", ") ++ key.name;
-        return if (out.len == 0) "none" else out;
+        return out;
     }
 }
 

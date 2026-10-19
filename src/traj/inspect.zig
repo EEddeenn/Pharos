@@ -74,13 +74,14 @@ pub fn of(arena: std.mem.Allocator, built: source.Result, sample_count: usize) E
 
     const events = try arena.alloc(Event, built.plan.events.len);
     for (built.plan.events, events) |event, *out| {
-        // Every event is at a knot.
-        const knot = knots[std.sort.partitionPoint(Knot, knots, event.time, before)];
+        const time = if (event.segment) |s| if (event.visit) |v| built.plan.segments[s].motion.through.visits[v].time else built.ends[s] else 0;
+        // Every event is at a knot: where two share its time, the one the segment before ends at.
+        const knot = knots[std.sort.partitionPoint(Knot, knots, time, before)];
         const lla = coord.ecefToLla(knot.pos);
         const reading = frame.Reading.of(.{ .pos = knot.pos, .vel = knot.vel, .acc = knot.acc, .jerk = .{ .x = 0, .y = 0, .z = 0 } }, built.plan.altitude);
         out.* = .{
             .id = event.name,
-            .time = event.time,
+            .time = time,
             .segment = event.segment,
             .place = event.visit,
             .latitude = lla.latDeg(),
@@ -95,9 +96,9 @@ pub fn of(arena: std.mem.Allocator, built: source.Result, sample_count: usize) E
 
     const segments = try arena.alloc(Segment, built.plan.segments.len);
     var start: f64 = 0;
-    for (built.plan.segments, segments) |segment, *out| {
-        out.* = .{ .kind = segment.motion, .id = segment.id, .start = start, .end = segment.end };
-        start = segment.end;
+    for (built.plan.segments, segments, built.ends) |segment, *out, end| {
+        out.* = .{ .kind = segment.motion, .id = segment.id, .start = start, .end = end };
+        start = end;
     }
 
     var requests: std.ArrayList(Request) = .empty;
@@ -160,11 +161,13 @@ fn sample(knots: []const Knot, distances: []const f64, datum: model.Altitude, re
     };
 }
 
-/// The length of the path from k0 to the time t of its piece to k1, by five-point Gauss-Legendre.
+/// The length of the path from k0 to the time t of its piece to k1, by five-point Gauss-Legendre; nothing across the
+/// two knots of a step, which share their time.
 fn distance(k0: Knot, k1: Knot, t: f64) f64 {
     const nodes = [_]f64{ 0, -0.5384693101056831, 0.5384693101056831, -0.9061798459386640, 0.9061798459386640 };
     const weights = [_]f64{ 0.5688888888888889, 0.4786286704993665, 0.4786286704993665, 0.2369268850561891, 0.2369268850561891 };
     const span = t - k0.t;
+    if (span == 0) return 0;
     var sum: f64 = 0;
     for (nodes, weights) |node, weight| sum += weight * trajectory.between(k0, k1, k0.t + (node + 1) * span / 2).vel.norm();
     return sum * span / 2;

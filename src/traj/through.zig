@@ -25,7 +25,7 @@ const settled_m: f64 = 1e-9;
 const rounding: f64 = 4 * std.math.floatEps(f64);
 /// The corrections the check takes at most.
 const most_corrections = 4;
-/// The axes solved together: three of position, and the height.
+/// The axes a through solves together: three of position, and the height.
 pub const axes = 4;
 
 pub const Error = error{OutOfMemory};
@@ -61,45 +61,55 @@ const form64 = form(f64);
 const form128 = form(f128);
 
 /// Where a piece's unknowns stand in its form: its first knot's velocity and acceleration, its last knot's.
-const places = [4]usize{ 1, 2, 4, 5 };
+const slots = [4]usize{ 1, 2, 4, 5 };
 
 /// The largest the velocity's and the acceleration's basis functions reach over a piece: a change of a knot's
 /// velocity by dv moves the piece by at most 16/81 h |dv|, of its acceleration by da at most 54/3125 h^2 |da|.
 const velocity_reach = 16.0 / 81.0;
 const acceleration_reach = 54.0 / 3125.0;
 
-pub const Held = struct {
-    /// The velocity and the acceleration of the first knot, each axis; null where free.
-    velocity: ?[axes]f64,
-    acceleration: ?[axes]f64,
-    /// At rest at the last knot: no velocity and no acceleration.
-    rest: bool,
-};
+pub fn Knot(comptime count: usize) type {
+    return struct { velocity: [count]f64, acceleration: [count]f64 };
+}
 
-pub const Knot = struct { velocity: [axes]f64, acceleration: [axes]f64 };
+pub fn Held(comptime count: usize) type {
+    return struct {
+        /// The velocity and the acceleration of the first knot, each axis; null where free.
+        velocity: ?[count]f64,
+        acceleration: ?[count]f64,
+        /// The velocity and the acceleration of the last knot (at rest, nothing); null where free.
+        end: ?Knot(count),
+    };
+}
 
-pub const Outcome = union(enum) {
-    solved: []const Knot,
-    /// The pieces (each by the index of its first knot) that the check did not settle.
-    unsettled: []const usize,
-};
+pub fn Outcome(comptime count: usize) type {
+    return union(enum) {
+        solved: []const Knot(count),
+        /// The pieces (each by the index of its first knot) that the check did not settle.
+        unsettled: []const usize,
+    };
+}
 
-/// `times` and `values` of the knots, the first the segment's start; `held` its ends. The knots' velocities and
-/// accelerations, or the pieces where f64 cannot solve it.
-pub fn solve(arena: std.mem.Allocator, times: []const f64, values: []const [axes]f64, held: Held) Error!Outcome {
+/// `times` and `values` of the knots on `count` axes, the first the segment's start; `held` its ends. The knots'
+/// velocities and accelerations, or the pieces where f64 cannot solve it.
+pub fn solve(comptime count: usize, arena: std.mem.Allocator, times: []const f64, values: []const [count]f64, held: Held(count)) Error!Outcome(count) {
     const n = times.len;
     const size = 2 * n;
     const first: usize = if (held.acceleration != null) 2 else if (held.velocity != null) 1 else 0;
-    const end: usize = if (held.rest) size - 2 else size;
+    const end: usize = if (held.end != null) size - 2 else size;
     const free = end - first;
     // Unknowns of all axes, in their physical units: u[axis][2k] the velocity of knot k, u[axis][2k + 1] its
     // acceleration.
-    var u: [axes][]f64 = undefined;
+    var u: [count][]f64 = undefined;
     for (&u, 0..) |*column, axis| {
         column.* = try arena.alloc(f64, size);
         @memset(column.*, 0);
         if (held.velocity) |v| column.*[0] = v[axis];
         if (held.acceleration) |a| column.*[1] = a[axis];
+        if (held.end) |e| {
+            column.*[size - 2] = e.velocity[axis];
+            column.*[size - 1] = e.acceleration[axis];
+        }
     }
     const scale = try arena.alloc(f64, size);
     for (0..n) |k| {
@@ -114,10 +124,10 @@ pub fn solve(arena: std.mem.Allocator, times: []const f64, values: []const [axes
     @memset(band, @splat(0));
     for (0..n - 1) |k| {
         const h = times[k + 1] - times[k];
-        for (places, 0..) |pi, a| {
+        for (slots, 0..) |pi, a| {
             const i = 2 * k + a;
             if (i < first or i >= end) continue;
-            for (places[0 .. a + 1], 0..) |pj, b| {
+            for (slots[0 .. a + 1], 0..) |pj, b| {
                 const j = 2 * k + b;
                 if (j < first) continue;
                 band[i - first][i - j] += form64[pi][pj] * reach(h, pi, scale[i]) * reach(h, pj, scale[j]) / h5(h);
@@ -133,7 +143,7 @@ pub fn solve(arena: std.mem.Allocator, times: []const f64, values: []const [axes
     for (0..most_corrections + 1) |correction| {
         @memset(moved, 0);
         for (u, 0..) |column, axis| {
-            gradient(times, values, axis, column, first, end, step);
+            gradient(count, times, values, axis, column, first, end, step);
             for (step, first..) |*r, i| r.* = -r.* / scale[i];
             solveBand(band, pivots, step);
             for (step, first..) |dz, i| column[i] += dz / scale[i];
@@ -162,7 +172,7 @@ pub fn solve(arena: std.mem.Allocator, times: []const f64, values: []const [axes
             return .{ .unsettled = pieces.items };
         }
     }
-    const knots = try arena.alloc(Knot, n);
+    const knots = try arena.alloc(Knot(count), n);
     for (knots, 0..) |*knot, k| {
         for (u, 0..) |column, axis| {
             knot.velocity[axis] = column[2 * k];
@@ -185,8 +195,8 @@ fn h5(h: f64) f64 {
 
 /// The factor of an unknown in the piece's form: its own unit over the piece's (the velocity times h, the
 /// acceleration times h^2), divided by the unknown's scale.
-fn reach(h: f64, place: usize, scale: f64) f64 {
-    return if (place == 1 or place == 4) h / scale else h * h / scale;
+fn reach(h: f64, slot: usize, scale: f64) f64 {
+    return if (slot == 1 or slot == 4) h / scale else h * h / scale;
 }
 
 /// L D L' of the band in place: the factors of L below the diagonal, D's pivots returned.
@@ -232,7 +242,7 @@ fn solveBand(band: []const [4]f64, pivots: []const f64, y: []f64) void {
 }
 
 /// Half the derivative of J by each free unknown of one axis at `u`, of the exact integrals, taken in f128.
-fn gradient(times: []const f64, values: []const [axes]f64, axis: usize, u: []const f64, first: usize, end: usize, out: []f64) void {
+fn gradient(comptime count: usize, times: []const f64, values: []const [count]f64, axis: usize, u: []const f64, first: usize, end: usize, out: []f64) void {
     var carried: [2]f128 = .{ 0, 0 };
     for (0..times.len - 1) |k| {
         const h = @as(f128, times[k + 1]) - @as(f128, times[k]);
@@ -248,7 +258,7 @@ fn gradient(times: []const f64, values: []const [axes]f64, axis: usize, u: []con
             @as(f128, u[2 * k + 3]) * h2,
         };
         var rows: [4]f128 = undefined;
-        for (&rows, places) |*r, p| {
+        for (&rows, slots) |*r, p| {
             var sum: f128 = 0;
             for (form128[p][1..], x[1..]) |entry, value| sum += entry * value;
             r.* = sum;
