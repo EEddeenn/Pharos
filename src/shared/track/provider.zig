@@ -261,7 +261,7 @@ pub const Track = struct {
 };
 
 fn sameDelays(a: []const gnss.air.Row, b: []const gnss.air.Row) bool {
-    for (a, b) |x, y| if (x.origin != y.origin or !std.meta.eql(x.delay_s, y.delay_s)) return false;
+    for (a, b) |x, y| if (!std.meta.eql(x.delay_s, y.delay_s)) return false;
     return true;
 }
 
