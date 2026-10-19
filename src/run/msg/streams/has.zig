@@ -73,6 +73,15 @@ const Scratch = struct {
     pages: [has.max_pages]has.Page,
 };
 
+// The issue a correction refers to, as the satellite broadcasts it: LNAV's IODE, or I/NAV's IODnav of 10 bits.
+fn issueOf(c: corrections.Correction) u16 {
+    const record = c.record.record;
+    return switch (record.extra) {
+        .inav => |x| x.iod_nav,
+        else => record.iode,
+    };
+}
+
 pub const Stream = struct {
     config: bundle.scenario.Has,
     status: has.Status,
@@ -141,7 +150,7 @@ pub const Stream = struct {
                 snap.corr[snap.count] = sample;
                 snap.count += 1;
                 mask.sats[prn - 1] = true;
-                snap.iods[snap.n_systems][prn - 1] = sample.record.record.iode;
+                snap.iods[snap.n_systems][prn - 1] = issueOf(sample);
                 for (sys.cells) |c| if (mask.sigs[c.index]) {
                     const on = self.served.transmits(sat, c.signal);
                     snap.cells[snap.n_systems][cells] = on;
@@ -196,7 +205,7 @@ pub const Stream = struct {
         const orbit = &self.scratch.orbit;
         for (snap.corr[0..snap.count], 0..) |c, i| {
             const ntw = c.ntw();
-            orbit[i] = .{ .iod = c.record.record.iode, .radial_m = ntw[0], .in_track_m = ntw[1], .cross_m = ntw[2] };
+            orbit[i] = .{ .iod = issueOf(c), .radial_m = ntw[0], .in_track_m = ntw[1], .cross_m = ntw[2] };
         }
         const message: has.Message = .{
             .toh = toh,
@@ -309,7 +318,7 @@ pub const Stream = struct {
         } else return false;
         const bits = &self.scratch.bits;
         bits.* = .{};
-        const written = has.encode(message, context, bits) catch return false;
+        const written = has.encode(message, context, bits) catch unreachable;
         const pages = &self.scratch.pages;
         const k = has.split(bits, written, pages);
         const kept = self.messages.getPtr(kind);
