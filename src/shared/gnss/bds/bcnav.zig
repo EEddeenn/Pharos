@@ -28,11 +28,13 @@ const unflagged: Flags = .{ .dif = false, .sif = false, .aif = true };
 
 pub const Sv = struct {
     ephemeris: ephemeris.Source,
-    sismai: u4 = 0,
-    sisai_oe: u5 = 0,
-    sisai_ocb: u5 = 0,
-    sisai_oc1: u3 = 0,
-    sisai_oc2: u3 = 0,
+    // A reference that states no B-CNAV accuracy, as one converted from D1/D2, sends the last index of each, with AIF
+    // set: an unknown accuracy is never sent as the best one.
+    sismai: u4 = 15,
+    sisai_oe: u5 = 31,
+    sisai_ocb: u5 = 31,
+    sisai_oc1: u3 = 7,
+    sisai_oc2: u3 = 7,
     b1c: Flags = unflagged,
     b2a: Flags = unflagged,
     b2b: Flags = unflagged,

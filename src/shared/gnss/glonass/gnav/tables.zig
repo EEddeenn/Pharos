@@ -51,8 +51,11 @@ fn bn(e: *const Eph) i64 {
 fn deltaTauN(e: *const Eph) f64 {
     return e.delta_tau_n orelse 0;
 }
+/// F_T 14, 512 m, the least accuracy GNAV states (15 is not used): an unknown accuracy is never sent as the best one.
+pub const unknown_ft: u4 = 14;
+
 fn ft(e: *const Eph) i64 {
-    return e.ft orelse 0;
+    return e.ft orelse unknown_ft;
 }
 fn pWord(e: *const Eph) i64 {
     return e.p orelse 0;

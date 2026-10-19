@@ -56,11 +56,13 @@ const slots = types.System.glo.capacity();
 
 pub const Content = @import("../content.zig").Carriage(Eph);
 
-/// GNAV's content for a leg: its record, with the leg's P1 and Delta tau_n, or the first of its fields it does not fit.
+/// GNAV's content for a leg: its record, with the leg's P1 and Delta tau_n and an unknown F_T stated, or the first of
+/// its fields it does not fit.
 pub fn prepare(g: *const Eph, p1: u2, delta_tau_n: ?f64, leap: civil.Leap) Content {
     var out = g.*;
     out.p1 = p1;
     out.delta_tau_n = delta_tau_n;
+    out.ft = g.ft orelse tables.unknown_ft;
     if (misfit(&out, leap)) |name| return .{ .unfit = .{ .field = name } };
     return .{ .carried = out };
 }

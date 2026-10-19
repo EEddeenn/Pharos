@@ -104,10 +104,6 @@ pub fn attributesOf(e: *const records.KeplerEphemeris, donor: *const records.Kep
                 .d1d2 => |own| own.ura_index,
                 else => if (same) x.ura_index else 15,
             };
-            if (e.source() != .d1d2) {
-                x.aodc = 31;
-                x.aode = 31;
-            }
         },
         .bcnav1, .bcnav2, .bcnav3 => |*x| {
             x.sat_type = switch (e.extra) {
