@@ -85,6 +85,7 @@ pub const ComponentDelay = struct {
 pub const GroupDelay = struct {
     availability: Availability,
     reason: ?value.Reason = null,
+    origin: ?gnss.air.Origin = null,
     clock_reference_shift_s: ?f64 = null,
     data: ?ComponentDelay = null,
     pilot: ?ComponentDelay = null,
@@ -265,6 +266,7 @@ fn modelValue(b: *const bundle.Bundle, ephemeris: *const provider.Track, sampled
     const carrier = gnss.delay.carrierCode(signal);
     out.group_delay = .{
         .availability = .available,
+        .origin = delays.air[gnss.spec.slot(signal)].origin,
         .clock_reference_shift_s = delays.shift(),
         .data = componentDelay(delays, signal, .data),
         .pilot = if (gnss.spec.get(signal).hasPilot()) componentDelay(delays, signal, .pilot) else .{ .availability = .not_applicable, .reason = .signal_has_no_pilot },
