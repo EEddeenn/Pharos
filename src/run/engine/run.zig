@@ -160,8 +160,7 @@ pub const Run = struct {
     fn begin(self: *Run) StepError!void {
         if (self.info.span.epochs == 0) return;
         self.produceBlock(0, .{});
-        // Every set due in the first window is refreshed here, whatever the first pull's size: a channel's first masks take a pending set from their first frame.
-        try self.channels.plan(.zero, self.windowAt(.zero, self.info.span.epochs), self.geometry, &self.events);
+        try self.channels.plan(.zero, 1, self.geometry, &self.events);
     }
 
     pub fn ionosphere(self: *const Run) *const Ionosphere {

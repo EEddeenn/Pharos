@@ -7,6 +7,7 @@ const set = @import("shared").stage.messages;
 const Mask = u8;
 const data_neg: Mask = 1;
 const pilot_neg: Mask = 2;
+const unread: i64 = std.math.minInt(i64);
 
 pub const SymbolSource = struct {
     messages: set.MessageSet,
@@ -15,7 +16,7 @@ pub const SymbolSource = struct {
     timing: spec.Frame,
     offset_ms: u16,
     secondary: ?[]const u1,
-    cache_index: i64 = std.math.minInt(i64),
+    cache_index: i64 = unread,
     cache_present: bool = false,
     cache: set.FrameBits = .{},
     boundary: ?Boundary = null,
@@ -42,7 +43,7 @@ pub const SymbolSource = struct {
         self.messages = p;
         self.pending = null;
         self.boundary = null;
-        self.cache_index = std.math.minInt(i64);
+        self.cache_index = unread;
         self.cache_present = false;
     }
 
@@ -81,7 +82,8 @@ pub const SymbolSource = struct {
     fn frameFor(self: *SymbolSource, index: i64) bool {
         if (index != self.cache_index) {
             if (self.pending) |pending| {
-                if (index > self.cache_index and pending.setCycle(self.prn, index) != pending.setCycle(self.prn, self.cache_index)) {
+                // The first frame read comes from the set the source holds; a set given later is taken where a cycle begins.
+                if (self.cache_index != unread and index > self.cache_index and pending.setCycle(self.prn, index) != pending.setCycle(self.prn, self.cache_index)) {
                     self.boundary = null;
                     if (self.cache_present and index == self.cache_index + 1) {
                         var next: set.FrameBits = undefined;
