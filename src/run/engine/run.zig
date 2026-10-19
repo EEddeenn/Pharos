@@ -102,6 +102,7 @@ pub const Run = struct {
     commands: commands.Queue = .{},
     applied: [commands.capacity]commands.Applied = undefined,
     next_power: usize = 0,
+    seek_to: ?Epoch = null,
 
     pub fn create(gpa: std.mem.Allocator, b: *const bundle.Bundle, samples: bundle.scenario.Samples, options: Options) CreateError!*Run {
         const scenario = &b.scenario;
@@ -256,6 +257,8 @@ pub const Run = struct {
     pub fn seek(self: *Run, target_epoch: Epoch) SeekError!void {
         if (self.gain == .adaptive) return error.AdaptiveGain;
         if (target_epoch.ms > self.info.span.epochs) return error.EpochOutOfRange;
+        self.seek_to = target_epoch;
+        defer self.seek_to = null;
         if (target_epoch.ms < self.epoch.ms or self.failed != null) {
             if (self.commands.taken != 0) return error.CommandsApplied;
             try self.restart();
@@ -337,6 +340,7 @@ pub const Run = struct {
         while (self.geometry.nextSegment(&self.events)) |segment| {
             // The tracks that moved are corrected, all of them, before any row of the segment is made.
             if (self.geometry.observation.moved()) self.runJob(.{ .tracks = @intCast(self.geometry.observation.entries.len) });
+            if (segment.count == count + 1 and self.passesThrough(first, count)) self.geometry.endsOnly();
             // A row or two alone are not worth waking the workers for.
             if (job.epochs == 0 and segment.count <= 2) {
                 for (0..segment.count) |k| self.geometry.produceRows(segment.first.plus(k));
@@ -348,6 +352,17 @@ pub const Run = struct {
         }
         if (self.options.dumps.rows) |w| self.geometry.dumpRows(w) catch {};
         self.blocks_produced = index + 1;
+    }
+
+    // A seek passes through a block before its target's: its windows are the whole block, read at their two ends,
+    // unless a command or a power change splits it, or a dump reads every row.
+    fn passesThrough(self: *const Run, first: Epoch, count: u32) bool {
+        const target = self.seek_to orelse return false;
+        const d = self.options.dumps;
+        if (first.ms / geometry.block_epochs >= target.ms / geometry.block_epochs or d.rows != null or d.params != null or d.plan != null) return false;
+        if (self.commands.nextAfter(first)) |e| if (e.ms < first.ms + count) return false;
+        if (self.power.nextAfter(first)) |e| if (e.ms < first.ms + count) return false;
+        return true;
     }
 
     fn runWindow(self: *Run, window: Job) void {

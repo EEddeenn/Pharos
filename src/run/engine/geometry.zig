@@ -23,7 +23,8 @@ pub const Row = struct {
     };
 };
 
-const RowBuffer = struct { rows: []Row, first: Epoch = .zero, count: u32 = 0, valid: bool = false };
+// A block a seek passes through has its rows at its two ends alone; the rows between have nothing seen.
+const RowBuffer = struct { rows: []Row, first: Epoch = .zero, count: u32 = 0, valid: bool = false, ends_only: bool = false };
 
 pub const Segment = struct { first: Epoch, count: u32 };
 
@@ -118,6 +119,15 @@ pub const Stage = struct {
         self.at = first;
     }
 
+    pub fn endsOnly(self: *Stage) void {
+        self.buffers[self.writing].ends_only = true;
+    }
+
+    pub fn endsOnlyAt(self: *const Stage, epoch: Epoch) bool {
+        for (self.buffers) |b| if (b.valid and epoch.ms >= b.first.ms and epoch.ms < b.first.ms + b.count) return b.ends_only;
+        return false;
+    }
+
     pub fn nextSegment(self: *Stage, ring: *events.Ring) ?Segment {
         const buffer = &self.buffers[self.writing];
         const last = buffer.first.plus(buffer.count);
@@ -142,6 +152,10 @@ pub const Stage = struct {
         const buffer = &self.buffers[self.writing];
         const slot: usize = @intCast(epoch.ms - buffer.first.ms);
         const rows = buffer.rows[slot * self.rows_per_epoch ..][0..self.rows_per_epoch];
+        if (buffer.ends_only and slot > 1 and slot + 1 < buffer.count) {
+            for (self.observation.frame().tracks, rows) |*track, *row| row.* = .{ .sat = track.sat, .seen = null };
+            return;
+        }
         const rx = if (std.mem.findScalar(bool, self.needed, true) == null) null else geo.receiver.atMs(&self.b.trajectory, epoch.ms);
         const t = core.time.atEpoch(self.start, epoch);
         for (self.observation.frame().tracks, rows, self.needed) |*track, *row, needed| {

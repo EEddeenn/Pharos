@@ -287,6 +287,7 @@ pub const Stage = struct {
         self.window_channels = channels.len;
         std.debug.assert(self.rows.len >= count * channels.len);
         const here = self.dump_params != null or count <= 2;
+        const ends_only = geom.endsOnlyAt(first);
         for (channels, self.spans[0..channels.len], self.derived[0..channels.len], 0..) |*c, *span, *derived, ci| {
             const per = self.tables.tables[c.synth.table].entries_per_period;
             span.* = .{};
@@ -294,6 +295,9 @@ pub const Stage = struct {
             derived.* = here or for ([_]u32{ 0, count - 1 }) |i| {
                 span.include(self.deriveOne(i, c, ci, power) orelse break true, self.samples_per_epoch, per);
             } else false;
+            // A block read at its ends alone has the same channels and the same sights throughout: a channel held there and
+            // seen fails its ends only by a failure no input explains.
+            if (derived.* and ends_only and c.activeAt(first) and self.window_rows[c.track].seen != null) return error.Internal;
             if (derived.*) {
                 span.* = .{};
                 for (0..count) |i| {
