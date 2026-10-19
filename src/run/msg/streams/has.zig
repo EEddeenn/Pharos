@@ -106,7 +106,8 @@ pub const Stream = struct {
             .test_mode => .test_mode,
             .operational => .operational,
         };
-        const systems: []const System = if (served.listsAny(has.Cell, &has.gps_cells)) &system_table else system_table[1..];
+        // HAS corrects GPS against LNAV, which only L1 C/A carries.
+        const systems: []const System = if (served.lists(.l1ca)) &system_table else system_table[1..];
         self.* = .{
             .config = config,
             .status = status,
