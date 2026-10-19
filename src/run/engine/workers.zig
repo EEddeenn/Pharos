@@ -1,6 +1,8 @@
 const std = @import("std");
 const Io = std.Io;
 
+const spin_limit = 1 << 12;
+
 pub fn Pool(comptime Ctx: type) type {
     return struct {
         const Self = @This();
@@ -61,9 +63,14 @@ pub fn Pool(comptime Ctx: type) type {
             const gen: u32 = @truncate(self.generation);
             self.completed.store(0, .monotonic);
             self.next.store(@as(u64, gen) << 32, .monotonic);
-            self.wake.broadcast(self.io);
             self.mutex.unlock(self.io);
+            self.wake.broadcast(self.io);
             self.take(self.threads.len, gen, job, count);
+            // The job's last tasks are running on other threads: watch for them a while before sleeping.
+            for (0..spin_limit) |_| {
+                if (self.completed.load(.acquire) == count) return;
+                std.atomic.spinLoopHint();
+            }
             self.mutex.lockUncancelable(self.io);
             while (self.completed.load(.acquire) < count) self.done.waitUncancelable(self.io, &self.mutex);
             self.mutex.unlock(self.io);
