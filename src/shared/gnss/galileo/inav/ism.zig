@@ -15,7 +15,8 @@ pub const Ism = union(enum) {
         if (self == .horizontal) {
             const data = self.horizontal;
             if (data.reference.sub_ms != 0 or @mod(data.reference.ms, tow_step_ms) != 0) return error.ValueOutOfRange;
-            if (data.mask_msb and data.mask & 1 != 0) return error.ValueOutOfRange;
+            // With the MSB set, mask bits 1 to 18 are SVID 33 to 50 and bits 19 to 32 are reserved (OS SIS ICD 2.2, Table 98).
+            if (data.mask_msb and @as(u14, @truncate(data.mask)) != 0) return error.ValueOutOfRange;
         }
     }
 };
