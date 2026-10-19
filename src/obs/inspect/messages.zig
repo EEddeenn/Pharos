@@ -571,7 +571,7 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, allocation
                         .p4 = eph.p4,
                         .mIndex = eph.m,
                         .frequencyChannel = eph.freq.k,
-                        .deltaTauNS = eph.delta_tau_n,
+                        .deltaTauNS = values.delta_tau_n[i],
                     } };
                 },
                 .cnav_has => {

@@ -15,7 +15,9 @@ pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundl
     const e = switch (reference) {
         .kepler => |index| &set.kepler[index],
         .glonass => |index| {
-            out.glonass_p1 = select.glonassStep(set, &set.glonass[index], leap);
+            const g = &set.glonass[index];
+            out.glonass_p1 = select.glonassStep(set, g, leap);
+            if (g.delta_tau_n orelse glonassDonor(set, g, t, leap)) |d| out.group_delay.put(.delta_tau_n, d);
             return out;
         },
     };
@@ -52,6 +54,22 @@ pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundl
         if (out.attributes.fnav) |fnav| inav.e5a = fnav.declaration();
     }
     return out;
+}
+
+fn glonassDonor(set: *const NavSet, g: *const records.GlonassEphemeris, t: GpsTime, leap: Leap) ?f64 {
+    const end: GpsTime = .{ .ms = bundle.plan.nextLegBoundary(.glo, t, leap).ms };
+    var best: ?*const records.GlonassEphemeris = null;
+    for (set.glonass) |*donor| {
+        if (donor.sat != g.sat or donor.delta_tau_n == null or @abs(t.secondsSince(donor.tb)) > gnss.kepler.window_s) continue;
+        if (!gnss.glonass.records.adoption(donor, leap).lessThan(end)) continue;
+        if (best) |previous| {
+            const d = @abs(donor.tb.secondsSince(g.tb));
+            const p = @abs(previous.tb.secondsSince(g.tb));
+            if (d > p or (d == p and !previous.tb.lessThan(donor.tb))) continue;
+        }
+        best = donor;
+    }
+    return if (best) |donor| donor.delta_tau_n else null;
 }
 
 fn adopted(e: *const records.KeplerEphemeris) GpsTime {

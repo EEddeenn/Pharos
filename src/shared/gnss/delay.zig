@@ -27,8 +27,8 @@ pub fn forGroupDelays(group_delay: *const records.GroupDelays, source: records.N
     };
 }
 
-pub fn forGlonass(g: *const records.GlonassEphemeris, signal: types.Signal) ?f64 {
-    return glonass.forSignal(g, signal);
+pub fn forGlonass(group_delay: *const records.GroupDelays, signal: types.Signal) ?f64 {
+    return glonass.forGroupDelays(group_delay, signal);
 }
 
 /// The delays a system sets by convention, not by its records: B3I and G1 are the BDS and GLONASS clock references,

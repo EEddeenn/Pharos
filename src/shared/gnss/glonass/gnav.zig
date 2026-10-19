@@ -56,6 +56,7 @@ const slots = types.System.glo.capacity();
 pub const Set = struct {
     eph: [slots]?*const Eph,
     p1: [slots]?u2,
+    delta_tau_n: [slots]?f64,
     first_string: [slots]i64,
     alm: [slots]?Alm,
     scale: ?tables.TimeScale,
@@ -65,6 +66,7 @@ pub const Set = struct {
     pub const Inputs = struct {
         eph: [slots]?*const Eph,
         p1: [slots]?u2 = @splat(null),
+        delta_tau_n: [slots]?f64 = @splat(null),
         almanacs: []const Alm,
         time_utc: ?auxiliary.TimeOffset,
         time_gps: ?auxiliary.TimeOffset,
@@ -77,6 +79,7 @@ pub const Set = struct {
         set.* = .{
             .eph = in.eph,
             .p1 = in.p1,
+            .delta_tau_n = in.delta_tau_n,
             .first_string = @splat(0),
             .alm = @splat(null),
             .scale = null,
@@ -156,7 +159,11 @@ pub const Set = struct {
             1 => try field.encode(Eph, &tables.string1, eph, ctx, &w),
             2 => try field.encode(Eph, &tables.string2, eph, ctx, &w),
             3 => try field.encode(Eph, &tables.string3, eph, ctx, &w),
-            4 => try field.encode(Eph, &tables.string4, eph, ctx, &w),
+            4 => {
+                var flown = eph.*;
+                flown.delta_tau_n = self.delta_tau_n[prn - 1];
+                try field.encode(Eph, &tables.string4, &flown, ctx, &w);
+            },
             5 => try field.encode(tables.TimeScale, &tables.string5, &self.scale.?, ctx, &w),
             else => try self.encodeAlmanac(s, ctx, &w),
         }

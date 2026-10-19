@@ -79,9 +79,10 @@ pub const GroupDelayTerm = enum {
     tgd_b2i,
     bgd_e1e5a,
     bgd_e1e5b,
+    delta_tau_n,
 
     /// Each term as a sentence names it: as the message tables name its field.
-    pub const words: std.EnumArray(GroupDelayTerm, [:0]const u8) = .init(.{ .tgd_l1ca = "tgd", .isc_l1ca = "isc_l1ca", .isc_l1cd = "isc_l1cd", .isc_l1cp = "isc_l1cp", .isc_l2c = "isc_l2c", .isc_l5i5 = "isc_l5i5", .isc_l5q5 = "isc_l5q5", .tgd_b1cp = "tgd_b1cp", .isc_b1cd = "isc_b1cd", .tgd_b2ap = "tgd_b2ap", .isc_b2ad = "isc_b2ad", .tgd_b2bi = "tgd_b2bi", .tgd_b1i = "tgd1", .tgd_b2i = "tgd2", .bgd_e1e5a = "bgd_e1e5a", .bgd_e1e5b = "bgd_e1e5b" });
+    pub const words: std.EnumArray(GroupDelayTerm, [:0]const u8) = .init(.{ .tgd_l1ca = "tgd", .isc_l1ca = "isc_l1ca", .isc_l1cd = "isc_l1cd", .isc_l1cp = "isc_l1cp", .isc_l2c = "isc_l2c", .isc_l5i5 = "isc_l5i5", .isc_l5q5 = "isc_l5q5", .tgd_b1cp = "tgd_b1cp", .isc_b1cd = "isc_b1cd", .tgd_b2ap = "tgd_b2ap", .isc_b2ad = "isc_b2ad", .tgd_b2bi = "tgd_b2bi", .tgd_b1i = "tgd1", .tgd_b2i = "tgd2", .bgd_e1e5a = "bgd_e1e5a", .bgd_e1e5b = "bgd_e1e5b", .delta_tau_n = "delta_tau_n" });
 };
 
 pub const GroupDelays = std.EnumMap(GroupDelayTerm, f64);

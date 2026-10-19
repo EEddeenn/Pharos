@@ -126,10 +126,12 @@ pub fn gnav(b: *const Bundle, t: GpsTime) glonass.gnav.Set.Inputs {
         .t = t,
         .leap = b.plan.leap,
     };
-    for (&in.eph, &in.p1, 0..) |*entry, *p1, i| {
+    for (&in.eph, &in.p1, &in.delta_tau_n, 0..) |*entry, *p1, *delta_tau_n, i| {
         const sat = SatId.at(.glo, i);
         entry.* = track.selection.glonassAt(b, sat, t);
-        if (b.plan.bindingAt(sat, t)) |binding| p1.* = binding.glonass_p1;
+        const binding = b.plan.bindingAt(sat, t) orelse continue;
+        p1.* = binding.glonass_p1;
+        delta_tau_n.* = binding.group_delay.get(.delta_tau_n);
     }
     return in;
 }

@@ -166,6 +166,8 @@ pub const DelayTerms = struct {
     fn of(values: *const gnss.records.GroupDelays) DelayTerms {
         var out: DelayTerms = .{};
         inline for (comptime std.meta.tags(gnss.records.GroupDelayTerm)) |term| {
+            // A GLONASS record shows its own delta tau n.
+            if (term == .delta_tau_n) continue;
             const name = comptime @tagName(term);
             @field(out, name) = values.get(term);
         }

@@ -22,7 +22,7 @@ pub fn air(set: *const NavSet, binding: *const Binding, allocated: std.EnumSet(t
         },
         .glonass => |i| {
             const g = &set.glonass[i];
-            const delay = gnss.delay.forGlonass(g, signal);
+            const delay = gnss.delay.forGlonass(&binding.group_delay, signal);
             return .{
                 .status = if (!allocated.contains(signal)) .not_allocated else .on_air,
                 .health = gnss.health.flagged(!g.health),
