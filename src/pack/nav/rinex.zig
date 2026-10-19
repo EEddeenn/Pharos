@@ -75,11 +75,11 @@ fn parseRaw(pools: *Pools, source: []const u8, at: *usize) Error!Header {
                     pools.skipped += 1;
                     continue;
                 };
-                const fourth: ?[4]?f64 = if (version < glonass_status_version) null else rinex_fields.optionalBodyLine(&lines) catch {
+                const fourth: ?[4]?f64 = if (version < glonass_status_version) null else if (rinex_fields.continuation(&lines)) |status| rinex_fields.bodyColumns(status) catch {
                     try rinex_records.rejectMalformed(pools, .glo, prn, ep, "fdma");
                     pools.skipped += 1;
                     continue;
-                };
+                } else null;
                 if (try rinex_records.glonassRecord(pools, prn, ep, &body, fourth)) |rec| try pools.glonass.append(pools.arena, rec) else pools.skipped += 1;
             },
             inline .gps, .gal, .bds => |s| {

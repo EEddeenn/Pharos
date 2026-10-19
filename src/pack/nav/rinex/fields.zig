@@ -38,6 +38,13 @@ pub fn optionalBodyLine(lines: *Lines) fields.Error![4]?f64 {
     return bodyColumns(nextInBlock(lines) orelse return error.MalformedRecord);
 }
 
+/// The next line where it continues the record: a RINEX 3 record starts with its satellite, and each further line with spaces.
+pub fn continuation(lines: *Lines) ?[]const u8 {
+    const next = lines.peek() orelse return null;
+    if (next.len == 0 or next[0] != ' ') return null;
+    return lines.next();
+}
+
 pub fn nextInBlock(lines: *Lines) ?[]const u8 {
     const next = lines.peek() orelse return null;
     if (next.len > 0 and next[0] == '>') return null;
