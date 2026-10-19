@@ -53,7 +53,7 @@ pub fn Pool(comptime Ctx: type) type {
             gpa.destroy(self);
         }
 
-        pub fn dispatch(self: *Self, job: Ctx.Job, count: u32) u32 {
+        pub fn run(self: *Self, job: Ctx.Job, count: u32) void {
             self.mutex.lockUncancelable(self.io);
             self.job = job;
             self.count = count;
@@ -63,14 +63,7 @@ pub fn Pool(comptime Ctx: type) type {
             self.next.store(@as(u64, gen) << 32, .monotonic);
             self.wake.broadcast(self.io);
             self.mutex.unlock(self.io);
-            return gen;
-        }
-
-        pub fn join(self: *Self, gen: u32, job: Ctx.Job, count: u32) void {
             self.take(self.threads.len, gen, job, count);
-        }
-
-        pub fn wait(self: *Self, count: u32) void {
             self.mutex.lockUncancelable(self.io);
             while (self.completed.load(.acquire) < count) self.done.waitUncancelable(self.io, &self.mutex);
             self.mutex.unlock(self.io);

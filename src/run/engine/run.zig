@@ -23,6 +23,8 @@ comptime {
     std.debug.assert(replan_epochs % geometry.block_epochs == 0);
 }
 
+const window_epochs = @min(geometry.block_epochs, gain.evaluation_epochs);
+
 pub const Options = struct {
     seed: u64 = 0,
     workers: u32 = 0,
@@ -68,15 +70,15 @@ pub const Info = struct {
 
 pub const Block = struct {
     epoch_first: Epoch,
-    epochs: u32,
-    bytes: usize,
-    clipped: u64,
-    applied: []const commands.Applied,
+    epochs: u32 = 0,
+    bytes: usize = 0,
+    clipped: u64 = 0,
+    applied: []const commands.Applied = &.{},
     failed: ?StepError = null,
 };
 
 pub const Run = struct {
-    pub const Job = struct { samples: u32 = 0, rows: u32 = 0 };
+    pub const Job = struct { epochs: u32 = 0, first: Epoch = .zero, gain: f32 = 1, out: []u8 = &.{}, rows: geometry.Segment = .{ .first = .zero, .count = 0 } };
 
     gpa: std.mem.Allocator,
     threaded: Io.Threaded,
@@ -89,14 +91,9 @@ pub const Run = struct {
     power: Power,
     blocks_produced: u64 = 0,
     kernel_config: kernel.Config,
-    window: struct {
-        first: Epoch,
-        gain: gain.Linear,
-        out: []u8,
-    } = .{ .first = .zero, .gain = .{ .factor = 1.0 }, .out = &.{} },
-    segment: geometry.Segment = .{ .first = .zero, .count = 0 },
+    sub_tiles: u32,
     clipped: std.atomic.Value(u64) = .init(0),
-    ready: [gain.evaluation_epochs]std.atomic.Value(bool) = undefined,
+    ready: [window_epochs]std.atomic.Value(bool) = undefined,
     epoch: Epoch = .zero,
     gain: Gain,
     total_clipped: u64 = 0,
@@ -113,10 +110,16 @@ pub const Run = struct {
         const bytes_per_epoch = samples.format.bytesFor(spe);
         const opts = normalizedOptions(options);
         const sub_tile = kernel.subTileFor(spe);
-        const window_epochs = @min(geometry.block_epochs, gain.evaluation_epochs);
+        const kernel_config: kernel.Config = .{
+            .samples_per_epoch = spe,
+            .sub_tile_len = sub_tile,
+            .format = samples.format,
+            .noise = opts.noise,
+            .seed = opts.seed,
+        };
         const stage = try geometry.Stage.init(gpa, b);
         errdefer stage.deinit();
-        const channels = try ChannelStage.init(gpa, b, stage.resolved(), .{ .samples = samples, .window_epochs = window_epochs, .dump_params = opts.dumps.params });
+        const channels = try ChannelStage.init(gpa, b, stage.resolved(), .{ .samples = samples, .window_epochs = window_epochs, .dump_params = opts.dumps.params, .dump_plan = opts.dumps.plan });
         errdefer channels.deinit();
         const power = Power.init(scenario.power);
         const self = try gpa.create(Run);
@@ -138,13 +141,8 @@ pub const Run = struct {
             .channels = channels,
             .power = power,
             .gain = .of(opts.gain),
-            .kernel_config = .{
-                .samples_per_epoch = spe,
-                .sub_tile_len = sub_tile,
-                .format = samples.format,
-                .noise = opts.noise,
-                .seed = opts.seed,
-            },
+            .kernel_config = kernel_config,
+            .sub_tiles = kernel.subTiles(kernel_config),
         };
         if (opts.workers > 1) {
             self.pool = workers.Pool(Run).init(gpa, self.threaded.io(), self, opts.workers - 1) catch |e| switch (e) {
@@ -160,13 +158,10 @@ pub const Run = struct {
     }
 
     fn begin(self: *Run) StepError!void {
-        self.channels.dump_plan = self.options.dumps.plan;
-        if (self.info.span.epochs > 0) {
-            self.produceBlock(0, 0);
-            self.power.advanceTo(.zero);
-            try self.channels.prepare(.zero, self.windowAt(.zero, self.info.span.epochs), self.geometry, &self.power, &self.events);
-        }
-        if (self.channels.dump_params) |*dump| dump.enabled = true;
+        if (self.info.span.epochs == 0) return;
+        self.produceBlock(0, .{});
+        // Every set due in the first window is refreshed here, whatever the first pull's size: a channel's first masks take a pending set from their first frame.
+        try self.channels.plan(.zero, self.windowAt(.zero, self.info.span.epochs), self.geometry, &self.events);
     }
 
     pub fn ionosphere(self: *const Run) *const Ionosphere {
@@ -230,9 +225,9 @@ pub const Run = struct {
 
     pub fn pull(self: *Run, out: []u8, max_epochs: u32) error{BufferTooSmall}!Block {
         const bpe = self.info.bytes_per_epoch;
-        if (self.failed) |e| return .{ .epoch_first = self.epoch, .epochs = 0, .bytes = 0, .clipped = 0, .applied = &.{}, .failed = e };
+        if (self.failed) |e| return .{ .epoch_first = self.epoch, .failed = e };
         const left = self.info.span.epochs - self.epoch.ms;
-        if (left == 0) return .{ .epoch_first = self.epoch, .epochs = 0, .bytes = 0, .clipped = 0, .applied = &.{} };
+        if (left == 0) return .{ .epoch_first = self.epoch };
         const fit = @min(out.len / bpe, max_epochs);
         if (fit == 0) return error.BufferTooSmall;
         const epochs = @min(left, fit);
@@ -293,13 +288,8 @@ pub const Run = struct {
         const first = self.epoch;
         applied_count.* += self.applyDue(first, applied_count.*) catch |e| return self.fail(e);
         const count = self.windowAt(first, limit_epochs);
-        self.window = .{
-            .first = first,
-            .gain = self.gain.linear(),
-            .out = if (out) |o| o[0 .. count * self.info.bytes_per_epoch] else &.{},
-        };
         self.channels.prepare(first, count, self.geometry, &self.power, &self.events) catch |e| return self.fail(e);
-        self.runWindow(if (out == null) 0 else count);
+        self.runWindow(if (out) |o| .{ .epochs = count, .first = first, .gain = self.gain.linear().factor, .out = o[0 .. count * self.info.bytes_per_epoch] } else .{ .first = first });
         self.epoch = first.plus(count);
         return count;
     }
@@ -327,19 +317,15 @@ pub const Run = struct {
     }
 
     fn runJob(self: *Run, job: Job) void {
-        const count = job.samples * (1 + kernel.subTiles(self.kernel_config)) + job.rows;
-        for (self.ready[0..job.samples]) |*r| r.store(false, .monotonic);
-        if (self.pool) |p| {
-            const gen = p.dispatch(job, count);
-            p.join(gen, job, count);
-            p.wait(count);
-        } else {
+        const count = job.epochs * (1 + self.sub_tiles) + job.rows.count;
+        for (self.ready[0..job.epochs]) |*r| r.store(false, .monotonic);
+        if (self.pool) |p| p.run(job, count) else {
             var i: u32 = 0;
             while (i < count) : (i += 1) self.runTask(0, job, i);
         }
     }
 
-    fn produceBlock(self: *Run, index: u64, samples: u32) void {
+    fn produceBlock(self: *Run, index: u64, window: Job) void {
         const first: Epoch = .{ .ms = index * geometry.block_epochs };
         const count = @min(geometry.block_epochs, self.info.span.epochs - first.ms);
         self.geometry.beginBlock(first, count);
@@ -349,43 +335,43 @@ pub const Run = struct {
         if (!every) for (self.channels.table.channels.items) |c| {
             self.geometry.needed[c.track] = true;
         };
-        var with = samples;
+        var job = window;
         while (self.geometry.nextSegment(&self.events)) |segment| {
-            self.segment = segment;
             // A row or two alone are not worth waking the workers for.
-            if (with == 0 and segment.count <= 2) {
+            if (job.epochs == 0 and segment.count <= 2) {
                 for (0..segment.count) |k| self.geometry.produceRows(segment.first.plus(k));
             } else {
-                self.runJob(.{ .samples = with, .rows = segment.count });
+                job.rows = segment;
+                self.runJob(job);
             }
-            with = 0;
+            job.epochs = 0;
         }
-        if (self.options.dumps.rows) |w| self.geometry.dumpRows(w, first) catch {};
+        if (self.options.dumps.rows) |w| self.geometry.dumpRows(w) catch {};
         self.blocks_produced = index + 1;
     }
 
-    fn runWindow(self: *Run, samples: u32) void {
-        const next = self.window.first.ms / geometry.block_epochs + 1;
+    fn runWindow(self: *Run, window: Job) void {
+        const next = window.first.ms / geometry.block_epochs + 1;
         if (next * geometry.block_epochs < self.info.span.epochs and self.blocks_produced <= next) {
-            self.produceBlock(next, samples);
-        } else if (samples > 0) {
-            self.runJob(.{ .samples = samples });
+            self.produceBlock(next, window);
+        } else if (window.epochs > 0) {
+            self.runJob(window);
         }
     }
 
     pub fn runTask(self: *Run, worker_id: usize, job: Job, index: u32) void {
-        if (index < job.samples) {
+        if (index < job.epochs) {
             self.channels.deriveEpoch(index, &self.power);
             return self.ready[index].store(true, .release);
         }
-        const tiles = kernel.subTiles(self.kernel_config);
-        const t = index - job.samples;
-        if (t >= job.samples * tiles) return self.geometry.produceRows(self.segment.first.plus(t - job.samples * tiles));
+        const tiles = self.sub_tiles;
+        const t = index - job.epochs;
+        if (t >= job.epochs * tiles) return self.geometry.produceRows(job.rows.first.plus(t - job.epochs * tiles));
         const e = t / tiles;
         // The epoch's parameters come from a task given out before this one.
         while (!self.ready[e].load(.acquire)) std.atomic.spinLoopHint();
         const bpe = self.info.bytes_per_epoch;
-        const slot = self.window.out[e * bpe ..][0..bpe];
-        _ = self.clipped.fetchAdd(kernel.synthSubTile(self.kernel_config, &self.channels.tables, self.channels.epochRows(e), self.window.first.plus(e), t % tiles, self.window.gain.factor, &self.scratch[worker_id], slot), .monotonic);
+        const slot = job.out[e * bpe ..][0..bpe];
+        _ = self.clipped.fetchAdd(kernel.synthSubTile(self.kernel_config, &self.channels.tables, self.channels.epochRows(e), job.first.plus(e), t % tiles, job.gain, &self.scratch[worker_id], slot), .monotonic);
     }
 };

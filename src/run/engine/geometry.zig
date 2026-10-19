@@ -10,7 +10,6 @@ const geo = @import("shared").geo;
 const events = @import("events.zig");
 const Ionosphere = @import("shared").stage.ionosphere.Ionosphere;
 const Broadcast = @import("shared").stage.ionosphere.Broadcast;
-const replan_epochs = @import("shared").stage.channels.replan_epochs;
 
 pub const block_epochs: u32 = 100;
 
@@ -143,27 +142,16 @@ pub const Stage = struct {
         const buffer = &self.buffers[self.writing];
         const slot: usize = @intCast(epoch.ms - buffer.first.ms);
         const rows = buffer.rows[slot * self.rows_per_epoch ..][0..self.rows_per_epoch];
-        const rx = geo.receiver.atMs(&self.b.trajectory, epoch.ms);
+        const rx = if (std.mem.findScalar(bool, self.needed, true) == null) null else geo.receiver.atMs(&self.b.trajectory, epoch.ms);
         const t = core.time.atEpoch(self.start, epoch);
-        const every = epoch.ms % replan_epochs == 0;
         for (self.observation.frame().tracks, rows, self.needed) |*track, *row, needed| {
             row.sat = track.sat;
-            const ready = (if (every or needed) track.ready() else null) orelse {
+            const ready = (if (needed) track.ready() else null) orelse {
                 row.seen = null;
                 continue;
             };
-            row.seen = .{ .delays = ready.delaysAt(t), .epoch = geo.observation.evalSat(ready, rx, t) };
+            row.seen = .{ .delays = ready.delaysAt(t), .epoch = geo.observation.evalSat(ready, rx.?, t) };
         }
-    }
-
-    pub fn rowsAt(self: *const Stage, epoch: Epoch) ?[]const Row {
-        for (self.buffers) |b| {
-            if (b.valid and epoch.ms >= b.first.ms and epoch.ms <= b.first.ms + b.count) {
-                const slot: usize = @intCast(epoch.ms - b.first.ms);
-                return b.rows[slot * self.rows_per_epoch ..][0..self.rows_per_epoch];
-            }
-        }
-        return null;
     }
 
     pub fn rowsFrom(self: *const Stage, first: Epoch, count: u32) ?[]const Row {
@@ -176,16 +164,14 @@ pub const Stage = struct {
         return null;
     }
 
-    pub fn dumpRows(self: *const Stage, w: *std.Io.Writer, first: Epoch) std.Io.Writer.Error!void {
-        for (self.buffers) |b| {
-            if (!b.valid or b.first.ms != first.ms) continue;
-            for (0..b.count) |slot| {
-                for (b.rows[slot * self.rows_per_epoch ..][0..self.rows_per_epoch]) |row| {
-                    const s = (row.seen orelse continue).epoch;
-                    try w.print("{d} {f} {f} {f} {f} {f} {f} {f}\n", .{
-                        first.ms + slot, row.sat, core.hex.double(s.range_m), core.hex.double(s.clock_s), core.hex.double(s.iono_l1_m), core.hex.double(s.tropo_m), core.hex.double(s.el_rad), core.hex.double(s.az_rad),
-                    });
-                }
+    pub fn dumpRows(self: *const Stage, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const b = &self.buffers[self.writing];
+        for (0..b.count) |slot| {
+            for (b.rows[slot * self.rows_per_epoch ..][0..self.rows_per_epoch]) |row| {
+                const s = (row.seen orelse continue).epoch;
+                try w.print("{d} {f} {f} {f} {f} {f} {f} {f}\n", .{
+                    b.first.ms + slot, row.sat, core.hex.double(s.range_m), core.hex.double(s.clock_s), core.hex.double(s.iono_l1_m), core.hex.double(s.tropo_m), core.hex.double(s.el_rad), core.hex.double(s.az_rad),
+                });
             }
         }
     }

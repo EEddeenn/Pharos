@@ -32,10 +32,12 @@ pub const SymbolSource = struct {
     }
 
     pub fn replaceSet(self: *SymbolSource, messages: set.MessageSet) void {
+        // The sequence has just rebuilt the older of its two sets in place, so a set still pending is taken first.
+        self.adopt();
         self.pending = messages;
     }
 
-    pub fn adopt(self: *SymbolSource) void {
+    fn adopt(self: *SymbolSource) void {
         const p = self.pending orelse return;
         self.messages = p;
         self.pending = null;

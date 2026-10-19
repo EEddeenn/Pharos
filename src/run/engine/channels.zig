@@ -52,7 +52,6 @@ const ParamsDump = struct {
 
     writer: *Io.Writer,
     records: []Record,
-    enabled: bool = false,
 
     fn init(gpa: std.mem.Allocator, writer: *Io.Writer, count: usize) error{OutOfMemory}!ParamsDump {
         return .{ .writer = writer, .records = try gpa.alloc(Record, count) };
@@ -84,7 +83,6 @@ pub const Stage = struct {
     b: *const bundle.Bundle,
     start: GpsTime,
     samples_per_epoch: u32,
-    window_epochs: u32,
     tables: synth.tables.TableSet,
     table: ChannelTable,
     seq: stage.sequence.Sequence,
@@ -102,12 +100,13 @@ pub const Stage = struct {
     window_count: u32 = 0,
     window_channels: usize = 0,
     dump_params: ?ParamsDump,
-    dump_plan: ?*Io.Writer = null,
+    dump_plan: ?*Io.Writer,
 
     pub const Options = struct {
         samples: bundle.scenario.Samples,
         window_epochs: u32,
         dump_params: ?*Io.Writer = null,
+        dump_plan: ?*Io.Writer = null,
     };
 
     pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, resolved: geometry.Resolved, opts: Options) error{ OutOfMemory, MessageSet }!*Stage {
@@ -159,7 +158,6 @@ pub const Stage = struct {
             .b = b,
             .start = scenario.start,
             .samples_per_epoch = samples.sample_rate.samplesPerEpoch(),
-            .window_epochs = window_epochs,
             .tables = table_set,
             .table = ChannelTable.init(gpa, samples.center),
             .seq = seq,
@@ -168,6 +166,7 @@ pub const Stage = struct {
             .streams = streams,
             .rows = rows,
             .dump_params = dump_params,
+            .dump_plan = opts.dump_plan,
             .spans = spans,
             .derived = derived,
             .masks = masks,
@@ -197,15 +196,10 @@ pub const Stage = struct {
     pub fn reset(self: *Stage) error{MessageSet}!void {
         self.table.reset();
         self.streams.reset();
-        self.dump_plan = null;
-        if (self.dump_params) |*dump| dump.enabled = false;
         try self.seq.reset(self.streams.sources());
     }
 
     fn refreshSets(self: *Stage, due: stage.sequence.Due) Error!void {
-        for (self.table.channels.items) |*c| {
-            if (c.last_epoch == null and due.families.contains(gnss.spec.get(c.key.signal).family)) c.symbols.adopt();
-        }
         try self.seq.refresh(due, self.streams.sources());
         const snap = self.seq.snapshot();
         for (self.table.channels.items) |*c| {
@@ -214,20 +208,21 @@ pub const Stage = struct {
         }
     }
 
-    fn refreshDue(self: *Stage, first: Epoch, count: u32, geom: *const geometry.Stage, ring: *events.Ring) Error!void {
-        var e = first;
-        while (e.ms < first.ms + count) : (e = e.plus(1)) {
-            const t = core.time.atEpoch(self.start, e);
-            while (self.seq.due(t)) |due| try self.refreshSets(due);
-            if (@mod(e.ms, stage.channels.replan_epochs) == 0) {
-                const rows = geom.rowsAt(e) orelse return error.Internal;
-                for (rows, self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .record = seen.delays.record, .el_rad = seen.epoch.el_rad } else null;
-                try self.seq.replan(self.sights, e);
-                const before = self.table.changes;
-                try self.table.apply(e, self.seq.changes.items, rows, &self.tables, self.seq.snapshot(), ring);
-                if (self.table.changes != before) if (self.dump_plan) |w| self.dumpPlan(w, e) catch {};
-            }
+    pub fn plan(self: *Stage, first: Epoch, count: u32, geom: *const geometry.Stage, ring: *events.Ring) Error!void {
+        self.streams.advanceTo(core.time.atEpoch(self.start, first.plus(count)));
+        self.table.prune(first);
+        self.window_rows = geom.rowsFrom(first, count) orelse return error.Internal;
+        while (self.seq.due(core.time.atEpoch(self.start, first))) |due| try self.refreshSets(due);
+        // Re-plans open blocks, which no window crosses: only a window's first epoch re-plans.
+        if (@mod(first.ms, stage.channels.replan_epochs) == 0) {
+            const rows = self.window_rows[0..self.sats.len];
+            for (rows, self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .record = seen.delays.record, .el_rad = seen.epoch.el_rad } else null;
+            try self.seq.replan(self.sights, first);
+            const before = self.table.changes;
+            try self.table.apply(first, self.seq.changes.items, rows, &self.tables, self.seq.snapshot(), ring);
+            if (self.table.changes != before) if (self.dump_plan) |w| self.dumpPlan(w, first) catch {};
         }
+        while (self.seq.due(core.time.atEpoch(self.start, first.plus(count - 1)))) |due| try self.refreshSets(due);
     }
 
     fn deriveOne(self: *const Stage, i: usize, c: *const Channel, ci: usize, power: *const Power) ?params.EpochParams {
@@ -250,9 +245,7 @@ pub const Stage = struct {
             .tx = geo.observation.transmitTime(b.epoch, signal, c.freq, code_b),
         };
         const cn0 = power.cn0(c.key.sat, a.epoch.el_rad);
-        if (self.dump_params) |dump| if (dump.enabled) {
-            dump.records[i * self.window_channels + ci] = .{ .phase_cycles = endpoint_a.phase_cycles, .tx = endpoint_a.tx, .cn0_dbhz = cn0 };
-        };
+        if (self.dump_params) |dump| dump.records[i * self.window_channels + ci] = .{ .phase_cycles = endpoint_a.phase_cycles, .tx = endpoint_a.tx, .cn0_dbhz = cn0 };
         var p = params.derive(c.synth, self.b.plan.leap, endpoint_a, endpoint_b, core.time.atEpoch(self.start, e), self.samples_per_epoch, cn0) orelse return null;
         if (gp != gd) {
             p.lead_bits = gnss.spec.get(signal).stateBits(if (gp < gd) .pilot else .data);
@@ -261,7 +254,7 @@ pub const Stage = struct {
         return p;
     }
 
-    pub fn deriveEpoch(self: *Stage, i: u32, power: *const Power) void {
+    pub fn deriveEpoch(self: *const Stage, i: u32, power: *const Power) void {
         const channels = self.table.channels.items;
         const out = self.rows[i * channels.len ..][0..channels.len];
         for (channels, out, self.spans[0..channels.len], self.derived[0..channels.len], 0..) |*c, *row, span, derived, ci| {
@@ -287,26 +280,20 @@ pub const Stage = struct {
     }
 
     pub fn prepare(self: *Stage, first: Epoch, count: u32, geom: *const geometry.Stage, power: *const Power, ring: *events.Ring) Error!void {
-        std.debug.assert(count <= self.window_epochs);
-        self.streams.advanceTo(core.time.atEpoch(self.start, first.plus(count)));
-        self.table.prune(first);
-        try self.refreshDue(first, count, geom, ring);
+        try self.plan(first, count, geom, ring);
         const channels = self.table.channels.items;
         self.window_first = first;
         self.window_count = count;
         self.window_channels = channels.len;
-        self.window_rows = geom.rowsFrom(first, count) orelse return error.Internal;
         std.debug.assert(self.rows.len >= count * channels.len);
-        const dumping = if (self.dump_params) |dump| dump.enabled else false;
-        const here = dumping or count <= 2;
+        const here = self.dump_params != null or count <= 2;
         for (channels, self.spans[0..channels.len], self.derived[0..channels.len], 0..) |*c, *span, *derived, ci| {
             const per = self.tables.tables[c.synth.table].entries_per_period;
             span.* = .{};
-            derived.* = here;
             // A channel's periods only grow, so its first and last epochs give the window's span; the job derives every epoch.
-            if (!here) for ([_]u32{ 0, count - 1 }) |i| {
-                if (self.deriveOne(i, c, ci, power)) |p| span.include(p, self.samples_per_epoch, per) else derived.* = true;
-            };
+            derived.* = here or for ([_]u32{ 0, count - 1 }) |i| {
+                span.include(self.deriveOne(i, c, ci, power) orelse break true, self.samples_per_epoch, per);
+            } else false;
             if (derived.*) {
                 span.* = .{};
                 for (0..count) |i| {
@@ -321,7 +308,7 @@ pub const Stage = struct {
                 if (self.rows[i * channels.len + ci]) |*p| self.bind(p, ci, span.*);
             };
         }
-        if (self.dump_params) |dump| if (dump.enabled) dump.write(self) catch {};
+        if (self.dump_params) |dump| dump.write(self) catch {};
     }
 
     pub fn epochRows(self: *const Stage, index: u32) []const ?params.EpochParams {
