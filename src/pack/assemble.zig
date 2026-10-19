@@ -160,7 +160,7 @@ fn encoding(e: gnss.publication.EncodingError) []const u8 {
 }
 
 fn utcServed(s: *const bundle.scenario.Scenario, set: *const NavSet, leap: Leap) bool {
-    if (s.samples == null and s.observation == null) return true;
+    if (s.samples == null) return true;
     if (!s.carries(.fnav)) return true;
     return galileo.time_parameters.utcBlock(set.utc(.gal, s.start, leap), s.start) != null;
 }
