@@ -1,10 +1,9 @@
 const std = @import("std");
 const dictionary = @import("shared").core.dictionary;
-const Epoch = @import("shared").core.time.Epoch;
-const trig = @import("trig.zig");
 
-const V4 = trig.V4;
-const V4u = trig.V4u;
+const V4 = @Vector(4, f32);
+const V4u = @Vector(4, u32);
+const V4i = @Vector(4, i32);
 
 pub const Mode = enum(u32) {
     counter = 0,
@@ -28,10 +27,10 @@ inline fn words(seed: u64, g: u64, comptime k: u64) V4u {
 
 const Pair4 = struct { re: V4, im: V4 };
 
-const ln_2_pow_64 = 64.0 * 0.69314718055994530942;
+const ln_2_pow_64 = 64.0 * std.math.ln2;
 
-// The low words, at most 1 in all, move a lane's value only below 2^25, where the spacing of floats drops under 4.
-const low_words_matter: V4 = @splat(33554432.0);
+// A low word adds at most 1; that moves the rounded value only below 2^25, where floats are spaced under 4.
+const low_words_matter: V4 = @splat(0x1p25);
 
 pub inline fn group(seed: u64, g: u64) Pair4 {
     const hi = words(seed, g, 0);
@@ -39,50 +38,66 @@ pub inline fn group(seed: u64, g: u64) Pair4 {
     const hi_f: V4 = @floatFromInt(hi);
     const value = if (@reduce(.Or, hi_f < low_words_matter)) blk: {
         const lo = words(seed, g, 2) | @as(V4u, @splat(1));
-        break :blk @mulAdd(V4, @floatFromInt(lo), @splat(1.0 / 4294967296.0), hi_f);
+        break :blk @mulAdd(V4, @floatFromInt(lo), @splat(0x1p-32), hi_f);
     } else hi_f;
-    const neg2ln = @max(@mulAdd(V4, trig.logf(value), @splat(-2.0), @splat(ln_2_pow_64)), @as(V4, @splat(0.0)));
+    const neg2ln = @max(@mulAdd(V4, logf(value), @splat(-2.0), @splat(ln_2_pow_64)), @as(V4, @splat(0.0)));
     const r = @sqrt(neg2ln);
-    const sc = trig.sincosTurn(ang);
+    const sc = sincosTurn(ang);
     return .{ .re = r * sc.c, .im = r * sc.s };
 }
 
-fn counterFill(seed: u64, first: u64, re: []f32, im: []f32) void {
-    std.debug.assert(re.len == im.len);
-    var i: usize = 0;
-    var idx = first;
-    while (i < re.len and idx % 4 != 0) : ({
-        i += 1;
-        idx += 1;
-    }) single(seed, idx, &re[i], &im[i]);
-    while (i + 4 <= re.len) : ({
-        i += 4;
-        idx += 4;
-    }) {
-        const g = group(seed, idx / 4);
-        re[i..][0..4].* = g.re;
-        im[i..][0..4].* = g.im;
-    }
-    while (i < re.len) : ({
-        i += 1;
-        idx += 1;
-    }) single(seed, idx, &re[i], &im[i]);
+const SinCos = struct { s: V4, c: V4 };
+
+// Degree 3 in x², fitted at Chebyshev nodes: errors at most 1.2e-6 (sin) and 6.8e-6 (cos).
+inline fn sincosQuarter(x: V4) SinCos {
+    const x2 = x * x;
+    var p: V4 = @splat(-1.8522539325e-04);
+    p = @mulAdd(V4, p, x2, @splat(8.3131914144e-03));
+    p = @mulAdd(V4, p, x2, @splat(-1.6665676500e-01));
+    p = @mulAdd(V4, p, x2, @splat(9.9999923706e-01));
+    const s = x * p;
+    var q: V4 = @splat(-1.2710112331e-03);
+    q = @mulAdd(V4, q, x2, @splat(4.1487014140e-02));
+    q = @mulAdd(V4, q, x2, @splat(-4.9991176041e-01));
+    const c = @mulAdd(V4, q, x2, @splat(9.9999320210e-01));
+    return .{ .s = s, .c = c };
 }
 
-fn single(seed: u64, idx: u64, re: *f32, im: *f32) void {
-    const g = group(seed, idx / 4);
-    const ga: [4]f32 = g.re;
-    const gb: [4]f32 = g.im;
-    re.* = ga[idx % 4];
-    im.* = gb[idx % 4];
+inline fn sincosTurn(phase: V4u) SinCos {
+    const quad = phase >> @splat(30);
+    const frac_bits = phase & @as(V4u, @splat(0x3fffffff));
+    const t: V4 = @as(V4, @floatFromInt(frac_bits)) * @as(V4, @splat(0x1p-30));
+    const qs = sincosQuarter(t * @as(V4, @splat(std.math.pi / 2.0)));
+    const odd = (quad & @as(V4u, @splat(1))) == @as(V4u, @splat(1));
+    const c1 = @select(f32, odd, qs.s, qs.c);
+    const s1 = @select(f32, odd, qs.c, qs.s);
+    const neg_c = (quad -% @as(V4u, @splat(1))) < @as(V4u, @splat(2));
+    const neg_s = quad >= @as(V4u, @splat(2));
+    return .{ .c = @select(f32, neg_c, -c1, c1), .s = @select(f32, neg_s, -s1, s1) };
 }
 
-pub fn fill(mode: Mode, seed: u64, epoch: Epoch, samples_per_epoch: u32, first: u32, re: []f32, im: []f32) void {
-    switch (mode) {
-        .counter => counterFill(seed, epoch.ms * samples_per_epoch + first, re, im),
-        .off => {
-            @memset(re, 0);
-            @memset(im, 0);
-        },
-    }
+// Degree 3, fitted at Chebyshev nodes: error at most 1.3e-5.
+const log_coefficients = [_]f32{ -1.4852839839e-01, 2.1452891615e-01, -2.5164769138e-01, 3.3314169743e-01 };
+const ln2_high: f32 = 0.693359375;
+const ln2_low: f32 = -2.12194440e-4;
+
+inline fn logf(x: V4) V4 {
+    const bits: V4u = @bitCast(x);
+    const exp_field: V4i = @bitCast(bits >> @splat(23));
+    const mant_bits = (bits & @as(V4u, @splat(0x007fffff))) | @as(V4u, @splat(0x3f000000));
+    const m: V4 = @bitCast(mant_bits);
+    var e: V4 = @floatFromInt(exp_field - @as(V4i, @splat(126)));
+    const one: V4 = @splat(1.0);
+    const lt = m < @as(V4, @splat(std.math.sqrt1_2));
+    e = @select(f32, lt, e - one, e);
+    const f = @select(f32, lt, m + m - one, m - one);
+    const z = f * f;
+    var y: V4 = @splat(log_coefficients[0]);
+    inline for (log_coefficients[1..]) |c| y = @mulAdd(V4, y, f, @splat(c));
+    y = y * f * z;
+    y = @mulAdd(V4, e, @splat(ln2_low), y);
+    y = @mulAdd(V4, z, @splat(-0.5), y);
+    var r = f + y;
+    r = @mulAdd(V4, e, @splat(ln2_high), r);
+    return r;
 }

@@ -5,10 +5,10 @@ const codes = @import("shared").gnss.codes;
 
 pub const Axis = enum { both, re, im };
 
-fn axisOf(values: [8]spec.Gain, count: usize) Axis {
+fn axisOf(values: [8]spec.Gain) Axis {
     var any_re = false;
     var any_im = false;
-    for (values[0..count]) |v| {
+    for (values) |v| {
         any_re = any_re or v.re != 0;
         any_im = any_im or v.im != 0;
     }
@@ -24,9 +24,9 @@ pub const Table = struct {
     entries_per_period: u32,
     entries_per_ms: u32,
     values: [8]spec.Gain,
-    value_count: usize = 4,
-    tdm: ?Tdm = null,
-    axis: Axis = .both,
+    value_count: usize,
+    tdm: ?Tdm,
+    axis: Axis,
 
     const Tdm = struct {
         pilot: []const u8,
@@ -58,6 +58,7 @@ pub const TableSet = struct {
         while (it.next()) |signal| {
             const row = spec.get(signal);
             const code = row.code;
+            const values = valueTable(row);
             var sats = signal.system().satellites();
             while (sats.next()) |sat| {
                 const chips = try codes.dataCode(gpa, signal, sat);
@@ -76,10 +77,10 @@ pub const TableSet = struct {
                     .states = try fold(gpa, code, if (row.waveform) |w| w.states else &.{0}, chips, if (tdm) null else pilot),
                     .entries_per_period = code.entriesPerPeriod(),
                     .entries_per_ms = code.entriesPerMs(),
-                    .values = valueTable(row),
+                    .values = values,
                     .value_count = row.valueCount(),
                     .tdm = if (code.tdm_periods_per_cycle) |periods| .{ .pilot = pilot.?, .periods = periods, .half = code.entriesPerPeriod() / 2 } else null,
-                    .axis = axisOf(valueTable(row), row.valueCount()),
+                    .axis = axisOf(values),
                 };
                 made += 1;
             }

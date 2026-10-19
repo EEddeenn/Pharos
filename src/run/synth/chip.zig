@@ -1,8 +1,7 @@
-const trig = @import("trig.zig");
 const tables = @import("tables.zig");
 const params = @import("params.zig");
 
-const V4u = trig.V4u;
+const V4u = @Vector(4, u32);
 
 pub const Shape = enum { plain, tdm, lead };
 
@@ -129,35 +128,35 @@ pub const Nco = struct {
         };
     }
 
-    pub inline fn next(n: *Nco, comptime shape: Shape, t: *const tables.Table, lead: Lead) V4u {
-        const entries: [4]u32 = n.idx;
-        const period_offsets: [4]u32 = n.period;
+    pub inline fn next(self: *Nco, comptime shape: Shape, t: *const tables.Table, lead: Lead) V4u {
+        const entries: [4]u32 = self.idx;
+        const period_offsets: [4]u32 = self.period;
         const states = t.states;
         var st: V4u = .{ states[entries[0]], states[entries[1]], states[entries[2]], states[entries[3]] };
-        var mask: V4u = if (@reduce(.And, n.period == @as(V4u, @splat(period_offsets[0])))) @splat(n.masks[period_offsets[0]]) else .{ n.masks[period_offsets[0]], n.masks[period_offsets[1]], n.masks[period_offsets[2]], n.masks[period_offsets[3]] };
+        var mask: V4u = if (@reduce(.And, self.period == @as(V4u, @splat(period_offsets[0])))) @splat(self.masks[period_offsets[0]]) else .{ self.masks[period_offsets[0]], self.masks[period_offsets[1]], self.masks[period_offsets[2]], self.masks[period_offsets[3]] };
         if (shape == .tdm) {
             mask &= @splat(1);
             const mux = t.tdm.?;
             inline for (0..4) |i| {
                 if (entries[i] & 1 == 1) {
-                    st[i] = 2 | mux.pilot[mux.index(n.period0 + period_offsets[i], entries[i])];
+                    st[i] = 2 | mux.pilot[mux.index(self.period0 + period_offsets[i], entries[i])];
                     mask[i] = 0;
                 }
             }
         }
-        const out = if (shape == .lead) n.leadState(st ^ mask, t, entries, period_offsets, lead) else st ^ mask;
-        const old = n.frac;
-        n.frac +%= n.sfrac;
-        const carry: V4u = @intFromBool(n.frac < old);
-        const advanced = n.idx + n.step_rem + carry;
-        const over = advanced >= n.per;
-        n.idx = @select(u32, over, advanced -% n.per, advanced);
-        n.period += n.step_periods + @as(V4u, @intFromBool(over));
+        const out = if (shape == .lead) self.leadState(st ^ mask, t, entries, period_offsets, lead) else st ^ mask;
+        const old = self.frac;
+        self.frac +%= self.sfrac;
+        const carry: V4u = @intFromBool(self.frac < old);
+        const advanced = self.idx + self.step_rem + carry;
+        const over = advanced >= self.per;
+        self.idx = @select(u32, over, advanced -% self.per, advanced);
+        self.period += self.step_periods + @as(V4u, @intFromBool(over));
         return out;
     }
 
-    inline fn leadState(n: *const Nco, st: V4u, t: *const tables.Table, entries: [4]u32, period_offsets: [4]u32, lead: Lead) V4u {
-        const carry = n.frac +% lead.frac < n.frac;
+    inline fn leadState(self: *const Nco, st: V4u, t: *const tables.Table, entries: [4]u32, period_offsets: [4]u32, lead: Lead) V4u {
+        const carry = self.frac +% lead.frac < self.frac;
         if (lead.whole == 0 and !@reduce(.Or, carry)) return st;
         var out: [4]u32 = st;
         inline for (0..4) |i| {
@@ -168,7 +167,7 @@ pub const Nco = struct {
                     lead_entry -= t.entries_per_period;
                     lead_period += 1;
                 }
-                out[i] = (out[i] & ~lead.bits) | ((t.states[lead_entry] ^ n.masks[lead_period]) & lead.bits);
+                out[i] = (out[i] & ~lead.bits) | ((t.states[lead_entry] ^ self.masks[lead_period]) & lead.bits);
             }
         }
         return out;

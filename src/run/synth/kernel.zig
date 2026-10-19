@@ -1,5 +1,4 @@
 const std = @import("std");
-const trig = @import("trig.zig");
 const rotor = @import("rotor.zig");
 const chip = @import("chip.zig");
 const noise = @import("noise.zig");
@@ -9,12 +8,18 @@ const params = @import("params.zig");
 const types = @import("shared").core.types;
 const Epoch = @import("shared").core.time.Epoch;
 
-const V4 = trig.V4;
+const V4 = @Vector(4, f32);
 const V4i64 = @Vector(4, i64);
+const Rotor = rotor.Rotor;
+const Axis = tables.Axis;
 
 const sub_tile_samples: u32 = 2560;
 
 const reseed_len = rotor.reseed_len;
+
+comptime {
+    std.debug.assert(sub_tile_samples % reseed_len == 0);
+}
 
 const expand_limit: f64 = 0.8;
 
@@ -23,8 +28,7 @@ const runs_limit: f64 = 1.0 / 8.0;
 const run_store_slack: u32 = 2;
 
 pub fn subTileFor(samples_per_epoch: u32) u32 {
-    const len = @min(sub_tile_samples, samples_per_epoch);
-    return @max(rotor.stride, std.mem.alignForward(u32, len, rotor.stride));
+    return std.mem.alignForward(u32, @min(sub_tile_samples, samples_per_epoch), rotor.stride);
 }
 
 pub const Config = struct {
@@ -42,13 +46,10 @@ pub const Scratch = struct {
     acc_im: []f32,
     x_re: []f32,
     x_im: []f32,
-    n_re: []f32,
-    n_im: []f32,
 
     pub fn init(gpa: std.mem.Allocator, sub_tile_len: u32, slack: u32) error{OutOfMemory}!Scratch {
         const n = sub_tile_len + slack;
-        const buffer = try gpa.alloc(f32, 6 * n);
-        @memset(buffer[2 * n .. 4 * n], 0);
+        const buffer = try gpa.alloc(f32, 4 * n);
         return .{
             .gpa = gpa,
             .buffer = buffer,
@@ -56,8 +57,6 @@ pub const Scratch = struct {
             .acc_im = buffer[n..][0..n],
             .x_re = buffer[2 * n ..][0..n],
             .x_im = buffer[3 * n ..][0..n],
-            .n_re = buffer[4 * n ..][0..n],
-            .n_im = buffer[5 * n ..][0..n],
         };
     }
 
@@ -84,9 +83,6 @@ fn scaledValues(comptime count: usize, t: *const tables.Table, amp: f32) [count]
     }
     return values;
 }
-
-const Rotor = rotor.Rotor;
-const Axis = tables.Axis;
 
 fn Expansion(comptime count: usize, comptime fixed_stores: u32, comptime axis: Axis) type {
     return struct {
@@ -194,38 +190,23 @@ fn expandLead(comptime count: usize, comptime fixed_stores: u32, comptime axis: 
     var lead_entry: u32 = @intCast((x.absolute + lead_whole_entries) % per);
     var lead_period: usize = @intCast((x.absolute + lead_whole_entries) / per);
     var lead_state: u8 = states[lead_entry] ^ masks[lead_period];
-    if (lead_whole_entries == 0) {
-        while (x.walk.n < x.end) {
+    switch (lead_whole_entries == 0) {
+        inline true, false => |same| while (x.walk.n < x.end) {
             const n_cur = x.walk.n;
             const lead_edge_n = n_cur + x.walk.leadRun();
             x.walk.next();
+            const state = if (same) lead_state else states[x.entry] ^ x.mask;
             lead_entry += 1;
             if (lead_entry == per) {
                 lead_entry = 0;
                 lead_period += 1;
             }
-            const next_state = states[lead_entry] ^ masks[lead_period];
-            if (lead_edge_n > n_cur) x.storeRun(x.values[lead_state], n_cur);
-            if (lead_edge_n < x.walk.n and lead_edge_n < x.end) x.storeRun(x.values[(lead_state & main_bits) | (next_state & lead_bits)], lead_edge_n);
-            lead_state = next_state;
-        }
-        return;
-    }
-    while (x.walk.n < x.end) {
-        const n_cur = x.walk.n;
-        const lead_edge_n = n_cur + x.walk.leadRun();
-        x.walk.next();
-        const state = states[x.entry] ^ x.mask;
-        lead_entry += 1;
-        if (lead_entry == per) {
-            lead_entry = 0;
-            lead_period += 1;
-        }
-        const lead_state_next = states[lead_entry] ^ masks[lead_period];
-        if (lead_edge_n > n_cur) x.storeRun(x.values[(state & main_bits) | (lead_state & lead_bits)], n_cur);
-        if (lead_edge_n < x.walk.n and lead_edge_n < x.end) x.storeRun(x.values[(state & main_bits) | (lead_state_next & lead_bits)], lead_edge_n);
-        lead_state = lead_state_next;
-        x.advanceEntry();
+            const lead_state_next = states[lead_entry] ^ masks[lead_period];
+            if (lead_edge_n > n_cur) x.storeRun(x.values[(state & main_bits) | (lead_state & lead_bits)], n_cur);
+            if (lead_edge_n < x.walk.n and lead_edge_n < x.end) x.storeRun(x.values[(state & main_bits) | (lead_state_next & lead_bits)], lead_edge_n);
+            lead_state = lead_state_next;
+            if (!same) x.advanceEntry();
+        },
     }
 }
 
@@ -275,22 +256,20 @@ fn rotateAccumulateInPairs(comptime axis: Axis, p: *const params.EpochParams, n0
     var ra: Rotor = undefined;
     ra.init(p.carrier_phase0, p.carrier_step, n0);
     var base: u32 = 0;
-    if (n0 % reseed_len == 0 and strided >= 2 * reseed_len) {
-        var rb = ra;
-        while (base + 2 * reseed_len <= strided) : (base += 2 * reseed_len) {
-            if (base != 0) ra.seed(n0 + base);
-            rb.seed(n0 + base + reseed_len);
-            var i: u32 = 0;
-            while (i < reseed_len) : (i += rotor.stride) {
-                inline for (0..rotor.chains) |q| {
-                    const ja = base + i + rotor.lanes * q;
-                    const jb = ja + reseed_len;
-                    accumulate(axis, &ra, q, ja, source.quarter(ja), acc_re, acc_im);
-                    accumulate(axis, &rb, q, jb, source.quarter(jb), acc_re, acc_im);
-                }
-                ra.advance();
-                rb.advance();
+    var rb = ra;
+    while (base + 2 * reseed_len <= strided) : (base += 2 * reseed_len) {
+        if (base != 0) ra.seed(n0 + base);
+        rb.seed(n0 + base + reseed_len);
+        var i: u32 = 0;
+        while (i < reseed_len) : (i += rotor.stride) {
+            inline for (0..rotor.chains) |q| {
+                const ja = base + i + rotor.lanes * q;
+                const jb = ja + reseed_len;
+                accumulate(axis, &ra, q, ja, source.quarter(ja), acc_re, acc_im);
+                accumulate(axis, &rb, q, jb, source.quarter(jb), acc_re, acc_im);
             }
+            ra.advance();
+            rb.advance();
         }
     }
     carrierLoop(axis, &ra, n0, base, strided, acc_re, acc_im, source);
@@ -380,22 +359,9 @@ fn Gathered(comptime shape: chip.Shape, comptime count: usize) type {
 }
 
 fn synthChannel(p: *const params.EpochParams, t: *const tables.Table, n0: u32, len: u32, s: *Scratch) void {
-    const lead = p.lead_bits != 0;
-    switch (t.axis) {
-        inline else => |axis| {
-            if (t.tdm != null) {
-                synthImpl(.tdm, 4, axis, p, t, n0, len, s);
-            } else if (t.value_count == 4) {
-                if (lead) {
-                    synthImpl(.lead, 4, axis, p, t, n0, len, s);
-                } else {
-                    synthImpl(.plain, 4, axis, p, t, n0, len, s);
-                }
-            } else if (lead) {
-                synthImpl(.lead, 8, axis, p, t, n0, len, s);
-            } else {
-                synthImpl(.plain, 8, axis, p, t, n0, len, s);
-            }
+    switch (@as(chip.Shape, if (t.tdm != null) .tdm else if (p.lead_bits != 0) .lead else .plain)) {
+        inline else => |shape| switch (t.axis) {
+            inline else => |axis| if (shape == .tdm or t.value_count == 4) synthImpl(shape, 4, axis, p, t, n0, len, s) else synthImpl(shape, 8, axis, p, t, n0, len, s),
         },
     }
 }
@@ -438,29 +404,32 @@ pub fn synthSubTile(cfg: Config, set: *const tables.TableSet, rows: []const ?par
     for (rows) |*row| {
         if (row.*) |*p| synthChannel(p, &set.tables[p.table], n0, len, s);
     }
-    addNoise(cfg, epoch, n0, len, strided, s);
+    addNoise(cfg, epoch, n0, len, s);
     return quantize.pack(cfg.format, s.acc_re[0..len], s.acc_im[0..len], gain, out[cfg.format.bytesFor(n0)..]);
 }
 
-fn addNoise(cfg: Config, epoch: Epoch, n0: u32, len: u32, strided: u32, s: *Scratch) void {
+fn addNoise(cfg: Config, epoch: Epoch, n0: u32, len: u32, s: *Scratch) void {
+    if (cfg.noise == .off) return;
     const first: u64 = epoch.ms * cfg.samples_per_epoch + n0;
-    if (cfg.noise == .counter and first % 4 == 0) {
-        var j: usize = 0;
-        var g: u64 = first / 4;
-        while (j < len) : ({
-            j += 4;
-            g += 1;
-        }) {
-            const pair = noise.group(cfg.seed, g);
-            s.acc_re[j..][0..4].* = @as(V4, s.acc_re[j..][0..4].*) + pair.re;
-            s.acc_im[j..][0..4].* = @as(V4, s.acc_im[j..][0..4].*) + pair.im;
-        }
-        return;
-    }
-    noise.fill(cfg.noise, cfg.seed, epoch, cfg.samples_per_epoch, n0, s.n_re[0..strided], s.n_im[0..strided]);
     var j: usize = 0;
-    while (j < len) : (j += 4) {
-        s.acc_re[j..][0..4].* = @as(V4, s.acc_re[j..][0..4].*) + @as(V4, s.n_re[j..][0..4].*);
-        s.acc_im[j..][0..4].* = @as(V4, s.acc_im[j..][0..4].*) + @as(V4, s.n_im[j..][0..4].*);
+    var g: u64 = first / 4;
+    if (first % 4 != 0) {
+        const pair = noise.group(cfg.seed, g);
+        const re: [4]f32 = pair.re;
+        const im: [4]f32 = pair.im;
+        for (@intCast(first % 4)..4) |lane| {
+            s.acc_re[j] += re[lane];
+            s.acc_im[j] += im[lane];
+            j += 1;
+        }
+        g += 1;
+    }
+    while (j < len) : ({
+        j += 4;
+        g += 1;
+    }) {
+        const pair = noise.group(cfg.seed, g);
+        s.acc_re[j..][0..4].* = @as(V4, s.acc_re[j..][0..4].*) + pair.re;
+        s.acc_im[j..][0..4].* = @as(V4, s.acc_im[j..][0..4].*) + pair.im;
     }
 }

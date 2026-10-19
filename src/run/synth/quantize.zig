@@ -27,61 +27,6 @@ fn scale(comptime T: type) f32 {
     };
 }
 
-fn scalarLinear(comptime T: type, re: []const f32, im: []const f32, gain: f32, out: []u8) u64 {
-    const g: f32 = gain * scale(T);
-    const lo: f32 = std.math.minInt(T);
-    const hi: f32 = std.math.maxInt(T);
-    const n = @sizeOf(T);
-    var clipped: u64 = 0;
-    for (re, im, 0..) |a, b, i| {
-        inline for (.{ a, b }, 0..) |x, k| {
-            const v = x * g;
-            clipped += @intFromBool(!(v > lo - 1 and v < hi + 1));
-            const q: T = @intFromFloat(@min(@max(v, lo), hi));
-            std.mem.writeInt(T, out[(2 * i + k) * n ..][0..n], q, .little);
-        }
-    }
-    return clipped;
-}
-
-fn scalarIq4(re: []const f32, im: []const f32, gain: f32, out: []u8) u64 {
-    const g: f32 = gain * iq4_scale;
-    var clipped: u64 = 0;
-    for (re, im, 0..) |a, b, i| {
-        var byte: u8 = 0;
-        inline for (.{ a, b }, 0..) |x, k| {
-            const mag = @abs(x) * g;
-            clipped += @intFromBool(!(mag < iq4_max + 1));
-            var q: u8 = @intFromFloat(@min(mag, iq4_max));
-            if (!(x >= 0)) q += 8;
-            byte |= q << (if (k == 0) 4 else 0);
-        }
-        out[i] = byte;
-    }
-    return clipped;
-}
-
-fn scalarIq2(re: []const f32, im: []const f32, gain: f32, out: []u8) u64 {
-    const threshold: f32 = iq2_threshold / gain;
-    const clip_threshold: f32 = iq2_clip_ratio * threshold;
-    var clipped: u64 = 0;
-    var i: usize = 0;
-    while (i + 1 < re.len) : (i += 2) {
-        var byte: u8 = 0;
-        inline for (0..2) |s| {
-            inline for (.{ re[i + s], im[i + s] }, 0..) |x, k| {
-                const shift: u3 = 4 * s + 2 * k;
-                if (x < 0) byte |= @as(u8, 2) << shift;
-                const v = @abs(x);
-                if (v >= threshold) byte |= @as(u8, 1) << shift;
-                if (v >= clip_threshold) clipped += 1;
-            }
-        }
-        out[i / 2] = byte;
-    }
-    return clipped;
-}
-
 inline fn count(mask: @Vector(4, bool)) V4u {
     return @intFromBool(mask);
 }
@@ -159,15 +104,6 @@ fn vectorIq2(re: []const f32, im: []const f32, gain: f32, out: []u8) u64 {
     return @reduce(.Add, clip);
 }
 
-fn scalar(format: IqFormat, re: []const f32, im: []const f32, gain: f32, out: []u8) u64 {
-    return switch (format) {
-        .iq2 => scalarIq2(re, im, gain, out),
-        .iq4 => scalarIq4(re, im, gain, out),
-        .iq8 => scalarLinear(i8, re, im, gain, out),
-        .iq16 => scalarLinear(i16, re, im, gain, out),
-    };
-}
-
 fn vector(format: IqFormat, re: []const f32, im: []const f32, gain: f32, out: []u8) u64 {
     return switch (format) {
         .iq2 => vectorIq2(re, im, gain, out),
@@ -181,8 +117,18 @@ pub fn pack(format: IqFormat, re: []const f32, im: []const f32, gain: f32, out: 
     std.debug.assert(re.len == im.len);
     const len: u32 = @intCast(re.len);
     std.debug.assert(out.len >= format.bytesFor(len));
-    const head = len - len % vectorGranule(format);
+    const granule = vectorGranule(format);
+    const head = len - len % granule;
     var clipped = vector(format, re[0..head], im[0..head], gain, out);
-    if (head < len) clipped += scalar(format, re[head..], im[head..], gain, out[format.bytesFor(head)..]);
+    if (head < len) {
+        var tail_re: [8]f32 = @splat(0);
+        var tail_im: [8]f32 = @splat(0);
+        @memcpy(tail_re[0 .. len - head], re[head..]);
+        @memcpy(tail_im[0 .. len - head], im[head..]);
+        var bytes: [16]u8 = undefined;
+        clipped += vector(format, tail_re[0..granule], tail_im[0..granule], gain, &bytes);
+        const tail_bytes = format.bytesFor(len - head);
+        @memcpy(out[format.bytesFor(head)..][0..tail_bytes], bytes[0..tail_bytes]);
+    }
     return clipped;
 }

@@ -19,9 +19,9 @@ const Agc = struct {
     clipped: u64 = 0,
     components: u64 = 0,
 
-    fn account(self: *Agc, epoch: Epoch, clipped: u64, total: u64) ?Adjustment {
+    fn account(self: *Agc, epoch: Epoch, clipped: u64, components: u64) ?Adjustment {
         self.clipped += clipped;
-        self.components += total;
+        self.components += components;
         if (epoch.ms % evaluation_epochs != 0) return null;
         const rate = @as(f64, @floatFromInt(self.clipped)) / @as(f64, @floatFromInt(self.components));
         self.clipped = 0;
@@ -31,8 +31,7 @@ const Agc = struct {
             return .{ .epoch = epoch, .gain = self.gain, .clip_rate = rate, .reduced = true };
         }
         if (rate < clip_rate_low and self.gain < 1.0) {
-            self.gain *= gain_up;
-            if (self.gain > 1.0) self.gain = 1.0;
+            self.gain = @min(self.gain * gain_up, 1.0);
             return .{ .epoch = epoch, .gain = self.gain, .clip_rate = rate, .reduced = false };
         }
         return null;
