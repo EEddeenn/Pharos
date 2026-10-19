@@ -12,7 +12,6 @@ pub const Reason = enum {
     no_navigation_record,
     no_available_record,
     unrepresentable_parameters,
-    missing_integrity,
     missing_utc,
     missing_eop,
     missing_time_offset,

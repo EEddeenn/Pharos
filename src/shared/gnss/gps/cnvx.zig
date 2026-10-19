@@ -120,17 +120,20 @@ fn healthGapOf(extra: records.SourceExtra, source: records.NavSource) ?[:0]const
     };
 }
 
+/// CNAV's flags: the record's own, else the declared integrity's, else ISF 0 and alert 0, as LNAV sends them: the legacy
+/// integrity level, and a URA that holds. Null where CNAV cannot carry the reference.
 pub fn cnavFlags(sv: *const Content, declared: ?messages.Integrity, prn: u8) ?gps_records.CnavFlags {
     const parameters = sv.value() orelse return null;
     if (parameters.flags) |own| return own;
-    const d = declared orelse return null;
+    const d = declared orelse return .{ .integrity_status = false, .l2c_phasing = false, .alert = false };
     return .{ .integrity_status = d.isf == 1, .l2c_phasing = false, .alert = d.alerts(prn) };
 }
 
+/// CNAV-2's ISF, as `cnavFlags` gives CNAV's.
 pub fn cnav2Isf(sv: *const Content, declared: ?messages.Integrity) ?bool {
     const parameters = sv.value() orelse return null;
     if (parameters.integrity_status) |own| return own;
-    const d = declared orelse return null;
+    const d = declared orelse return false;
     return d.isf == 1;
 }
 

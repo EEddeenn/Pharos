@@ -477,10 +477,6 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                             out.configurationIndex = codes[i];
                         };
                     }
-                    if (isf == null) {
-                        out.reason = .missing_integrity;
-                        return out;
-                    }
                 },
                 .inav, .fnav => {
                     const sv = (contentOf(b, sat, f, boundary) orelse return out).value() orelse return out;
