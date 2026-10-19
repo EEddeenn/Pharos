@@ -34,7 +34,8 @@ pub fn writeRun(gpa: std.mem.Allocator, io: Io, path: []const u8, run: *Run, con
     var k: usize = 0;
     const failed: ?PullError = while (true) {
         const slot = pulled[k * half ..][0..half];
-        const block = run.pull(slot, pull_epochs) catch unreachable;
+        // After a seek off the grid, the first pull stops at the grid, so every later pull is one block.
+        const block = run.pull(slot, pull_epochs - @as(u32, @intCast(run.epoch.ms % pull_epochs))) catch unreachable;
         if (writing) |*w| write_failed = w.await(io);
         writing = if (write_failed == null) io.async(writeBlock, .{ &writer, slot[0..block.bytes] }) else null;
         afterBlock(context, run, block);
