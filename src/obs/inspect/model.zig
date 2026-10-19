@@ -310,8 +310,8 @@ fn ionosphere(configuration: bundle.ionosphere.Configuration, system: types.Syst
 
 fn navigation(set: *const bundle.navigation.NavSet, current: shared.track.selection.Selection, signal: types.Signal) Navigation {
     const row = current.air[gnss.spec.slot(signal)];
-    // The record's own reasons alone: the allocation is the channel's `broadcasts`.
-    const serves = row.status == .on_air or row.status == .not_allocated;
+    // The record's own reasons alone: the allocation is the channel's `broadcasts`, the family's carriage its state.
+    const serves = row.status != .dead;
     return switch (current.record) {
         .kepler => |reference| blk: {
             const declared = if (row.declared) |k| gnss.reference.attributesOf(reference.record, &set.kepler[k]) else null;

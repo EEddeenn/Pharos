@@ -57,10 +57,24 @@ fn origin(signal: types.Signal, delay: ?f64) gnss.air.Origin {
     return if (gnss.delay.convention(signal)) .convention else .broadcast;
 }
 
-pub fn rows(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, resolved: *const Resolved, carried: *const gnss.payload.Carried) std.mem.Allocator.Error![]const Row {
+pub fn rows(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, resolved: *const Resolved, carried: *const gnss.payload.Carried, contents: []const gnss.content.Content) std.mem.Allocator.Error![]const Row {
     const out = try arena.alloc(Row, gnss.spec.signalCount(sat.system));
     for (std.meta.tags(types.Signal)) |signal| {
-        if (signal.system() == sat.system) out[gnss.spec.slot(signal)] = air(set, resolved, carried, signal);
+        if (signal.system() != sat.system) continue;
+        var row = air(set, resolved, carried, signal);
+        if (row.status == .on_air and notCarried(carried.get(signal).?, contents)) row.status = .not_carried;
+        out[gnss.spec.slot(signal)] = row;
     }
     return out;
+}
+
+/// B-CNAV and D1/D2 have no form that says their ephemeris is unavailable: a signal whose family cannot carry the leg's
+/// reference is off the air.
+fn notCarried(family: types.NavFamily, contents: []const gnss.content.Content) bool {
+    switch (family) {
+        .d1d2, .bcnav1, .bcnav2, .bcnav3 => {},
+        else => return false,
+    }
+    for (contents) |*content| if (std.meta.activeTag(content.*) == family) return content.unfit() != null;
+    return false;
 }

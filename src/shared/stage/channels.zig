@@ -35,6 +35,7 @@ fn offAir(status: gnss.air.Status) ?State {
     return switch (status) {
         .on_air => null,
         .dead => .declared_dead,
+        .not_carried => .no_frames,
         .not_allocated => .not_broadcast,
     };
 }

@@ -57,11 +57,12 @@ fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, carried:
         const r = if (entry.*) |*r| r else continue;
         const until_ms = if (i + 1 < out.items.len) out.items[i + 1].from_ms else span_ms;
         const interval: gnss.bds.d1d2.Interval = .{ .first = times[0].addMs(@intCast(leg.from_ms)), .last = times[0].addMs(@intCast(until_ms)) };
+        const leg_contents = try contents.prepare(arena, set, r, families, interval, leap);
         leg.binding = .{
             .reference = r.reference,
             .group_delay = r.group_delay,
-            .air = try air.rows(arena, set, sat, r, carried),
-            .contents = try contents.prepare(arena, set, r, families, interval, leap),
+            .air = try air.rows(arena, set, sat, r, carried, leg_contents),
+            .contents = leg_contents,
         };
     }
     return out.items;
@@ -178,25 +179,44 @@ fn scales(set: *const NavSet, start: GpsTime) std.EnumMap(types.System, core.clo
     return out;
 }
 
+/// Warns of each leg whose reference a listed signal's family cannot carry, with what the family does then: CNAV and
+/// CNAV-2 send their unavailable form, B-CNAV and D1/D2 leave their signals off the air.
 pub fn warnUnfit(s: *const model.Scenario, set: *const NavSet, p: *const Plan, diags: *Diagnostics) std.mem.Allocator.Error!void {
-    if (s.samples == null) return;
-    const listed = gnss.payload.at(s.start).families(s.signals);
+    const payload = gnss.payload.at(s.start);
     for (p.timelines) |timeline| {
         for (std.enums.values(types.NavFamily)) |family| {
-            if (!listed.contains(family)) continue;
+            var signals: std.EnumSet(types.Signal) = .empty;
+            var listed = s.signals.iterator();
+            while (listed.next()) |signal| if (payload.familyOf(timeline.sat, signal) == family) signals.insert(signal);
+            const consequence: Consequence = switch (family) {
+                .cnav, .cnav2 => if (s.samples != null) .{} else continue,
+                .d1d2, .bcnav1, .bcnav2, .bcnav3 => .{ .off_air = signals },
+                else => continue,
+            };
+            if (signals.count() == 0) continue;
             for (timeline.legs) |*leg| {
                 const binding = if (leg.binding) |*binding| binding else continue;
                 const reference = binding.kepler(set) orelse continue;
-                if (reference.record.source().family() == family) continue;
                 const unfit = (binding.content(family) orelse continue).unfit() orelse continue;
-                switch (unfit) {
-                    .field, .health => try warnRecord(reference.record, family, unfit, diags),
-                    .record, .fit => {},
-                }
+                try warnRecord(reference.record, family, unfit, consequence, diags);
             }
         }
     }
 }
+
+/// What a family does on a leg whose reference it cannot carry: sends its unavailable form, or leaves its signals off
+/// the air.
+const Consequence = struct {
+    off_air: std.EnumSet(types.Signal) = .empty,
+
+    pub fn format(self: Consequence, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.off_air.count() == 0) return w.writeAll("sent there as unavailable");
+        try w.writeAll("off the air on ");
+        var it = self.off_air.iterator();
+        var first = true;
+        while (it.next()) |signal| : (first = false) try w.print("{s}{s}", .{ if (first) "" else ", ", signal.name() });
+    }
+};
 
 pub fn warnAssumed(s: *const model.Scenario, set: *const NavSet, p: *const Plan, run_ms: u64, diags: *Diagnostics) std.mem.Allocator.Error!void {
     var assumed: [bundle.plan.satellite_count]std.EnumSet(types.Signal) = @splat(.empty);
@@ -265,13 +285,14 @@ const Satellites = struct {
     }
 };
 
-fn warnRecord(e: *const records.KeplerEphemeris, family: types.NavFamily, unfit: gnss.content.Unfit, diags: *Diagnostics) std.mem.Allocator.Error!void {
+fn warnRecord(e: *const records.KeplerEphemeris, family: types.NavFamily, unfit: gnss.content.Unfit, consequence: Consequence, diags: *Diagnostics) std.mem.Allocator.Error!void {
     const head = .{ e.sat, e.source().rinexName(e.sat), e.toc.printed(null) };
     const tail = sourceOf(family).rinexName(e.sat);
     switch (unfit) {
-        .field => |name| try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: {s} outside its {s} field, sent there as unavailable while it is selected", head ++ .{ name, tail }),
-        .health => |signals| try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: it declares no {s} signal health for {s}, sent there as unavailable while it is selected", head ++ .{ signals, tail }),
-        .record, .fit => unreachable,
+        .field => |name| try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: {s} outside its {s} field, {f} while it is selected", head ++ .{ name, tail, consequence }),
+        .health => |signals| try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: it declares no {s} signal health for {s}, {f} while it is selected", head ++ .{ signals, tail, consequence }),
+        .fit => try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: no {s} orbit fits it over its leg, {f} while it is selected", head ++ .{ tail, consequence }),
+        .record => unreachable,
     }
 }
 

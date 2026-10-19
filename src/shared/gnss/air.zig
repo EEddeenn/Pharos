@@ -2,9 +2,10 @@ const std = @import("std");
 const types = @import("../core.zig").types;
 const health = @import("health.zig");
 
-/// On the air, or the first reason a signal is not: the leg's record's reasons come before the allocation's, so that
-/// what the record says of a signal its satellite does not transmit stays known.
-pub const Status = enum { on_air, dead, not_allocated };
+/// On the air, or the first reason a signal is not: the leg's record's health, then the signal's family, which cannot
+/// carry the record, then the allocation, so that what the record says of a signal its satellite does not transmit
+/// stays known.
+pub const Status = enum { on_air, dead, not_carried, not_allocated };
 
 pub const Origin = enum { broadcast, convention, assumed };
 
