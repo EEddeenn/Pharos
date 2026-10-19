@@ -61,7 +61,7 @@ fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, carried:
             .reference = r.reference,
             .group_delay = r.group_delay,
             .air = try air.rows(arena, set, sat, r, carried),
-            .contents = try contents.prepare(arena, set, r, families, interval),
+            .contents = try contents.prepare(arena, set, r, families, interval, leap),
         };
     }
     return out.items;

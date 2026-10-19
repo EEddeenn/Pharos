@@ -76,7 +76,7 @@ pub const Content = union(NavFamily) {
                     .inav => inav.valid(v, sat),
                     .fnav => fnav.valid(v, sat),
                     .d1d2 => v.valid(sat),
-                    .bcnav1, .bcnav2, .bcnav3 => bcnav.valid(v, sat),
+                    .bcnav1, .bcnav2, .bcnav3 => bcnav.valid(v, sat, @field(records.NavSource, @tagName(family))),
                     .gnav => gnav.valid(v, sat, leap),
                     .cnav_has, .ppp_b2b => unreachable,
                 };

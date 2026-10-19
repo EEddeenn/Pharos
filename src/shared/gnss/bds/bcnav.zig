@@ -81,15 +81,26 @@ pub const Sv = struct {
     }
 };
 
-/// A B-CNAV family's content for a leg: the reference as its messages carry it, or the field it does not fit.
+/// A B-CNAV family's content for a leg: the reference as its messages carry it, or the first of their fields it does
+/// not fit.
 pub fn prepare(e: Kepler, source: records.NavSource) Content {
     const sv = Sv.fromReference(e, source);
-    if (sv.ephemeris.misfit()) |name| return .{ .unfit = .{ .field = name } };
+    if (misfit(&sv, source)) |name| return .{ .unfit = .{ .field = name } };
     return .{ .carried = sv };
 }
 
-pub fn valid(sv: *const Sv, sat: types.SatId) bool {
-    return sv.ephemeris.eph.sat == sat and sv.ephemeris.misfit() == null and sv.ephemeris.eph.misfit() == null;
+pub fn valid(sv: *const Sv, sat: types.SatId, source: records.NavSource) bool {
+    return sv.ephemeris.eph.sat == sat and misfit(sv, source) == null and sv.ephemeris.eph.misfit() == null;
+}
+
+fn misfit(sv: *const Sv, source: records.NavSource) ?[:0]const u8 {
+    if (sv.ephemeris.misfit()) |name| return name;
+    return switch (source) {
+        .bcnav1 => @import("bcnav1/content.zig").misfit(sv),
+        .bcnav2 => @import("bcnav2/content.zig").misfit(sv),
+        .bcnav3 => @import("bcnav3/content.zig").misfit(sv),
+        else => unreachable,
+    };
 }
 
 const S = field.Field(Sv);

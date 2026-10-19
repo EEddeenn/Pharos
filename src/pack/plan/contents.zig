@@ -30,12 +30,12 @@ pub fn needed(s: *const bundle.scenario.Scenario, set: *const NavSet, payload: *
 
 /// A leg's contents: one per needed family its satellite carries, in the families' order, each from the family's
 /// `prepare`. D1/D2's fit covers the leg's interval.
-pub fn prepare(arena: std.mem.Allocator, set: *const NavSet, resolved: *const Resolved, families: std.EnumSet(NavFamily), interval: gnss.bds.d1d2.Interval) std.mem.Allocator.Error![]const Content {
+pub fn prepare(arena: std.mem.Allocator, set: *const NavSet, resolved: *const Resolved, families: std.EnumSet(NavFamily), interval: gnss.bds.d1d2.Interval, leap: shared.core.civil.Leap) std.mem.Allocator.Error![]const Content {
     const out = try arena.alloc(Content, families.count());
     var it = families.iterator();
     var i: usize = 0;
     while (it.next()) |family| : (i += 1) out[i] = switch (resolved.reference) {
-        .glonass => |g| .{ .gnav = gnss.glonass.gnav.prepare(&set.glonass[g], resolved.glonass_p1, resolved.group_delay.get(.delta_tau_n)) },
+        .glonass => |g| .{ .gnav = gnss.glonass.gnav.prepare(&set.glonass[g], resolved.glonass_p1, resolved.group_delay.get(.delta_tau_n), leap) },
         .kepler => kepler(resolved.kepler(set).?, family, interval),
     };
     return out;

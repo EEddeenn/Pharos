@@ -182,15 +182,15 @@ pub const Set = struct {
 
 pub const Content = @import("../content.zig").Carriage(Eph);
 
-/// LNAV's content for a leg: its own record as LNAV describes it, with the leg's T_GD. LNAV carries no other family's
-/// record.
+/// LNAV's content for a leg: its own record as LNAV describes it, with the leg's T_GD, or the first of its fields it
+/// does not fit. LNAV carries no other family's record.
 pub fn prepare(e: nav_reference.Kepler) Content {
     if (e.record.source() != .lnav) return .{ .unfit = .record };
     var out = e.record.*;
     out.extra = e.attribute(.lnav) orelse unreachable;
     out.group_delay = .{};
     if (e.delay(.l1ca, .data)) |tgd| out.group_delay.put(.tgd_l1ca, tgd);
-    if (!field.fits(Eph, &.{field.rowOf(Eph, &tables.sf1, "tgd")}, &out)) return .{ .unfit = .{ .field = "tgd" } };
+    if (misfit(&out)) |name| return .{ .unfit = .{ .field = name } };
     return .{ .carried = out };
 }
 

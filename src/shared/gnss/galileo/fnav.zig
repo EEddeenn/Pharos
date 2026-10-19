@@ -125,20 +125,25 @@ const dummy_page: PageContent = blk: {
     break :blk content;
 };
 
-/// F/NAV's content for a leg: the reference projected onto F/NAV's clock, and whether page 1 can carry that clock.
+/// F/NAV's content for a leg: the reference projected onto F/NAV's clock, and whether page 1 can carry that clock (else
+/// it is a dummy page), or the first field of the other pages it does not fit.
 pub fn prepare(e: reference.Kepler) Content {
     const eph = projection.forSource(e, .fnav);
-    return .{ .carried = .{
-        .eph = eph,
-        .clock_fits = clockAvailable(e) and field.fits(Eph, &tables.page1, &eph) and field.fits(Eph, &tables.page1_tail, &eph),
-    } };
+    if (misfit(&eph)) |name| return .{ .unfit = .{ .field = name } };
+    return .{ .carried = .{ .eph = eph, .clock_fits = clockAvailable(e) and clockFits(&eph) } };
 }
 
 pub fn valid(sv: *const Sv, sat: SatId) bool {
-    if (sv.eph.sat != sat or sv.eph.extra != .fnav) return false;
-    if (sv.clock_fits and !(field.fits(Eph, &tables.page1, &sv.eph) and field.fits(Eph, &tables.page1_tail, &sv.eph))) return false;
-    inline for (.{ &tables.page2, &tables.page3, &tables.page4 }) |rows| if (!field.fits(Eph, rows, &sv.eph)) return false;
-    return true;
+    return sv.eph.sat == sat and sv.eph.extra == .fnav and misfit(&sv.eph) == null and (!sv.clock_fits or clockFits(&sv.eph));
+}
+
+fn misfit(eph: *const Eph) ?[:0]const u8 {
+    inline for (.{ &tables.page2, &tables.page3, &tables.page4 }) |rows| if (field.misfit(Eph, rows, eph)) |name| return name;
+    return null;
+}
+
+fn clockFits(eph: *const Eph) bool {
+    return field.fits(Eph, &tables.page1, eph) and field.fits(Eph, &tables.page1_tail, eph);
 }
 
 fn clockAvailable(e: reference.Kepler) bool {

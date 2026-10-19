@@ -50,6 +50,14 @@ const delays = [_]S{
     .{ .name = "tgd_b1cp", .width = 12, .repr = .twos, .scale_log2 = -34, .src = .{ .field = "tgd_b1cp" } },
 };
 
+/// The first of B-CNAV2's fields that the satellite's content fills, beyond its ephemeris, that the content does not fit.
+pub fn misfit(sv: *const Sv) ?[:0]const u8 {
+    inline for (.{ &hs_flags, &delays, &bcnav.sisai_oc, &bcnav.sisai_oe }) |rows| {
+        if (field.misfit(Sv, rows, sv)) |name| return name;
+    }
+    return null;
+}
+
 pub fn encode(sv: *const Sv, a: Input, ctx: Ctx, w: *bitwriter.BitWriter) field.Error!void {
     try field.encode(field.NoSource, &header, &field.no_source, .{ .prn = ctx.prn, .kind = @backingInt(ctx.kind), .sow = ctx.sow }, w);
     if (ctx.kind != .ephemeris_1) try field.encode(Sv, &hs_flags, sv, .{}, w);

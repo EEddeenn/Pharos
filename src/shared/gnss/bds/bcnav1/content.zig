@@ -17,6 +17,14 @@ const Sf3 = frame.Bits(264);
 const Error = field.Error;
 pub const Page = union(enum) { p0, p1, p2: [4]u7, p3: u2, p4: u7 };
 
+/// The first of B-CNAV1's fields that the satellite's content fills, beyond its ephemeris, that the content does not fit.
+pub fn misfit(sv: *const Sv) ?[:0]const u8 {
+    inline for (.{ &tables.sf2_tail, &tables.page0, &tables.page1_header, &tables.page2_header, &tables.page3_header, &tables.page4_header }) |rows| {
+        if (field.misfit(Sv, rows, sv)) |name| return name;
+    }
+    return null;
+}
+
 pub const Set = struct {
     data: bcnav.Data,
 

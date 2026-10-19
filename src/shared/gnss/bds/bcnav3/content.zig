@@ -46,6 +46,14 @@ const tgd = [_]S{.{ .name = "tgd_b2bi", .width = 12, .repr = .twos, .scale_log2 
 
 const accuracy = bcnav.sisai_oc ++ bcnav.sisai_oe ++ [_]S{.{ .name = "hs", .width = 2, .renamed = true, .src = .{ .field = "hs_b2b" } }};
 
+/// The first of B-CNAV3's fields that the satellite's content fills, beyond its ephemeris, that the content does not fit.
+pub fn misfit(sv: *const Sv) ?[:0]const u8 {
+    inline for (.{ &integrity, &tgd, &accuracy }) |rows| {
+        if (field.misfit(Sv, rows, sv)) |name| return name;
+    }
+    return null;
+}
+
 pub fn encode(in: *const Input, kind: Type, ctx: Ctx) field.Error!b2b.Message {
     var out: b2b.Message = .{};
     var w = out.writer();

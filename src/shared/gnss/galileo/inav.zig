@@ -13,7 +13,6 @@ const page = @import("inav/page.zig");
 const schedule = @import("inav/schedule.zig");
 const fec2 = @import("inav/fec2.zig");
 const reduced = @import("inav/reduced.zig");
-const ephemeris = @import("ephemeris_fields.zig");
 const kepler = @import("../kepler.zig");
 const types = @import("../../core.zig").types;
 pub const ism = @import("inav/ism.zig");
@@ -118,14 +117,24 @@ pub const Set = struct {
 
 pub const Content = @import("../content.zig").Carriage(Eph);
 
-/// I/NAV's content for a leg: its own record, with the leg's BGDs. I/NAV carries no other family's record.
+/// I/NAV's content for a leg: its own record, with the leg's BGDs, or the first of its fields it does not fit. I/NAV
+/// carries no other family's record.
 pub fn prepare(e: reference.Kepler) Content {
     if (e.record.source() != .inav) return .{ .unfit = .record };
-    return .{ .carried = projection.forSource(e, .inav) };
+    const out = projection.forSource(e, .inav);
+    if (misfit(&out)) |name| return .{ .unfit = .{ .field = name } };
+    return .{ .carried = out };
 }
 
 pub fn valid(e: *const Eph, sat: types.SatId) bool {
-    return e.sat == sat and e.extra == .inav and ephemeris.misfit(e) == null and kepler.misfit(e) == null;
+    return e.sat == sat and e.extra == .inav and misfit(e) == null and kepler.misfit(e) == null;
+}
+
+fn misfit(e: *const Eph) ?[:0]const u8 {
+    inline for (.{ &tables.word1, &tables.word2, &tables.word3, &tables.word4, &tables.word5 }) |rows| {
+        if (field.misfit(Eph, rows, e)) |name| return name;
+    }
+    return null;
 }
 
 fn parityOf(eph: *const Eph) Error![fec2.parity_len]u8 {
