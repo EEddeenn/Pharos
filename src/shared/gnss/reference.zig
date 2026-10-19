@@ -42,7 +42,7 @@ pub const Kepler = struct {
     }
 
     pub fn delay(self: Kepler, signal: types.Signal, component: types.Component) ?f64 {
-        return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), signal, component);
+        return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), self.record.sat.prn(), signal, component);
     }
 
     pub fn serves(self: Kepler, signal: types.Signal) bool {

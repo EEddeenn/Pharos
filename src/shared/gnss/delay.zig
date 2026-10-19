@@ -16,11 +16,11 @@ pub fn carrierCode(signal: types.Signal) Code {
     return .{ .signal = spec.get(signal).carrierSignal(), .component = carrier_component };
 }
 
-pub fn forGroupDelays(group_delay: *const records.GroupDelays, source: records.NavSource, signal: types.Signal, component: Component) ?f64 {
+pub fn forGroupDelays(group_delay: *const records.GroupDelays, source: records.NavSource, prn: u8, signal: types.Signal, component: Component) ?f64 {
     if (source.system() != signal.system()) return null;
     return switch (signal.system()) {
         .gps => gps.forGroupDelays(group_delay, signal, component),
-        .bds => bds.forGroupDelays(group_delay, signal, component),
+        .bds => bds.forGroupDelays(group_delay, prn, signal, component),
         .gal => galileo.forGroupDelays(group_delay, source, signal),
         .glo => null,
     };
