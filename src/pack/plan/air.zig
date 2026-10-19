@@ -14,7 +14,7 @@ pub fn air(set: *const NavSet, binding: *const Binding, allocated: std.EnumSet(t
             const data = reference.delay(signal, .data);
             const health = reference.attributesFor(signal).signalStatus(signal);
             return .{
-                .status = if (data == null) .no_group_delay else if (!health.flies()) .dead else if (!allocated.contains(signal)) .not_allocated else .on_air,
+                .status = if (!health.flies()) .dead else if (!allocated.contains(signal)) .not_allocated else .on_air,
                 .health = health,
                 .delay_s = .init(.{ .data = data orelse 0, .pilot = reference.delay(signal, .pilot) orelse 0 }),
                 .origin = origin(reference.record.sat, signal, data),

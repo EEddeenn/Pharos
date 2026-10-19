@@ -276,7 +276,6 @@ fn modelValue(b: *const bundle.Bundle, ephemeris: *const provider.Track, sampled
 }
 
 fn componentDelay(delays: provider.Delays, signal: types.Signal, component: types.Component) ComponentDelay {
-    if (delays.air[gnss.spec.slot(signal)].origin == .assumed) return .{ .availability = .unavailable, .reason = .missing_group_delay };
     return .{ .availability = .available, .term_s = delays.term(signal, component), .code_s = delays.code(signal, component) };
 }
 

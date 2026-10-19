@@ -53,7 +53,7 @@ pub fn resolve(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime, span: Span
     if (set.precise) |product| {
         const clock_ref = set.clockReference(sat.system);
         const pair = clock_ref.pair();
-        const shift = clock_ref.offset(binding.air[gnss.spec.slot(pair[0])].given(), binding.air[gnss.spec.slot(pair[1])].given()) orelse return null;
+        const shift = clock_ref.offset(binding.air[gnss.spec.slot(pair[0])].delay_s.get(.data), binding.air[gnss.spec.slot(pair[1])].delay_s.get(.data));
         const handle = product.handle(
             sat,
             span.from,

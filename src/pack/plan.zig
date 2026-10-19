@@ -195,20 +195,52 @@ pub fn warnUnfit(s: *const model.Scenario, set: *const NavSet, p: *const Plan, d
     }
 }
 
-pub fn warnClockReference(set: *const NavSet, p: *const Plan, diags: *Diagnostics) std.mem.Allocator.Error!void {
-    const product = set.precise orelse return;
-    for (p.timelines) |timeline| {
-        const clock_ref = set.clockReference(timeline.sat.system);
+pub fn warnAssumed(s: *const model.Scenario, set: *const NavSet, p: *const Plan, run_ms: u64, diags: *Diagnostics) std.mem.Allocator.Error!void {
+    var assumed: [bundle.plan.satellite_count]std.EnumSet(types.Signal) = @splat(.empty);
+    var any = false;
+    for (p.timelines, &assumed) |timeline, *signals| {
+        if (s.mask_out.get(timeline.sat.system).contains(timeline.sat)) continue;
         for (timeline.legs) |*leg| {
+            if (leg.from_ms >= run_ms) break;
             const binding = if (leg.binding) |*binding| binding else continue;
-            const at = p.start.addMs(@intCast(leg.from_ms));
-            if (!provider.productServes(product, timeline.sat, at, p.leap)) continue;
-            const missing = missingClockTerm(clock_ref, binding) orelse continue;
-            try diags.warn(.no_record, "ephemeris", "{f}: a record it flies carries no {s} group delay, which the {s} clock of the precise product refers to: the satellite is dark while that record is selected", .{ timeline.sat, missing.name(), clock_ref.name() });
-            break;
+            if (set.precise) |product| if (!provider.productServes(product, timeline.sat, p.start.addMs(@intCast(leg.from_ms)), p.leap)) continue;
+            var flies = false;
+            var listed = s.signals.iterator();
+            while (listed.next()) |signal| {
+                if (signal.system() != timeline.sat.system) continue;
+                const row = binding.air[gnss.spec.slot(signal)];
+                if (row.status != .on_air) continue;
+                flies = true;
+                if (row.origin == .assumed) signals.insert(signal);
+            }
+            const clock_ref = set.clockReference(timeline.sat.system);
+            if (set.precise == null or !flies or clock_ref == .p1p2) continue;
+            // The precise clock shift moves every signal of the satellite: its pair's terms count, listed or not. P1P2's
+            // shift is 0 and reads none.
+            for (clock_ref.pair()) |signal| {
+                if (binding.air[gnss.spec.slot(signal)].origin == .assumed) signals.insert(signal);
+            }
+        }
+        any = any or signals.count() != 0;
+    }
+    if (any) try diags.warn(.no_record, "ephemeris", "no record flown gives the group delay of {f}: each is taken as 0 s, in the signals and in a precise product's clock shift", .{Assumed{ .timelines = p.timelines, .signals = &assumed }});
+}
+
+const Assumed = struct {
+    timelines: []const Timeline,
+    signals: []const std.EnumSet(types.Signal),
+
+    pub fn format(self: Assumed, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        var first = true;
+        for (self.timelines, self.signals) |timeline, signals| {
+            var it = signals.iterator();
+            while (it.next()) |signal| {
+                try w.print("{s}{f}", .{ if (first) "" else ", ", types.ChannelKey.init(timeline.sat, signal) });
+                first = false;
+            }
         }
     }
-}
+};
 
 pub fn warnUnserved(set: *const NavSet, p: *const Plan, diags: *Diagnostics) std.mem.Allocator.Error!void {
     const product = set.precise orelse return;
@@ -229,11 +261,6 @@ const Satellites = struct {
         for (self.list, 0..) |sat, i| try w.print("{s}{f}", .{ if (i == 0) "" else " ", sat });
     }
 };
-
-fn missingClockTerm(clock_ref: gnss.delay.ClockRef, binding: *const Binding) ?types.Signal {
-    const pair = clock_ref.pair();
-    return clock_ref.missingTerm(binding.air[gnss.spec.slot(pair[0])].given(), binding.air[gnss.spec.slot(pair[1])].given());
-}
 
 fn keplerOf(leg: bundle.plan.Leg) ?u32 {
     const binding = leg.binding orelse return null;

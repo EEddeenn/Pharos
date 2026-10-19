@@ -16,7 +16,6 @@ pub const Reason = enum {
     missing_utc,
     missing_eop,
     missing_time_offset,
-    missing_group_delay,
     signal_has_no_pilot,
     ionosphere_not_resolved,
     system_not_enabled,

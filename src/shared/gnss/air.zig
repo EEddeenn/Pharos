@@ -4,7 +4,7 @@ const health = @import("health.zig");
 
 /// On the air, or the first reason a signal is not: the leg's record's reasons come before the allocation's, so that
 /// what the record says of a signal its satellite does not transmit stays known.
-pub const Status = enum { on_air, no_group_delay, dead, not_allocated };
+pub const Status = enum { on_air, dead, not_allocated };
 
 pub const Origin = enum { broadcast, convention, assumed };
 
@@ -14,9 +14,4 @@ pub const Row = struct {
     health: health.Status,
     delay_s: std.EnumArray(types.Component, f64),
     origin: Origin,
-
-    /// The data delay the records give, null where it is assumed.
-    pub fn given(self: Row) ?f64 {
-        return if (self.origin == .assumed) null else self.delay_s.get(.data);
-    }
 };

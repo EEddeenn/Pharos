@@ -66,7 +66,7 @@ pub fn assemble(arena: std.mem.Allocator, source: nav.files.Source, text: []cons
         error.OutOfMemory => return error.OutOfMemory,
         error.LegBoundaryStalls => return stalledPlan(diags),
     };
-    try plan.warnClockReference(&set, &flight, diags);
+    try plan.warnAssumed(&s, &set, &flight, run_ms, diags);
     try plan.warnUnserved(&set, &flight, diags);
     try plan.reportCoverage(&flight, &s, run_ms, diags);
     plan.setGlonassFrequencies(&set);

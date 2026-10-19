@@ -95,18 +95,8 @@ pub const ClockRef = enum {
         return .{ @floatFromInt(spec.get(p[0]).carrierHz(k)), @floatFromInt(spec.get(p[1]).carrierHz(k)) };
     }
 
-    pub fn missingTerm(self: ClockRef, da: ?f64, db: ?f64) ?types.Signal {
-        if (self == .p1p2) return null;
-        const p = self.pair();
-        if (da == null) return p[0];
-        if (db == null) return p[1];
-        return null;
-    }
-
-    pub fn offset(self: ClockRef, da: ?f64, db: ?f64) ?f64 {
+    pub fn offset(self: ClockRef, a: f64, b: f64) f64 {
         if (self == .p1p2) return 0;
-        const a = da orelse return null;
-        const b = db orelse return null;
         const f = self.frequencies();
         return (f[0] * f[0] * a - f[1] * f[1] * b) / (f[0] * f[0] - f[1] * f[1]);
     }
