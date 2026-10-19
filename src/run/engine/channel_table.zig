@@ -5,7 +5,6 @@ const types = core.types;
 const spec = gnss.spec;
 const msg = @import("../msg.zig");
 const stage = @import("shared").stage;
-const geometry = @import("geometry.zig");
 const events = @import("events.zig");
 const tables = @import("../synth.zig").tables;
 const params = @import("../synth.zig").params;
@@ -77,10 +76,10 @@ pub const ChannelTable = struct {
         }
     }
 
-    pub fn apply(self: *ChannelTable, epoch: Epoch, changes: []const stage.sequence.Change, rows: []const geometry.Row, table_set: *const tables.TableSet, snapshot: stage.messages.Snapshot, payload: *const gnss.payload.Payload, ring: *events.Ring) !void {
+    pub fn apply(self: *ChannelTable, epoch: Epoch, changes: []const stage.sequence.Change, sats: []const types.SatId, sights: []const ?stage.channels.Sight, table_set: *const tables.TableSet, snapshot: stage.messages.Snapshot, payload: *const gnss.payload.Payload, ring: *events.Ring) !void {
         for (changes) |change| {
-            const row = rows[change.track];
-            const key = types.ChannelKey.init(row.sat, change.signal);
+            const sat = sats[change.track];
+            const key = types.ChannelKey.init(sat, change.signal);
             if (change.state != .held) {
                 const c = self.find(key) orelse continue;
                 c.last_epoch = epoch;
@@ -89,7 +88,7 @@ pub const ChannelTable = struct {
                 continue;
             }
             const row_spec = spec.get(change.signal);
-            const freq = row.seen.?.delays.freq;
+            const freq = sights[change.track].?.freq;
             const carrier = row_spec.carrierHz(freq);
             const code = row_spec.code;
             try self.channels.append(self.gpa, .{
@@ -103,7 +102,7 @@ pub const ChannelTable = struct {
                     .table = table_set.find(key) orelse return error.Internal,
                 },
                 .freq = freq,
-                .symbols = msg.symbol.SymbolSource.init(stage.messages.forChannel(snapshot, payload, key).?, row.sat, change.signal),
+                .symbols = msg.symbol.SymbolSource.init(stage.messages.forChannel(snapshot, payload, key).?, sat, change.signal),
                 .first_epoch = epoch,
             });
             self.changes += 1;

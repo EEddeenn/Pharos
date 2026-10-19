@@ -337,11 +337,14 @@ pub const Run = struct {
             self.geometry.needed[c.track] = true;
         };
         // A block split only where a second ends keeps its geometry; one a track refreshes inside is read throughout.
-        if (self.passesThrough(first, count) and !self.geometry.refreshInside(first, count)) self.geometry.endsOnly();
+        const through = self.passesThrough(first, count) and !self.geometry.refreshInside(first, count);
+        const skipped = through and !self.readsEnds(first, count);
+        if (skipped) self.geometry.skip() else if (through) self.geometry.endsOnly();
         var job = window;
         while (self.geometry.nextSegment(&self.events)) |segment| {
             // The tracks that moved are corrected, all of them, before any row of the segment is made.
             if (self.geometry.observation.moved()) self.runJob(.{ .tracks = @intCast(self.geometry.observation.entries.len) });
+            if (skipped) continue;
             // A row or two alone are not worth waking the workers for.
             if (job.epochs == 0 and segment.count <= 2) {
                 for (0..segment.count) |k| self.geometry.produceRows(segment.first.plus(k));
@@ -355,8 +358,8 @@ pub const Run = struct {
         self.blocks_produced = index + 1;
     }
 
-    // A seek passes through a block before its target's: its windows are the whole block, read at their two ends,
-    // unless a command or a power change splits it, or a dump reads every row.
+    // A seek passes through a block before its target's: its windows are the whole block, unless a command or a power
+    // change splits it, or a dump reads every row.
     fn passesThrough(self: *const Run, first: Epoch, count: u32) bool {
         const target = self.seek_to orelse return false;
         const d = self.options.dumps;
@@ -364,6 +367,15 @@ pub const Run = struct {
         if (self.commands.nextAfter(first)) |e| if (e.ms < first.ms + count) return false;
         if (self.power.nextAfter(first)) |e| if (e.ms < first.ms + count) return false;
         return true;
+    }
+
+    // The windows a seek reads at their ends: those where message sets refresh and those before them, so that a refresh
+    // finds the symbol sources where the whole run has them, and the one before the target's block.
+    fn readsEnds(self: *const Run, first: Epoch, count: u32) bool {
+        const target = self.seek_to.?;
+        if (first.ms / geometry.block_epochs + 1 == target.ms / geometry.block_epochs) return true;
+        const start = self.info.span.start;
+        return self.channels.seq.dueWithin(core.time.atEpoch(start, first), core.time.atEpoch(start, first.plus(count + geometry.block_epochs)));
     }
 
     fn runWindow(self: *Run, window: Job) void {

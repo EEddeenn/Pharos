@@ -175,6 +175,18 @@ pub const Sequence = struct {
         return .{ .at = when, .families = families };
     }
 
+    // Whether a leg boundary of a listed family's system falls in [from, until), past the boundaries already due.
+    pub fn dueWithin(self: *const Sequence, from: GpsTime, until: GpsTime) bool {
+        var it = self.kinds.iterator();
+        while (it.next()) |family| {
+            const system = family.system();
+            var at = self.next.get(system);
+            while (at.lessThan(from)) at = bundle.plan.nextLegBoundary(system, at, self.b.plan.leap);
+            if (at.lessThan(until)) return true;
+        }
+        return false;
+    }
+
     pub fn refresh(self: *Sequence, d: Due, sources: messages.Sources) messages.Failure!void {
         try self.build(d.families, d.at, sources);
         const snap = self.snapshot();

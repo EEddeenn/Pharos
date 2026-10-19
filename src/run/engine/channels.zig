@@ -99,6 +99,7 @@ pub const Stage = struct {
     window_first: Epoch = .zero,
     window_count: u32 = 0,
     window_channels: usize = 0,
+    behind: bool = false,
     dump_params: ?ParamsDump,
     dump_plan: ?*Io.Writer,
 
@@ -194,6 +195,7 @@ pub const Stage = struct {
     }
 
     pub fn reset(self: *Stage) error{MessageSet}!void {
+        self.behind = false;
         self.table.reset();
         self.streams.reset();
         try self.seq.reset(self.streams.sources());
@@ -216,11 +218,15 @@ pub const Stage = struct {
         while (self.seq.due(core.time.atEpoch(self.start, first))) |due| try self.refreshSets(due);
         // Re-plans open blocks, which no window crosses: only a window's first epoch re-plans.
         if (@mod(first.ms, stage.channels.replan_epochs) == 0) {
-            const rows = self.window_rows[0..self.sats.len];
-            for (rows, self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .air = seen.delays.air, .freq = seen.delays.freq, .el_rad = seen.epoch.el_rad } else null;
+            // A skipped block's sights are its tracks' first knots, which its first row would take.
+            if (geom.skippedAt(first)) {
+                for (geom.observation.entries, self.sights) |*entry, *sight| sight.* = if (entry.geometry) |g| .{ .air = entry.delays.air, .freq = entry.delays.freq, .el_rad = g.knots[0].el_rad } else null;
+            } else {
+                for (self.window_rows[0..self.sats.len], self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .air = seen.delays.air, .freq = seen.delays.freq, .el_rad = seen.epoch.el_rad } else null;
+            }
             try self.seq.replan(self.sights, first);
             const before = self.table.changes;
-            try self.table.apply(first, self.seq.changes.items, rows, &self.tables, self.seq.snapshot(), self.seq.payload, ring);
+            try self.table.apply(first, self.seq.changes.items, self.sats, self.sights, &self.tables, self.seq.snapshot(), self.seq.payload, ring);
             if (self.table.changes != before) if (self.dump_plan) |w| self.dumpPlan(w, first) catch {};
         }
         while (self.seq.due(core.time.atEpoch(self.start, first.plus(count - 1)))) |due| try self.refreshSets(due);
@@ -287,6 +293,12 @@ pub const Stage = struct {
         self.window_count = count;
         self.window_channels = channels.len;
         std.debug.assert(self.rows.len >= count * channels.len);
+        // No source reads a skipped window: the next window read catches them up.
+        if (geom.skippedAt(first)) {
+            self.behind = true;
+            return;
+        }
+        defer self.behind = false;
         const here = self.dump_params != null or count <= 2;
         const ends_only = geom.endsOnlyAt(first);
         for (channels, self.spans[0..channels.len], self.derived[0..channels.len], 0..) |*c, *span, *derived, ci| {
@@ -308,6 +320,7 @@ pub const Stage = struct {
                 }
             }
             if (span.last == 0) continue;
+            if (self.behind and c.first_epoch.ms != first.ms) c.symbols.catchUp(span.first);
             try self.fillMasks(c, ci, span.*);
             if (derived.*) for (0..count) |i| {
                 if (self.rows[i * channels.len + ci]) |*p| self.bind(p, ci, span.*);

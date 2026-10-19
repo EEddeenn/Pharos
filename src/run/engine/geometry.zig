@@ -23,8 +23,9 @@ pub const Row = struct {
     };
 };
 
-// A block a seek passes through has its rows at its two ends alone; the rows between have nothing seen.
-const RowBuffer = struct { rows: []Row, first: Epoch = .zero, count: u32 = 0, valid: bool = false, ends_only: bool = false };
+// A block a seek passes through has its rows at its two ends alone, the rows between having nothing seen; or, when no
+// later window reads it, no rows at all.
+const RowBuffer = struct { rows: []Row, first: Epoch = .zero, count: u32 = 0, valid: bool = false, ends_only: bool = false, skipped: bool = false };
 
 pub const Segment = struct { first: Epoch, count: u32 };
 
@@ -123,8 +124,17 @@ pub const Stage = struct {
         self.buffers[self.writing].ends_only = true;
     }
 
+    pub fn skip(self: *Stage) void {
+        self.buffers[self.writing].skipped = true;
+    }
+
     pub fn endsOnlyAt(self: *const Stage, epoch: Epoch) bool {
         for (self.buffers) |b| if (b.valid and epoch.ms >= b.first.ms and epoch.ms < b.first.ms + b.count) return b.ends_only;
+        return false;
+    }
+
+    pub fn skippedAt(self: *const Stage, epoch: Epoch) bool {
+        for (self.buffers) |b| if (b.valid and epoch.ms >= b.first.ms and epoch.ms < b.first.ms + b.count) return b.skipped;
         return false;
     }
 

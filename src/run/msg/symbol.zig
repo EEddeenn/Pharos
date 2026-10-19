@@ -71,6 +71,18 @@ pub const SymbolSource = struct {
         return (bit ^ nh) * data_neg;
     }
 
+    // Reads, in order, every frame after the last one read and before code period k's, as the windows a seek skipped
+    // would have; a source no window has read reads only the frame before.
+    pub fn catchUp(self: *SymbolSource, k: u64) void {
+        const index = self.locate(k).index - 1;
+        if (self.cache_index == unread) {
+            _ = self.frameFor(index);
+            return;
+        }
+        var i = self.cache_index + 1;
+        while (i <= index) : (i += 1) _ = self.frameFor(i);
+    }
+
     pub fn fill(self: *SymbolSource, k0: u64, out: []Mask) void {
         for (out, 0..) |*m, i| {
             const loc = self.locate(k0 + i);
