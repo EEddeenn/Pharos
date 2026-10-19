@@ -51,7 +51,7 @@ pub const Rotor = struct {
 
     pub inline fn advance(r: *Rotor) void {
         inline for (0..chains) |q| {
-            const t = @mulAdd(V4, r.c_re[q], r.w_re, -r.c_im[q] * r.w_im);
+            const t = @mulAdd(V4, r.c_re[q], r.w_re, r.c_im[q] * -r.w_im);
             r.c_im[q] = @mulAdd(V4, r.c_re[q], r.w_im, r.c_im[q] * r.w_re);
             r.c_re[q] = t;
         }

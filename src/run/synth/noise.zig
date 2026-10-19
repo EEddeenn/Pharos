@@ -30,13 +30,13 @@ const Pair4 = struct { re: V4, im: V4 };
 const ln_2_pow_64 = 64.0 * std.math.ln2;
 
 // A low word adds at most 1; that moves the rounded value only below 2^25, where floats are spaced under 4.
-const low_words_matter: V4 = @splat(0x1p25);
+const low_words_matter: V4u = @splat(1 << 25);
 
 pub inline fn group(seed: u64, g: u64) Pair4 {
     const hi = words(seed, g, 0);
     const ang = words(seed, g, 4);
     const hi_f: V4 = @floatFromInt(hi);
-    const value = if (@reduce(.Or, hi_f < low_words_matter)) blk: {
+    const value = if (@reduce(.Or, hi < low_words_matter)) blk: {
         const lo = words(seed, g, 2) | @as(V4u, @splat(1));
         break :blk @mulAdd(V4, @floatFromInt(lo), @splat(0x1p-32), hi_f);
     } else hi_f;
@@ -64,16 +64,15 @@ inline fn sincosQuarter(x: V4) SinCos {
 }
 
 inline fn sincosTurn(phase: V4u) SinCos {
-    const quad = phase >> @splat(30);
     const frac_bits = phase & @as(V4u, @splat(0x3fffffff));
-    const t: V4 = @as(V4, @floatFromInt(frac_bits)) * @as(V4, @splat(0x1p-30));
-    const qs = sincosQuarter(t * @as(V4, @splat(std.math.pi / 2.0)));
-    const odd = (quad & @as(V4u, @splat(1))) == @as(V4u, @splat(1));
+    const qs = sincosQuarter(@as(V4, @floatFromInt(frac_bits)) * @as(V4, @splat(std.math.pi / 2.0 * 0x1p-30)));
+    const odd = (phase & @as(V4u, @splat(1 << 30))) != @as(V4u, @splat(0));
     const c1 = @select(f32, odd, qs.s, qs.c);
     const s1 = @select(f32, odd, qs.c, qs.s);
-    const neg_c = (quad -% @as(V4u, @splat(1))) < @as(V4u, @splat(2));
-    const neg_s = quad >= @as(V4u, @splat(2));
-    return .{ .c = @select(f32, neg_c, -c1, c1), .s = @select(f32, neg_s, -s1, s1) };
+    // The quarter is the phase's top two bits: the sine is negative in the last two, the cosine in the middle two.
+    const sign: V4u = @splat(1 << 31);
+    const sign_c = (phase ^ (phase << @splat(1))) & sign;
+    return .{ .c = @bitCast(@as(V4u, @bitCast(c1)) ^ sign_c), .s = @bitCast(@as(V4u, @bitCast(s1)) ^ (phase & sign)) };
 }
 
 // Degree 3, fitted at Chebyshev nodes: error at most 1.3e-5.
@@ -81,16 +80,14 @@ const log_coefficients = [_]f32{ -1.4852839839e-01, 2.1452891615e-01, -2.5164769
 const ln2_high: f32 = 0.693359375;
 const ln2_low: f32 = -2.12194440e-4;
 
+const sqrt1_2_bits: V4u = @splat(@bitCast(@as(f32, std.math.sqrt1_2)));
+
 inline fn logf(x: V4) V4 {
-    const bits: V4u = @bitCast(x);
-    const exp_field: V4i = @bitCast(bits >> @splat(23));
-    const mant_bits = (bits & @as(V4u, @splat(0x007fffff))) | @as(V4u, @splat(0x3f000000));
-    const m: V4 = @bitCast(mant_bits);
-    var e: V4 = @floatFromInt(exp_field - @as(V4i, @splat(126)));
-    const one: V4 = @splat(1.0);
-    const lt = m < @as(V4, @splat(std.math.sqrt1_2));
-    e = @select(f32, lt, e - one, e);
-    const f = @select(f32, lt, m + m - one, m - one);
+    // Less the bits of √½, x splits into 2^e times m in [√½, √2).
+    const ix: V4i = @bitCast(@as(V4u, @bitCast(x)) -% sqrt1_2_bits);
+    const e: V4 = @floatFromInt(ix >> @splat(23));
+    const m: V4 = @bitCast((@as(V4u, @bitCast(ix)) & @as(V4u, @splat(0x007fffff))) +% sqrt1_2_bits);
+    const f = m - @as(V4, @splat(1.0));
     const z = f * f;
     var y: V4 = @splat(log_coefficients[0]);
     inline for (log_coefficients[1..]) |c| y = @mulAdd(V4, y, f, @splat(c));

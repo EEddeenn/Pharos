@@ -128,23 +128,17 @@ pub const Nco = struct {
         };
     }
 
-    pub inline fn next(self: *Nco, comptime shape: Shape, t: *const tables.Table, lead: Lead) V4u {
+    pub inline fn next(self: *Nco, comptime shape: Shape, t: *const tables.Table, lead: Lead) [4]u32 {
         const entries: [4]u32 = self.idx;
         const period_offsets: [4]u32 = self.period;
-        const states = t.states;
-        var st: V4u = .{ states[entries[0]], states[entries[1]], states[entries[2]], states[entries[3]] };
-        var mask: V4u = if (@reduce(.And, self.period == @as(V4u, @splat(period_offsets[0])))) @splat(self.masks[period_offsets[0]]) else .{ self.masks[period_offsets[0]], self.masks[period_offsets[1]], self.masks[period_offsets[2]], self.masks[period_offsets[3]] };
-        if (shape == .tdm) {
-            mask &= @splat(1);
-            const mux = t.tdm.?;
-            inline for (0..4) |i| {
-                if (entries[i] & 1 == 1) {
-                    st[i] = 2 | mux.pilot[mux.index(self.period0 + period_offsets[i], entries[i])];
-                    mask[i] = 0;
-                }
-            }
+        // The lanes' periods never decrease, so when the first and the last share one, all four do.
+        const shared = period_offsets[0] == period_offsets[3];
+        var out: [4]u32 = undefined;
+        inline for (&out, entries, period_offsets) |*o, entry, period| {
+            const mask = self.masks[if (shared) period_offsets[0] else period];
+            o.* = if (shape == .tdm and entry & 1 == 1) 2 | t.tdm.?.pilot[t.tdm.?.index(self.period0 + period, entry)] else t.states[entry] ^ (if (shape == .tdm) mask & 1 else mask);
         }
-        const out = if (shape == .lead) self.leadState(st ^ mask, t, entries, period_offsets, lead) else st ^ mask;
+        if (shape == .lead) out = self.leadState(out, t, entries, period_offsets, lead);
         const old = self.frac;
         self.frac +%= self.sfrac;
         const carry: V4u = @intFromBool(self.frac < old);
@@ -155,10 +149,10 @@ pub const Nco = struct {
         return out;
     }
 
-    inline fn leadState(self: *const Nco, st: V4u, t: *const tables.Table, entries: [4]u32, period_offsets: [4]u32, lead: Lead) V4u {
+    inline fn leadState(self: *const Nco, st: [4]u32, t: *const tables.Table, entries: [4]u32, period_offsets: [4]u32, lead: Lead) [4]u32 {
         const carry = self.frac +% lead.frac < self.frac;
         if (lead.whole == 0 and !@reduce(.Or, carry)) return st;
-        var out: [4]u32 = st;
+        var out = st;
         inline for (0..4) |i| {
             if (lead.whole != 0 or carry[i]) {
                 var lead_entry = entries[i] + lead.whole + @intFromBool(carry[i]);
