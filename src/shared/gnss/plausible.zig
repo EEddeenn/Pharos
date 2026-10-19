@@ -1,6 +1,7 @@
 const std = @import("std");
 const time = @import("../core.zig").time;
 const civil = @import("../core.zig").civil;
+const clock = @import("../core.zig").clock;
 const field = @import("../codec.zig").field;
 const iono = @import("../core.zig").iono;
 const klobuchar_fields = @import("klobuchar_fields.zig");
@@ -118,19 +119,29 @@ fn transmissionNear(reference: time.GpsTime, transmitted: time.GpsTime) bool {
     return @abs(transmitted.ms -| reference.ms) <= auxiliary.max_transmission_offset_ms;
 }
 
-pub fn timeOffset(offset: auxiliary.TimeOffset) ?[:0]const u8 {
-    const limits = offsetLimits(offset.kind);
+fn coefficients(kind: auxiliary.OffsetKind, a0: f64, a1: f64, a2: f64) ?[:0]const u8 {
+    const limits = offsetLimits(kind);
     const slack = 1 + 1e-9;
-    if (!(@abs(offset.a0) <= limits[0] * slack)) return "a0";
-    if (!(@abs(offset.a1) <= limits[1] * slack)) return "a1";
-    if (!(@abs(offset.a2) <= limits[2] * slack)) return "a2";
-
-    switch (offset.kind) {
-        .glut => if (gnav.scaleMisfit(-offset.a0, 0) != null) return "a0",
-        .glgp => if (gnav.scaleMisfit(0, offset.a0) != null) return "a0",
+    if (!(@abs(a0) <= limits[0] * slack)) return "a0";
+    if (!(@abs(a1) <= limits[1] * slack)) return "a1";
+    if (!(@abs(a2) <= limits[2] * slack)) return "a2";
+    switch (kind) {
+        .glut => if (gnav.scaleMisfit(-a0, 0) != null) return "a0",
+        .glgp => if (gnav.scaleMisfit(0, a0) != null) return "a0",
         else => {},
     }
+    return null;
+}
 
+/// A system's time scale as pack makes it from a time offset to GPS time (`TimeOffset.scaleOffset`): its
+/// coefficients within that offset's fields.
+pub fn timeScale(kind: auxiliary.OffsetKind, p: clock.Poly) ?[:0]const u8 {
+    const sign: f64 = if (kind == .glgp) -1 else 1;
+    return coefficients(kind, sign * p.af0, sign * p.af1, sign * p.af2);
+}
+
+pub fn timeOffset(offset: auxiliary.TimeOffset) ?[:0]const u8 {
+    if (coefficients(offset.kind, offset.a0, offset.a1, offset.a2)) |name| return name;
     const reference = offset.reference orelse return null;
     const transmitted = offset.transmitted orelse return null;
     if (!transmissionNear(reference, transmitted)) return "t_tm";

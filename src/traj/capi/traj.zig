@@ -12,6 +12,7 @@ const source = @import("../source.zig");
 const inspect = @import("../inspect.zig");
 const kml = @import("../kml.zig");
 const stats = @import("../stats.zig");
+const frame = @import("../frame.zig");
 const capi = @import("shared").capi;
 const common = @import("common.zig");
 const allocator = common.allocator;
@@ -28,6 +29,8 @@ pub const Handle = struct {
     pht_bytes: ?[]u8 = null,
     kml_bytes: ?[]u8 = null,
     inspection_bytes: ?[]u8 = null,
+    /// The path's statistics, found at the first `info_get`.
+    info: ?Info = null,
     err: ErrorBuffer = .{},
 
     fn trajectory(self: *const Handle) ?Trajectory {
@@ -38,11 +41,10 @@ pub const Handle = struct {
         };
     }
 
-    fn valid(self: *const Handle) bool {
+    fn refusal(self: *const Handle) ?[]const u8 {
         return switch (self.content) {
-            .none => false,
-            .loaded => true,
-            .built => |built| built.valid,
+            .none, .loaded => null,
+            .built => |built| built.refusal(),
         };
     }
 };
@@ -59,6 +61,8 @@ pub const Info = extern struct {
     acceleration_steps: u32 = 0,
     largest_acceleration_step_mps2: f64 = 0,
     largest_acceleration_step_s: f64 = 0,
+    largest_velocity_step_mps: f64 = 0,
+    largest_velocity_step_s: f64 = 0,
 };
 
 pub const State = extern struct {
@@ -114,6 +118,11 @@ pub fn pharos_traj_read(bytes: ?[*]const u8, len: usize, out: ?*?*Handle) callco
     const h = create() orelse return nomem(&common.thread_error);
     const arena = h.arena.allocator();
     var diags = Diagnostics.init(arena);
+    // As every other reader of a PHT does.
+    if (data.len > shared_trajectory.pht.max_bytes) {
+        diags.err(.out_of_range, "", "a PHT must be at most {d} bytes, got {d}", .{ shared_trajectory.pht.max_bytes, data.len }) catch return nomemDestroy(h);
+        return finish(h, &diags, .input, o);
+    }
     const traj = shared_trajectory.pht.read(arena, data, diags.forSource("")) catch |e| {
         if (e == error.OutOfMemory) return nomemDestroy(h);
         return finish(h, &diags, .input, o);
@@ -167,24 +176,30 @@ pub fn pharos_traj_has_path(h: ?*const Handle) callconv(.c) c_int {
     return @intFromBool(trajectoryOf(h) != null);
 }
 
-pub fn pharos_traj_info_get(h: ?*const Handle, out: ?*Info) callconv(.c) Status {
-    const traj = trajectoryOf(h) orelse return .arg;
+pub fn pharos_traj_info_get(h: ?*Handle, out: ?*Info) callconv(.c) Status {
+    const t = h orelse return .arg;
+    t.err.begin();
     const o = out orelse return .arg;
-    const st = stats.of(traj);
-    const info: Info = .{
-        .velocity_steps = std.math.lossyCast(u32, st.velocity_steps),
-        .knots = st.knots,
-        .duration_s = st.duration_s,
-        .max_speed_mps = st.max_speed_mps,
-        .max_acceleration_mps2 = st.max_acceleration_mps2,
-        .max_jerk_mps3 = st.max_jerk_mps3,
-        .min_altitude_m = st.min_altitude_m,
-        .max_altitude_m = st.max_altitude_m,
-        .acceleration_steps = std.math.lossyCast(u32, st.acceleration_steps),
-        .largest_acceleration_step_mps2 = st.largest_acceleration_step_mps2,
-        .largest_acceleration_step_s = st.largest_acceleration_step_s orelse 0,
-    };
-    o.* = info;
+    const traj = t.trajectory() orelse return noTrajectory(t);
+    if (t.info == null) {
+        const st = stats.of(allocator, traj) catch return nomem(&t.err);
+        t.info = .{
+            .velocity_steps = std.math.lossyCast(u32, st.velocity_steps),
+            .knots = st.knots,
+            .duration_s = st.duration_s,
+            .max_speed_mps = st.max_speed_mps,
+            .max_acceleration_mps2 = st.max_acceleration_mps2,
+            .max_jerk_mps3 = st.max_jerk_mps3,
+            .min_altitude_m = st.min_altitude_m,
+            .max_altitude_m = st.max_altitude_m,
+            .acceleration_steps = std.math.lossyCast(u32, st.acceleration_steps),
+            .largest_acceleration_step_mps2 = st.largest_acceleration_step_mps2,
+            .largest_acceleration_step_s = st.largest_acceleration_step_s orelse 0,
+            .largest_velocity_step_mps = st.largest_velocity_step_mps,
+            .largest_velocity_step_s = st.largest_velocity_step_s orelse 0,
+        };
+    }
+    o.* = t.info.?;
     return .ok;
 }
 
@@ -195,7 +210,8 @@ pub fn pharos_traj_state_get(h: ?*const Handle, t_s: f64, out: ?*State) callconv
     if (!(t_s >= -reach and t_s <= traj.duration() + reach)) return .arg;
     const s = traj.at(t_s);
     const p = coord.ecefToLla(s.pos);
-    const travel = coord.speedCourseFromEnu(coord.EnuFrame.at(p).toEnu(s.vel));
+    // The course as inspect reads it: none below a millimetre a second, in [0, 360).
+    const reading = frame.Reading.of(s, .ellipsoid, null);
     const state: State = .{
         .pos = s.pos.toArray(),
         .vel = s.vel.toArray(),
@@ -204,7 +220,7 @@ pub fn pharos_traj_state_get(h: ?*const Handle, t_s: f64, out: ?*State) callconv
         .lon_deg = p.lonDeg(),
         .altitude_m = core.geoid.altitude(p),
         .speed_mps = s.vel.norm(),
-        .course_deg = if (travel.speed == 0) std.math.nan(f64) else core.constants.rad2deg(travel.course_rad),
+        .course_deg = reading.course_deg orelse std.math.nan(f64),
     };
     o.* = state;
     return .ok;
@@ -234,11 +250,23 @@ pub fn pharos_traj_inspect(h: ?*Handle, sample_count: usize, out: ?*?[*]const u8
         .loaded => return .ok,
         .built => |built| built,
     };
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const inspection = inspect.of(arena.allocator(), built, sample_count) catch return nomem(&t.err);
-    const bytes = std.json.Stringify.valueAlloc(allocator, inspection, .{}) catch return nomem(&t.err);
+    // The text before is freed first; the next is counted and then written into a block of its size: in a WebAssembly
+    // instance every block a growing buffer leaves stays taken.
     if (t.inspection_bytes) |previous| allocator.free(previous);
+    t.inspection_bytes = null;
+    var buffer: [4096]u8 = undefined;
+    var counted: Io.Writer.Discarding = .init(&buffer);
+    inspect.write(allocator, &counted.writer, built, sample_count) catch return nomem(&t.err);
+    const size = std.math.cast(usize, counted.fullCount()) orelse return nomem(&t.err);
+    const bytes = allocator.alloc(u8, size) catch return nomem(&t.err);
+    var text: Io.Writer = .fixed(bytes);
+    inspect.write(allocator, &text, built, sample_count) catch |e| {
+        allocator.free(bytes);
+        return switch (e) {
+            error.OutOfMemory => nomem(&t.err),
+            error.WriteFailed => unreachable,
+        };
+    };
     t.inspection_bytes = bytes;
     dst.* = bytes.ptr;
     count.* = bytes.len;
@@ -253,10 +281,10 @@ fn serialized(h: ?*Handle, comptime format: enum { pht, kml }, out: ?*?[*]const 
     dst.* = null;
     count.* = 0;
     const traj = t.trajectory() orelse return noTrajectory(t);
-    if (format == .pht and !t.valid()) {
-        t.err.set("the path leaves the receiver's domain, so no PHT is written of it", .{});
+    if (format == .pht) if (t.refusal()) |why| {
+        t.err.set("the path {s}, so no PHT is written of it", .{why});
         return .input;
-    }
+    };
     const saved = switch (format) {
         .pht => &t.pht_bytes,
         .kml => &t.kml_bytes,
@@ -265,7 +293,13 @@ fn serialized(h: ?*Handle, comptime format: enum { pht, kml }, out: ?*?[*]const 
         var text: Io.Writer.Allocating = .init(allocator);
         defer text.deinit();
         switch (format) {
-            .pht => shared_trajectory.pht.write(&text.writer, traj) catch return nomem(&t.err),
+            .pht => shared_trajectory.pht.write(&text.writer, traj) catch |e| switch (e) {
+                error.TooLarge => {
+                    t.err.set("the path takes more than the {d} bytes a PHT holds, so no PHT is written of it", .{shared_trajectory.pht.max_bytes});
+                    return .input;
+                },
+                error.WriteFailed => return nomem(&t.err),
+            },
             .kml => kml.write(&text.writer, traj) catch return nomem(&t.err),
         }
         saved.* = text.toOwnedSlice() catch return nomem(&t.err);

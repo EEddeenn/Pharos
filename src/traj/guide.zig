@@ -50,6 +50,11 @@ pub const Piece = union(enum) {
             },
         };
     }
+
+    /// The direction its foot on the ellipsoid moves in at u.
+    pub fn direction(self: Piece, u: f64) Ecef {
+        return foot(self.at(u))[1].unit();
+    }
 };
 
 /// The end of a part of a piece: its parameter, and the ground length to it from the piece's start.
@@ -61,6 +66,8 @@ pub const Shape = struct {
     starts: []const f64,
     /// For each piece, the ends of its parts in order, the last at its end.
     parts: []const []const Part,
+    /// For each piece, the ground length from its start to its middle: an arc's is where its corner's place is.
+    middles: []const f64,
     /// The ground length where the path passes each place of the guide, by the place's position in it; a Bezier's
     /// control places, which it does not pass, are 0.
     places: []const f64,
@@ -70,21 +77,34 @@ pub const Shape = struct {
         return @max(1, std.sort.partitionPoint(f64, self.starts[0..self.pieces.len], s, before)) - 1;
     }
 
-    /// The foot at ground length s on piece k, with its first and second rates by that length.
-    pub fn ground(self: *const Shape, k: usize, s: f64) track.Point {
+    /// The foot at ground length s on piece k, with its first and second rates by that length. A leg that runs on
+    /// (`runs_on`, before its start and past its end), as an along runs a corner too gentle to round, goes on along
+    /// its chord into the corner's arc, evenly in its parameter, to reach the corner's place at the arc's middle.
+    pub fn ground(self: *const Shape, k: usize, s: f64, runs_on: [2]bool) track.Point {
+        const piece_ = self.pieces[k];
+        const past: ?usize = if (runs_on[1] and s > self.starts[k + 1]) k + 1 else if (runs_on[0] and s < self.starts[k]) k - 1 else null;
+        if (past) |arc| {
+            const corner = self.pieces[arc].arc;
+            const reach = corner.radius * @tan(corner.angle / 2) / piece_.line.to.sub(piece_.line.from).norm();
+            const ahead = arc > k;
+            const end = self.starts[@max(arc, k)];
+            const rate = (if (ahead) reach else -reach) / (self.starts[arc] + self.middles[arc] - end);
+            const f = foot(piece_.at(@as(f64, if (ahead) 1 else 0) + (s - end) * rate));
+            return .{ .point = f[0], .tangent = f[1].scale(rate), .curve = f[2].scale(rate * rate) };
+        }
         const local = s - self.starts[k];
         const list = self.parts[k];
         const j = @min(list.len - 1, std.sort.partitionPoint(Part, list, local, endsBefore));
         const low: Part = if (j == 0) .{ .u = 0, .s = 0 } else list[j - 1];
         const high = list[j];
-        const piece_ = self.pieces[k];
         // Newton's method on the part's parameter, from the length's share of the part, kept within the part.
         var u = low.u + (high.u - low.u) * std.math.clamp((local - low.s) / (high.s - low.s), 0, 1);
         var bracket = [2]f64{ low.u, high.u };
         for (0..64) |_| {
             const miss = length(piece_, low.u, u) - (local - low.s);
             if (miss > 0) bracket[1] = u else bracket[0] = u;
-            const next = u - miss / footSpeed(piece_.at(u));
+            const q = piece_.at(u);
+            const next = u - miss / footSpeed(q[0], q[1]);
             const kept = if (next > bracket[0] and next < bracket[1]) next else (bracket[0] + bracket[1]) / 2;
             if (kept == u) break;
             u = kept;
@@ -104,17 +124,24 @@ fn endsBefore(s: f64, part: Part) bool {
     return part.s <= s;
 }
 
-/// Appends a piece's parts from low to high, s0 the ground length to low from the piece's start, a part halved
-/// until its length agrees with its halves'; returns the length to high, or null where a part does not settle.
-fn split(arena: std.mem.Allocator, ends: *std.ArrayList(Part), p: Piece, low: f64, high: f64, s0: f64, depth: usize) Error!?f64 {
-    const whole = length(p, low, high);
+/// Whether a part's length agrees with its halves' to `settled` metres, or to its own rounding.
+fn settles(whole: f64, left: f64, right: f64, settled: f64) bool {
+    return @abs(whole - left - right) <= @max(settled, rounding * whole);
+}
+
+/// Appends a piece's parts from low to high, `whole` the length from low to high and s0 the ground length to low
+/// from the piece's start, a part halved until its length agrees with its halves'; returns the length to high, or
+/// null where a part does not settle.
+fn split(arena: std.mem.Allocator, ends: *std.ArrayList(Part), p: Piece, low: f64, high: f64, whole: f64, s0: f64, depth: usize) Error!?f64 {
     const mid = (low + high) / 2;
-    if (@abs(whole - length(p, low, mid) - length(p, mid, high)) <= @max(settled_m, rounding * whole)) {
+    const left = length(p, low, mid);
+    const right = length(p, mid, high);
+    if (settles(whole, left, right, settled_m)) {
         try ends.append(arena, .{ .u = high, .s = s0 + whole });
         return s0 + whole;
     }
     if (depth == most_halvings or ends.items.len >= most_parts) return null;
-    return split(arena, ends, p, mid, high, (try split(arena, ends, p, low, mid, s0, depth + 1)) orelse return null, depth + 1);
+    return split(arena, ends, p, mid, high, right, (try split(arena, ends, p, low, mid, left, s0, depth + 1)) orelse return null, depth + 1);
 }
 
 /// The foot on the ellipsoid of a point of the path, with its rates by the path's parameter.
@@ -132,17 +159,38 @@ fn foot(p: [3]Ecef) [3]Ecef {
 }
 
 /// The ground length of a piece between two of its parameters, by eight-point Gauss-Legendre.
-fn length(p: Piece, low: f64, high: f64) f64 {
+fn length(p: anytype, low: f64, high: f64) f64 {
     var sum: f64 = 0;
-    for (nodes, weights) |x, w| sum += w * footSpeed(p.at(low + (x + 1) / 2 * (high - low)));
+    for (nodes, weights) |x, w| {
+        const q = p.at(low + (x + 1) / 2 * (high - low));
+        sum += w * footSpeed(q[0], q[1]);
+    }
     return sum * (high - low) / 2;
 }
 
-/// The rate of the foot's ground length by the path's parameter: over the ellipsoid, whose principal directions are
-/// north and east (curvatures 1/M and 1/N), the foot moves by the path's tangent part over 1 + h/M north and
-/// 1 + h/N east, at the height h.
-fn footSpeed(p: [3]Ecef) f64 {
-    const lla = shared.core.coord.ecefToLla(p[0]);
+/// The ground length of a path over its parameter from 0 to 1 (anything whose `at` gives a point and its rate by the
+/// parameter), a part halved as a guide's parts are while its length disagrees with its halves' by more than
+/// `relative` of the whole, in at most `most` parts; a part that ends gives its halves' sum.
+pub fn settledLength(p: anytype, relative: f64, most: usize) f64 {
+    const whole = length(p, 0, 1);
+    var halvings = most - 1;
+    return settledPart(p, 0, 1, whole, relative * whole, &halvings);
+}
+
+fn settledPart(p: anytype, low: f64, high: f64, whole: f64, settled: f64, halvings: *usize) f64 {
+    const mid = (low + high) / 2;
+    const left = length(p, low, mid);
+    const right = length(p, mid, high);
+    if (settles(whole, left, right, settled) or halvings.* == 0) return left + right;
+    halvings.* -= 1;
+    return settledPart(p, low, mid, left, settled, halvings) + settledPart(p, mid, high, right, settled, halvings);
+}
+
+/// The rate of the foot's ground length by the path's parameter, from a point and its rate: over the ellipsoid,
+/// whose principal directions are north and east (curvatures 1/M and 1/N), the foot moves by the path's tangent
+/// part over 1 + h/M north and 1 + h/N east, at the height h.
+pub fn footSpeed(point: Ecef, rate: Ecef) f64 {
+    const lla = shared.core.coord.ecefToLla(point);
     const sine = @sin(lla.lat_rad);
     const cosine = @cos(lla.lat_rad);
     const e2 = shared.core.constants.wgs_e1_sqr;
@@ -151,7 +199,7 @@ fn footSpeed(p: [3]Ecef) f64 {
     const m = n * (1 - e2) / w;
     const east: Ecef = .{ .x = -@sin(lla.lon_rad), .y = @cos(lla.lon_rad), .z = 0 };
     const north: Ecef = .{ .x = -sine * @cos(lla.lon_rad), .y = -sine * @sin(lla.lon_rad), .z = cosine };
-    return std.math.hypot(p[1].dot(north) / (1 + lla.height_m / m), p[1].dot(east) / (1 + lla.height_m / n));
+    return std.math.hypot(rate.dot(north) / (1 + lla.height_m / m), rate.dot(east) / (1 + lla.height_m / n));
 }
 
 /// What a guide's places do not allow, by a place's position in the guide.
@@ -234,8 +282,8 @@ pub fn build(arena: std.mem.Allocator, places: []const model.Place, g: model.Gui
     for (pieces.items, lists, middles, 0..) |p, *list, *middle, k| {
         // In halves at least, so that an arc's middle, where its corner's place is, ends a part.
         var ends: std.ArrayList(Part) = .empty;
-        middle.* = (try split(arena, &ends, p, 0, 0.5, 0, 0)) orelse return unsettled(at, k);
-        starts[k + 1] = starts[k] + ((try split(arena, &ends, p, 0.5, 1, middle.*, 0)) orelse return unsettled(at, k));
+        middle.* = (try split(arena, &ends, p, 0, 0.5, length(p, 0, 0.5), 0, 0)) orelse return unsettled(at, k);
+        starts[k + 1] = starts[k] + ((try split(arena, &ends, p, 0.5, 1, length(p, 0.5, 1), middle.*, 0)) orelse return unsettled(at, k));
         list.* = ends.items;
     }
     const lengths_at = try arena.alloc(f64, g.places.len);
@@ -245,7 +293,7 @@ pub fn build(arena: std.mem.Allocator, places: []const model.Place, g: model.Gui
         // A corner's place at its arc's middle; a place that ends the path at its end.
         s.* = if (k < pieces.items.len and pieces.items[k] == .arc) starts[k] + middles[k] else starts[k];
     }
-    return .{ .shape = .{ .pieces = pieces.items, .starts = starts, .parts = lists, .places = lengths_at } };
+    return .{ .shape = .{ .pieces = pieces.items, .starts = starts, .parts = lists, .middles = middles, .places = lengths_at } };
 }
 
 /// Piece k's fault, by the place it begins at or after.
@@ -259,14 +307,42 @@ fn unsettled(at: []const ?usize, k: usize) Built {
     return .{ .fault = .{ .unsettled = place } };
 }
 
-/// Points along a guide's path for a caller to draw: each piece cut into `subdivisions` equal steps of its parameter,
-/// the path's first point first.
-pub fn outline(arena: std.mem.Allocator, shape: Shape, subdivisions: usize) Error![]const Ecef {
-    const count = std.math.add(usize, std.math.mul(usize, shape.pieces.len, subdivisions) catch return error.OutOfMemory, 1) catch return error.OutOfMemory;
-    const out = try arena.alloc(Ecef, count);
-    out[0] = shape.pieces[0].at(0)[0];
-    for (shape.pieces, 0..) |p, k| {
-        for (1..subdivisions + 1) |i| out[k * subdivisions + i] = p.at(@as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(subdivisions)))[0];
+/// How near a guide drawn on a map keeps to its path, in metres.
+const outline_tolerance_m = 0.1;
+
+/// Points along a guide's path for a caller to draw, the path's first point first: each piece in steps of its
+/// parameter, each halved until the path's points at its middle and its quarters lie within `outline_tolerance_m` of
+/// those of the step drawn straight in latitude and longitude, as a map draws it (a short leg in one step), and in at
+/// most `most_steps`.
+pub fn outline(arena: std.mem.Allocator, shape: Shape, most_steps: usize) Error![]const Ecef {
+    var out: std.ArrayList(Ecef) = .empty;
+    try out.append(arena, shape.pieces[0].at(0)[0]);
+    for (shape.pieces) |p| try trace(arena, &out, p, 0, 1, std.math.log2_int(usize, most_steps));
+    return out.items;
+}
+
+/// A step of a piece from low to high, halved at most `halvings` times while it is not drawn within the tolerance.
+fn trace(arena: std.mem.Allocator, out: *std.ArrayList(Ecef), p: Piece, low: f64, high: f64, halvings: usize) Error!void {
+    const mid = (low + high) / 2;
+    if (halvings > 0 and !drawn(p, low, high)) {
+        try trace(arena, out, p, low, mid, halvings - 1);
+        return trace(arena, out, p, mid, high, halvings - 1);
     }
-    return out;
+    try out.append(arena, p.at(high)[0]);
+}
+
+/// Whether a step drawn straight in latitude and longitude passes within the tolerance of the path at its middle and
+/// its quarters (the middle alone lies on the line of an S-shaped piece): the points on the ground, the step's
+/// longitudes the nearer way round the meridian.
+fn drawn(p: Piece, low: f64, high: f64) bool {
+    const a = shared.core.coord.ecefToLla(p.at(low)[0]);
+    const b = shared.core.coord.ecefToLla(p.at(high)[0]);
+    const across = b.lon_rad - a.lon_rad;
+    const east = across - shared.core.constants.two_pi * @round(across / shared.core.constants.two_pi);
+    for ([_]f64{ 0.25, 0.5, 0.75 }) |f| {
+        const on = shared.core.coord.ecefToLla(p.at(low + (high - low) * f)[0]);
+        const line = shared.core.coord.llaToEcef(.{ .lat_rad = a.lat_rad + (b.lat_rad - a.lat_rad) * f, .lon_rad = a.lon_rad + east * f, .height_m = 0 });
+        if (!(line.sub(shared.core.coord.llaToEcef(.{ .lat_rad = on.lat_rad, .lon_rad = on.lon_rad, .height_m = 0 })).norm() <= outline_tolerance_m)) return false;
+    }
+    return true;
 }

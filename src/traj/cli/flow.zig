@@ -38,8 +38,8 @@ fn build(allocator: std.mem.Allocator, arena: std.mem.Allocator, io: Io, args: a
         return 1;
     };
     cli.printDiagnostics(console, &diags);
-    if (!built.valid) {
-        console.fail("The path leaves the receiver's domain: no PHT is written", .{});
+    if (built.refusal()) |why| {
+        console.fail("The path {s}: no PHT is written", .{why});
         return 1;
     }
     var traj = built.trajectory;
@@ -87,14 +87,14 @@ fn info(arena: std.mem.Allocator, io: Io, input: []const u8, console: Console) E
 fn check(arena: std.mem.Allocator, io: Io, input: []const u8, console: Console) Error!u8 {
     const traj = try load(io, arena, input, console) orelse return 1;
     cli.reportTrajectory(console, &traj, input);
-    const st = pharos_traj.stats.of(traj);
+    const st = try pharos_traj.stats.of(arena, traj);
     console.info("Speed up to {f} m/s, acceleration up to {f} m/s^2, jerk up to {f} m/s^3", .{ Number{ .value = st.max_speed_mps }, Number{ .value = st.max_acceleration_mps2 }, Number{ .value = st.max_jerk_mps3 } });
     console.info("Altitude from {f} to {f} m", .{ Number{ .value = st.min_altitude_m }, Number{ .value = st.max_altitude_m } });
     if (st.largest_acceleration_step_s) |at| {
         console.info("Acceleration steps: {d}, the largest {f} m/s^2 at {f} s", .{ st.acceleration_steps, Number{ .value = st.largest_acceleration_step_mps2 }, Number{ .value = at } });
     }
-    if (st.first_velocity_step_s) |at| {
-        console.warn("Velocity steps: {d}, the first at {f} s (a receiver cannot follow a step)", .{ st.velocity_steps, Number{ .value = at } });
+    if (st.largest_velocity_step_s) |at| {
+        console.info("Velocity steps: {d}, the largest {f} m/s at {f} s", .{ st.velocity_steps, Number{ .value = st.largest_velocity_step_mps }, Number{ .value = at } });
     }
     return 0;
 }
@@ -126,7 +126,13 @@ fn load(io: Io, arena: std.mem.Allocator, path: []const u8, console: Console) Er
 
 fn save(io: Io, arena: std.mem.Allocator, traj: Trajectory, path: []const u8, console: Console) Error!u8 {
     var text: Io.Writer.Allocating = .init(arena);
-    trajectory.pht.write(&text.writer, traj) catch return error.OutOfMemory;
+    trajectory.pht.write(&text.writer, traj) catch |e| switch (e) {
+        error.TooLarge => {
+            console.fail("The path takes more than the {d} bytes a PHT holds: no PHT is written", .{trajectory.pht.max_bytes});
+            return 1;
+        },
+        error.WriteFailed => return error.OutOfMemory,
+    };
     cli.reportTrajectory(console, &traj, path);
     if (!cli.writeFile(io, path, text.written(), console)) return 1;
     console.info("Trajectory written: {s}", .{path});

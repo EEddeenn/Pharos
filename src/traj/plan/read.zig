@@ -20,7 +20,7 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diags: *shared.core.dia
 }
 
 /// The guides of a plan that may be incomplete: the plan's own keys, of which only coordinates, places and guides
-/// are read, and none of them needs to be complete.
+/// are read, none of them needs to be complete, and each place and guide is read on its own.
 pub fn parseGeometry(arena: std.mem.Allocator, text: []const u8, diags: *shared.core.diagnostics.Diagnostics) Error!resolve.Sketch {
     const ctx: node.Ctx = .{ .arena = arena, .diags = diags };
     const tree = try node.parseTree(&ctx, text) orelse return error.InvalidInput;
@@ -38,6 +38,7 @@ pub const Raw = struct {
     guides: ?[]const RawGuide = null,
     start: RawStart = undefined,
     segments: []const RawSegment = undefined,
+    limits: ?[]const RawLimit = null,
 
     pub const table = [_]Key{
         .{ .name = "format", .required = true, .doc = "pharos.trajectory-plan" },
@@ -48,6 +49,7 @@ pub const Raw = struct {
         .{ .name = "guides", .doc = "curves through places, which an along follows" },
         .{ .name = "start", .required = true, .doc = "where the path begins, and how" },
         .{ .name = "segments", .required = true, .items = .{ .min = 1 }, .doc = "the motion, one segment after another from the start" },
+        .{ .name = "limits", .doc = "checks of the built path: a limit broken gives no PHT" },
     };
 
     pub fn schemaMetadata(s: *shared.json.schema.Schema) std.Io.Writer.Error!void {
@@ -242,16 +244,32 @@ pub const RawVisit = struct {
     };
 };
 
+pub const RawLimit = struct {
+    id: ?[]const u8 = null,
+    quantity: model.Quantity = undefined,
+    max: ?f64 = null,
+    min: ?f64 = null,
+    over: ?[]const []const u8 = null,
+    pub const table = [_]Key{
+        .{ .name = "id", .doc = "the limit's name" },
+        .{ .name = "quantity", .required = true, .doc = "what it bounds, as the path moves at its height: m/s for speeds, m/s^2 for accelerations, m/s^3 for the jerk, metres for the altitude" },
+        .{ .name = "max", .range = .{}, .doc = "the most it may be; of a signed quantity (lateral, forward, climb, vertical), its size" },
+        .{ .name = "min", .range = .{}, .doc = "the least it may be: of a speed or the altitude only" },
+        .{ .name = "over", .items = .{ .min = 1 }, .doc = "the segments it holds over, by id; absent, every segment" },
+    };
+};
+
 /// What `describe_geometry` reads: every key of a plan, and of coordinates, places and guides only what is there.
 pub const Partial = struct {
     format: ?Node = null,
     version: ?Node = null,
     name: ?Node = null,
-    coordinates: ?PartialCoordinates = null,
-    places: ?[]const PartialPlace = null,
-    guides: ?[]const PartialGuide = null,
+    coordinates: ?Node = null,
+    places: ?[]const Node = null,
+    guides: ?[]const Node = null,
     start: ?Node = null,
     segments: ?Node = null,
+    limits: ?Node = null,
     pub const table = optional(Raw);
 };
 

@@ -248,8 +248,10 @@ fn epochInRange(t: GpsTime) bool {
     return t.ms >= 0 and t.ms < max_epoch_ms and t.sub_ms >= 0 and t.sub_ms < 1;
 }
 
+/// None where the satellite has no attitude: no orbit plane to yaw in.
 fn phaseCentreOffset(pos: coord.Ecef, vel: coord.Ecef, omega_e: f64, t: GpsTime, tx: Transmitter) coord.Ecef {
-    return core.attitude.BodyAxes.of(tx.law, pos, vel, omega_e, core.sun.positionEcef(t)).toEcef(tx.body_m);
+    const axes = core.attitude.BodyAxes.of(tx.law, pos, vel, omega_e, core.sun.positionEcef(t)) orelse return .{ .x = 0, .y = 0, .z = 0 };
+    return axes.toEcef(tx.body_m);
 }
 
 pub const Handle = struct {
@@ -333,8 +335,9 @@ fn clockPair(c: []const ClockSample, t: GpsTime) ?usize {
     return i;
 }
 
+/// Two samples closer than the epochs' tolerance are one epoch: no drift is told between them.
 fn bridged(span_s: f64) bool {
-    return span_s > 0 and span_s <= max_clock_gap_s;
+    return span_s >= grid_tolerance_s and span_s <= max_clock_gap_s;
 }
 
 fn clockAt(sr: *const Series, t: GpsTime) ?Clock {

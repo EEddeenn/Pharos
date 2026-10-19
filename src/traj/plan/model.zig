@@ -125,6 +125,83 @@ pub const Event = struct {
     visit: ?usize = null,
 };
 
+/// What a limit bounds, read off the stored path at its height: speeds in m/s, accelerations in m/s^2, the jerk in
+/// m/s^3, the altitude in metres in the plan's reference.
+pub const Quantity = enum {
+    speed3d,
+    horizontal_speed,
+    acceleration3d,
+    jerk3d,
+    lateral_acceleration,
+    forward_acceleration,
+    climb_rate,
+    vertical_acceleration,
+    altitude,
+
+    pub const words: std.EnumArray(Quantity, []const u8) = .init(.{
+        .speed3d = "speed3d",
+        .horizontal_speed = "horizontalSpeed",
+        .acceleration3d = "acceleration3d",
+        .jerk3d = "jerk3d",
+        .lateral_acceleration = "lateralAcceleration",
+        .forward_acceleration = "forwardAcceleration",
+        .climb_rate = "climbRate",
+        .vertical_acceleration = "verticalAcceleration",
+        .altitude = "altitude",
+    });
+
+    /// The quantity in a sentence.
+    pub const names: std.EnumArray(Quantity, []const u8) = .init(.{
+        .speed3d = "the 3D speed",
+        .horizontal_speed = "the horizontal speed",
+        .acceleration3d = "the 3D acceleration",
+        .jerk3d = "the 3D jerk",
+        .lateral_acceleration = "the lateral acceleration",
+        .forward_acceleration = "the forward acceleration",
+        .climb_rate = "the climb rate",
+        .vertical_acceleration = "the vertical acceleration",
+        .altitude = "the altitude",
+    });
+
+    pub const Family = enum { speed, acceleration, jerk, altitude };
+
+    pub fn family(self: Quantity) Family {
+        return switch (self) {
+            .speed3d, .horizontal_speed, .climb_rate => .speed,
+            .acceleration3d, .lateral_acceleration, .forward_acceleration, .vertical_acceleration => .acceleration,
+            .jerk3d => .jerk,
+            .altitude => .altitude,
+        };
+    }
+
+    /// Whether it has a sign, which its limit leaves aside: it bounds the size.
+    pub fn signed(self: Quantity) bool {
+        return switch (self) {
+            .lateral_acceleration, .forward_acceleration, .climb_rate, .vertical_acceleration => true,
+            else => false,
+        };
+    }
+
+    pub fn unit(self: Quantity) []const u8 {
+        return switch (self.family()) {
+            .speed => "m/s",
+            .acceleration => "m/s^2",
+            .jerk => "m/s^3",
+            .altitude => "m",
+        };
+    }
+};
+
+/// A check of the built path: its quantity at most `max` (in size, for a signed one) and at least `min`, over the
+/// segments named (by index), or over all.
+pub const Limit = struct {
+    id: ?[]const u8,
+    quantity: Quantity,
+    max: ?f64,
+    min: ?f64,
+    over: ?[]const usize,
+};
+
 pub const Plan = struct {
     name: []const u8,
     altitude: Altitude,
@@ -134,4 +211,5 @@ pub const Plan = struct {
     start: Start,
     segments: []const Segment,
     events: []const Event,
+    limits: []const Limit,
 };

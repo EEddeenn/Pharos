@@ -30,8 +30,9 @@ pub const BodyAxes = struct {
     y: Ecef,
     z: Ecef,
 
-    pub fn of(law: Law, sat_pos: Ecef, sat_vel: Ecef, omega_e: f64, sun_pos: Ecef) BodyAxes {
-        const g: Geometry = .of(sat_pos, sat_vel, omega_e, sun_pos);
+    /// Null for a satellite with no orbit plane (its inertial velocity along its radius, or none): no yaw is defined.
+    pub fn of(law: Law, sat_pos: Ecef, sat_vel: Ecef, omega_e: f64, sun_pos: Ecef) ?BodyAxes {
+        const g = Geometry.of(sat_pos, sat_vel, omega_e, sun_pos) orelse return null;
         return g.at(g.yaw(law));
     }
 
@@ -49,10 +50,11 @@ const Geometry = struct {
     rate: f64,
     radius_m: f64,
 
-    fn of(sat_pos: Ecef, sat_vel: Ecef, omega_e: f64, sun_pos: Ecef) Geometry {
+    fn of(sat_pos: Ecef, sat_vel: Ecef, omega_e: f64, sun_pos: Ecef) ?Geometry {
         const r = sat_pos.norm();
         const inertial = elements.inertial(sat_vel, sat_pos, omega_e);
         const moment = sat_pos.cross(inertial);
+        if (!(moment.norm() > 0)) return null;
         const z = sat_pos.scale(-1.0 / r);
         const a = z.cross(moment.unit()).unit();
         const b = z.cross(a);

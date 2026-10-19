@@ -14,8 +14,9 @@ const Position = struct { latitude: f64, longitude: f64 };
 /// A guide as far as the plan gives it: its positions where it is whole, none where it is not.
 const Drawing = struct { id: ?[]const u8, whole: bool, positions: ?[]const Position };
 
-/// The guides of a plan, whole or being written, each in the plan's order: each piece of a whole guide's path cut
-/// into `subdivisions` steps.
+/// The guides of a plan, whole or being written, each in the plan's order: each piece of a whole guide's path
+/// traced in steps that, drawn straight in latitude and longitude, keep within a tenth of a metre of it, and in at
+/// most `subdivisions` a piece.
 pub fn pharos_traj_describe_geometry(json: ?[*]const u8, len: usize, subdivisions: usize, out: ?*?*GeometryDescription) callconv(.c) Status {
     common.thread_error.begin();
     const dst = out orelse return .arg;

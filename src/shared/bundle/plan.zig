@@ -109,6 +109,9 @@ fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet,
             .kepler => |k| {
                 if (sat.system == .glo or k >= set.kepler.len) return "a leg's record is not a Keplerian record of the pool";
                 if (!std.meta.eql(set.kepler[k].sat, sat)) return "a leg's Keplerian record belongs to another satellite";
+                // As pack selects a record: within its window of its time of ephemeris when the leg begins.
+                const begins: GpsTime = .{ .ms = start.ms + @as(i64, @intCast(leg.from_ms)) };
+                if (!(@abs(begins.secondsSince(set.kepler[k].toe)) <= gnss.kepler.window_s)) return "a leg's Keplerian record is farther from its time of ephemeris than its window";
                 if (binding.glonass_p1 != null) return "a Keplerian leg carries a GLONASS P1 word";
                 for (std.enums.values(records.GroupDelayTerm)) |term| {
                     if (set.kepler[k].group_delay.get(term)) |value| {
@@ -163,6 +166,9 @@ pub const Plan = struct {
     pub fn validate(self: *const Plan, set: *const navigation.NavSet, config: *const scenario.Scenario) ?[]const u8 {
         if (self.timelines.len != satellite_count) return "the plan does not carry one timeline per satellite";
         if (self.scales.contains(.gps)) return "the plan declares a time scale for GPS";
+        for (types.System.all) |system| if (self.scales.get(system)) |scale| {
+            if (gnss.plausible.timeScale(gnss.auxiliary.gpsOffsetKind(system).?, scale) != null) return "a time scale has a coefficient outside its time offset's field";
+        };
         if (!self.leap.valid()) return "the leap schedule contradicts the built-in history, or its change exceeds one second or is not at UTC midnight";
 
         for (self.timelines, 0..) |timeline, i| {

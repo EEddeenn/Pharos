@@ -11,12 +11,12 @@
 //! Each segment is cut into stretches at its joints: a through at its places; a run where its guide's pieces meet,
 //! at its guide's places, and over EGM96 where its track crosses a line of the geoid's grid. Where the motion steps
 //! at a joint, two knots share its time: a step of acceleration (a corner's tangent point, a join of two
-//! curvatures), or of velocity too (the geoid's slope, a Bezier's joint). Each stretch is cut into as many equal
-//! pieces as make the quintic Hermite of their knots lie within `tolerance_m` of the built motion, measured at a
-//! quarter, a half and three quarters of each, the receiver's domain tested first: where the built motion leaves
-//! it, the stretch is cut no further and the path kept as cut, out of the domain from that time; where it stays in,
-//! into as many pieces as the domain's bound between knots needs. No more knots than a PHT holds, counted before
-//! they are taken.
+//! curvatures), or of velocity too (the geoid's slope, a Bezier's joint, a corner too gentle to round). Each stretch
+//! is cut by halving, in the order of time, every piece whose knots' quintic Hermite lies farther than `tolerance_m`
+//! from the built motion, measured at a quarter, a half and three quarters of it, the receiver's domain tested first:
+//! where the built motion leaves it, nothing more is halved and the path kept as cut, out of the domain from that
+//! time; where it stays in, every piece too whose knots' bound of the domain fails, while halving shortens the time it
+//! fails. No more knots than a PHT holds, counted before they are taken.
 const std = @import("std");
 const shared = @import("shared");
 const core = shared.core;
@@ -36,6 +36,9 @@ const motion = @import("motion.zig");
 
 /// How near the stored path stays to the built one, in metres.
 const tolerance_m: f64 = 1e-6;
+/// A piece of the stored path shorter than this carries its knots' rounding as motion: it is read at its knots
+/// alone, and no gentle corner's arc is built as one.
+pub const short_s: f64 = 1e-2;
 pub const max_knots = trajectory.pht.max_knots;
 /// Within this angle of the point opposite where a straight begins (the flattening's share of a half turn), the
 /// geodesics from it part: several reach a place there.
@@ -49,6 +52,9 @@ pub const Built = struct {
     first_knots: []const usize,
     /// When each segment ends.
     ends: []const f64,
+    /// Each segment's length over the ground, and the speed over the ground it ends at: in the plan's terms.
+    lengths: []const f64,
+    end_speeds: []const f64,
     /// Where the built motion is first found outside the receiver's domain.
     outside: ?Outside,
 };
@@ -91,7 +97,8 @@ const Stretch = struct {
     /// The knots it begins and ends at, as written.
     a: Knot = undefined,
     b: Knot = undefined,
-    cuts: usize = 1,
+    /// Where its pieces end, as fractions of it: the last at 1.
+    cuts: []const f64 = &.{},
 };
 
 const Prepared = struct {
@@ -143,7 +150,8 @@ const Builder = struct {
         if (!range.holds(time)) return self.fail(try self.path(i, key), "must be above {f}, got {f}", .{ Number{ .value = begin, .apart = time }, Number{ .value = time, .outside = range } });
     }
 
-    fn within(self: *Builder, i: usize, end: f64) Error!void {
+    /// A segment's end within the longest a trajectory lasts.
+    fn endsInTime(self: *Builder, i: usize, end: f64) Error!void {
         if (end > trajectory.max_duration_s) return self.fail(try self.path(i, ""), "ends {f} s from the start, and a trajectory lasts at most {d} s", .{ Number{ .value = end, .outside = .{ .max = trajectory.max_duration_s } }, trajectory.max_duration_s });
     }
 
@@ -156,7 +164,7 @@ const Builder = struct {
             .duration => if (!(end > begin)) return self.fail(try self.path(i, "for"), "must end the {s} after it begins at {f} s, got an end at {f} s", .{ model.Kind.words.get(self.plan.segments[i].motion), Number{ .value = begin }, Number{ .value = end } }),
             .until => |t| try self.after(i, "time", t, begin),
         }
-        try self.within(i, end);
+        try self.endsInTime(i, end);
         return end;
     }
 
@@ -190,6 +198,8 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
     @memset(b.shapes, null);
     const segments = try scratch.alloc(Segment, plan.segments.len);
     const ends = try arena.alloc(f64, plan.segments.len);
+    const lengths = try arena.alloc(f64, plan.segments.len);
+    const end_speeds = try arena.alloc(f64, plan.segments.len);
     var state = startState(plan);
     // The knot written last, the one the next segment begins at: none until a segment says it.
     var last: ?Knot = if (state.vel != null and state.acc != null) knotOf(state) else null;
@@ -210,7 +220,7 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
             .through => |t| {
                 try b.after(i, "through.places[0].time", t.visits[0].time, state.time);
                 const end = t.visits[t.visits.len - 1];
-                try b.within(i, end.time);
+                try b.endsInTime(i, end.time);
                 // Before a run the through ends in the run's first state: the run is made ready first, from the
                 // through's last place.
                 var next: ?Ready = null;
@@ -223,7 +233,7 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
                 if (first == null) first = s.knot(0);
                 for (s.cuts, 0..) |*cuts, k| {
                     cuts.* = try cut(&b, i, .{ .through = .{ .solved = s, .piece = k } });
-                    try b.take(i, cuts.*);
+                    try b.take(i, cuts.len);
                 }
                 last = s.knot(s.times.len - 1);
                 ends[i] = end.time;
@@ -257,6 +267,21 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
         }
         ends[i] = state.time;
     }
+    for (segments, lengths, end_speeds) |*segment, *length, *speed| switch (segment.*) {
+        .stay => {
+            length.* = 0;
+            speed.* = 0;
+        },
+        .through => |*t| {
+            length.* = groundLength(t);
+            const end = t.knot(t.times.len - 1);
+            speed.* = guide.footSpeed(end.pos, end.vel);
+        },
+        .run => |*p| {
+            length.* = p.run.timing.length();
+            speed.* = p.run.timing.v1;
+        },
+    };
     // The knots, now that they are counted.
     const knots = try arena.alloc(Knot, b.count);
     const first_knots = try arena.alloc(usize, plan.segments.len);
@@ -271,8 +296,8 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
             },
             .through => |*t| for (t.cuts, 0..) |cuts, piece| {
                 const source: Source = .{ .through = .{ .solved = t, .piece = piece } };
-                for (1..cuts + 1) |c| {
-                    knots[written] = source.point(c, cuts);
+                for (cuts) |u| {
+                    knots[written] = source.point(u);
                     written += 1;
                 }
             },
@@ -282,16 +307,39 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
                     written += 1;
                 }
                 const source: Source = .{ .run = .{ .run = &p.run, .stretch = s } };
-                for (1..s.cuts + 1) |c| {
-                    knots[written] = source.point(c, s.cuts);
+                for (s.cuts) |u| {
+                    knots[written] = source.point(u);
                     written += 1;
                 }
             },
         }
     }
     std.debug.assert(written == knots.len);
-    return .{ .knots = knots, .first_knots = first_knots, .ends = ends, .outside = b.outside };
+    return .{ .knots = knots, .first_knots = first_knots, .ends = ends, .lengths = lengths, .end_speeds = end_speeds, .outside = b.outside };
 }
+
+/// A through's length over the ground: its foot's speed over each piece between its places, as a guide's lengths are
+/// found, each piece on its own to `length_settled` of its length in at most `length_parts` parts.
+fn groundLength(s: *const Solved) f64 {
+    var sum: f64 = 0;
+    for (0..s.times.len - 1) |k| sum += guide.settledLength(ThroughPiece{ .solved = s, .piece = k }, length_settled, length_parts);
+    return sum;
+}
+
+/// A through's length is told, not built on: each piece to a billionth of its length, in a bounded number of parts.
+const length_settled = 1e-9;
+const length_parts = 16;
+
+/// A piece of a through by the fraction of it: its point, and its rate by that fraction.
+const ThroughPiece = struct {
+    solved: *const Solved,
+    piece: usize,
+
+    pub fn at(self: ThroughPiece, u: f64) [2]Ecef {
+        const q = self.solved.at(self.piece, u);
+        return .{ q.pos, q.vel.scale(self.solved.times[self.piece + 1] - self.solved.times[self.piece]) };
+    }
+};
 
 fn isRun(segment: model.Segment) bool {
     return switch (segment.motion) {
@@ -344,17 +392,12 @@ fn startState(plan: *const model.Plan) State {
     return state;
 }
 
-const d = [3]f64{
-    1 / (core.constants.wgs_axis_a * core.constants.wgs_axis_a),
-    1 / (core.constants.wgs_axis_a * core.constants.wgs_axis_a),
-    1 / (core.constants.wgs_axis_b * core.constants.wgs_axis_b),
-};
-
 /// The velocity of a point at a height above the ellipsoid that moves over it at a speed along a tangent.
 fn lifted(foot: Ecef, tangent: Ecef, speed: f64, height: f64) Ecef {
-    const scaled: Ecef = .{ .x = foot.x * d[0], .y = foot.y * d[1], .z = foot.z * d[2] };
-    const n = scaled.unit();
-    const turned: Ecef = .{ .x = tangent.x * d[0], .y = tangent.y * d[1], .z = tangent.z * d[2] };
+    const m = track.metric;
+    const scaled: Ecef = .{ .x = foot.x * m[0], .y = foot.y * m[1], .z = foot.z * m[2] };
+    const n = track.normal(foot);
+    const turned: Ecef = .{ .x = tangent.x * m[0], .y = tangent.y * m[1], .z = tangent.z * m[2] };
     return tangent.add(turned.sub(n.scale(n.dot(turned))).scale(height / scaled.norm())).scale(speed);
 }
 
@@ -370,9 +413,9 @@ fn verticalOf(plan: *const model.Plan, state: State) [3]f64 {
     return .{ if (state.place) |p| plan.places[p].altitude else h.value, h.first, h.second };
 }
 
-/// The speeds and the duration of a run, by the review's table: where the shape fixes the length, a speed (the
-/// time follows) or a span (the end speed follows), and neither keeps the speed; where it does not, a span with a
-/// speed or without. A free start runs at the one speed that fits. A turn by rate or lateral keeps its speed.
+/// The speeds and the duration of a run: where the shape fixes the length, a speed (the time follows) or a span (the
+/// end speed follows), and neither keeps the speed; where it does not, a span with a speed or without. A free start
+/// runs at the one speed that fits. A turn by rate or lateral keeps its speed.
 fn timingOf(b: *Builder, i: usize, v0_given: ?f64, length: ?f64, span: ?f64, keeps: bool) Error!motion.Timing {
     const segment = b.plan.segments[i];
     if (keeps) {
@@ -414,7 +457,7 @@ fn prepare(b: *Builder, i: usize, before: State) Error!Ready {
     var ground: ?track.Track = null;
     // A track whose length follows from the timing: run once the timing's times are checked.
     var unrun: ?struct { from: track.Node, curvature: f64 } = null;
-    var part: ?struct { shape: *const guide.Shape, from: f64, to: f64, joint: Joint } = null;
+    var part: ?struct { shape: *const guide.Shape, from: f64, to: f64, joint: Joint, goes_on: bool } = null;
     var end_place: ?usize = null;
     var timing: motion.Timing = undefined;
     switch (segment.motion) {
@@ -468,8 +511,17 @@ fn prepare(b: *Builder, i: usize, before: State) Error!Ready {
             // Where an along goes on along its guide through a corner's arc, the motion goes on; at a Bezier's
             // joint, or a corner whose arc has no length, the velocity may turn; where it begins otherwise, its
             // acceleration may step.
-            part = .{ .shape = shape, .from = from, .to = to, .joint = if (!continues) .acceleration else if (shape.pieces[shape.piece(from)] == .arc) .smooth else .velocity };
-            const p = shape.ground(shape.piece(from), from);
+            part = .{
+                .shape = shape,
+                .from = from,
+                .to = to,
+                .joint = if (!continues) .acceleration else if (shape.pieces[shape.piece(from)] == .arc) .smooth else .velocity,
+                .goes_on = i + 1 < plan.segments.len and switch (plan.segments[i + 1].motion) {
+                    .along => |next| next.guide == a.guide,
+                    else => false,
+                },
+            };
+            const p = shape.ground(shape.piece(from), from, .{ false, false });
             if (!continues) foot = p.point;
             tangent = p.tangent;
             if (g.shape == .bezier or a.to == g.places.len - 1) end_place = g.places[a.to];
@@ -479,7 +531,7 @@ fn prepare(b: *Builder, i: usize, before: State) Error!Ready {
     }
     const end_time = before.time + timing.duration;
     if (!(end_time > before.time)) return b.fail(try b.path(i, ""), "must end after it begins at {f} s, and its length at its speeds takes no time", .{Number{ .value = before.time }});
-    try b.within(i, end_time);
+    try b.endsInTime(i, end_time);
     if (unrun) |u| ground = try runTrack(b, i, u.from, u.curvature, timing.length());
     var run: motion.Run = .{
         .start = before.time,
@@ -490,7 +542,16 @@ fn prepare(b: *Builder, i: usize, before: State) Error!Ready {
     var stretches: std.ArrayList(Stretch) = .empty;
     if (part) |p| {
         run.height = .{ .places = try profile(b, i, before, p.shape, p.from, p.to, timing.v0) };
-        try alongStretches(scratch, &stretches, &run, p.shape, p.from, p.to, p.joint);
+        try alongStretches(scratch, &stretches, &run, p.shape, p.from, p.to, p.joint, p.goes_on);
+        // A polyline's velocity steps only at a corner whose arc takes no time or is gentle: the motion turns there
+        // at once, and is held against the receiver's domain by the acceleration its arc takes at the speed there.
+        switch (plan.guides[segment.motion.along.guide].shape) {
+            .polyline => |radius| for (stretches.items) |s| if (s.joint == .velocity) {
+                const v = timing.at(s.t0 - before.time).first;
+                if (!(v * v / radius <= trajectory.max_acceleration_mps2)) b.mark(i, s.t0, error.AccelerationOutOfRange);
+            },
+            .bezier => {},
+        }
     } else {
         const v = verticalOf(plan, before);
         // A run after a free start or a through takes its own climb from its start.
@@ -583,32 +644,65 @@ fn profile(b: *Builder, i: usize, before: State, shape: *const guide.Shape, from
     };
 }
 
+/// A corner whose arc would change the velocity by less than this, and last less than `short_s`, steps the velocity
+/// at its place instead: such an arc is a piece too short for a PHT's knots.
+const gentle_mps: f64 = 1e-4;
+
 /// An along's stretches: cut where its guide's pieces meet (a Bezier's joint may step the velocity, a polyline's
-/// tangent point the acceleration) and at its heights' places, the first meeting the motion before by `first`. A
-/// part that takes no time (an arc too small for the time's precision) is the step in velocity it makes.
-fn alongStretches(scratch: std.mem.Allocator, out: *std.ArrayList(Stretch), run: *const motion.Run, shape: *const guide.Shape, from: f64, to: f64, first: Joint) Error!void {
+/// tangent point the acceleration) and at its heights' places, the first meeting the motion before by `first`;
+/// `goes_on` where the next segment goes on along the guide. A part that takes no time (an arc too small for the
+/// time's precision) is the step in velocity it makes; so is a gentle corner, its legs run on to its place, where the
+/// velocity steps.
+fn alongStretches(scratch: std.mem.Allocator, out: *std.ArrayList(Stretch), run: *const motion.Run, shape: *const guide.Shape, from: f64, to: f64, first: Joint, goes_on: bool) Error!void {
     const heights = run.height.places.lengths;
-    var cuts: std.ArrayList(struct { s: f64, joint: Joint }) = .empty;
-    for (shape.starts[1..shape.pieces.len]) |s| if (s > from and s < to) try cuts.append(scratch, .{ .s = s, .joint = if (shape.pieces[0] == .cubic) .velocity else .acceleration });
-    for (heights[1 .. heights.len - 1]) |s| {
-        const at = s + from;
-        for (cuts.items) |c| {
-            if (c.s == at) break;
-        } else try cuts.append(scratch, .{ .s = at, .joint = .smooth });
+    // Of the pieces it runs on, from the first, whether each is a gentle corner's arc between two legs: one it runs
+    // whole by its ends' velocities and its time; one at whose place it goes on from the along before, or on to the
+    // along after, at the speed there, which both share.
+    const base = shape.piece(from);
+    const gentle = try scratch.alloc(bool, shape.piece(to) + 1 - base);
+    for (gentle, base..) |*g, j| {
+        g.* = false;
+        if (shape.pieces[j] != .arc or j == 0 or j + 1 == shape.pieces.len or shape.pieces[j - 1] != .line or shape.pieces[j + 1] != .line) continue;
+        const ends = shape.starts[j..][0..2].*;
+        const place = ends[0] + shape.middles[j];
+        // A half-arc under half an ulp of its place is no arc.
+        if (!(place > ends[0] and place < ends[1])) continue;
+        var speeds: [2]f64 = undefined;
+        var duration: f64 = undefined;
+        if (ends[0] > from and ends[1] < to) {
+            const times = [2]f64{ run.timing.time(ends[0] - from), run.timing.time(ends[1] - from) };
+            for (&speeds, times) |*v, t| v.* = run.timing.at(t).first;
+            duration = times[1] - times[0];
+        } else if ((place == from and first == .smooth) or (place == to and goes_on)) {
+            speeds = @splat(if (place == from) run.timing.v0 else run.timing.v1);
+            duration = (ends[1] - ends[0]) / speeds[0];
+        } else continue;
+        const change = shape.pieces[j].direction(1).scale(speeds[1]).sub(shape.pieces[j].direction(0).scale(speeds[0]));
+        g.* = change.norm() < gentle_mps and duration < short_s;
     }
-    std.mem.sort(@TypeOf(cuts.items[0]), cuts.items, {}, struct {
-        fn lessThan(_: void, l: @TypeOf(cuts.items[0]), r: @TypeOf(cuts.items[0])) bool {
-            return l.s < r.s;
+    const Cut = struct { s: f64, joint: Joint };
+    var cuts: std.ArrayList(Cut) = .empty;
+    for (gentle[0 .. gentle.len - 1], gentle[1..], shape.starts[base + 1 .. base + gentle.len]) |g0, g1, s| if (s > from and s < to and !g0 and !g1) try cuts.append(scratch, .{ .s = s, .joint = if (shape.pieces[0] == .cubic) .velocity else .acceleration });
+    for (heights[1 .. heights.len - 1]) |s| try cuts.append(scratch, .{ .s = s + from, .joint = if (gentle[shape.piece(s + from) - base]) .velocity else .smooth });
+    // In order, a place at a joint after the joint, whose cut it is.
+    std.mem.sort(Cut, cuts.items, {}, struct {
+        fn lessThan(_: void, l: Cut, r: Cut) bool {
+            return l.s < r.s or (l.s == r.s and l.joint != .smooth and r.joint == .smooth);
         }
     }.lessThan);
     var t0 = run.start;
-    var joint = first;
+    var joint = if (first == .smooth and gentle[0]) .velocity else first;
     var s0 = from;
     for (0..cuts.items.len + 1) |k| {
+        if (k > 0 and k < cuts.items.len and cuts.items[k].joint == .smooth and cuts.items[k].s == cuts.items[k - 1].s) continue;
         const s1 = if (k < cuts.items.len) cuts.items[k].s else to;
         const t1 = if (k < cuts.items.len) run.start + run.timing.time(s1 - from) else run.start + run.timing.duration;
         if (t1 > t0) {
-            try out.append(scratch, .{ .t0 = t0, .t1 = t1, .joint = joint, .side = .{ .piece = shape.piece((s0 + s1) / 2) } });
+            // A gentle corner's arc is run on its legs: the one before its place, and the one after.
+            var piece = shape.piece((s0 + s1) / 2);
+            if (gentle[piece - base]) piece = if ((s0 + s1) / 2 < shape.starts[piece] + shape.middles[piece]) piece - 1 else piece + 1;
+            const runs_on = .{ piece > base and gentle[piece - 1 - base], piece + 1 - base < gentle.len and gentle[piece + 1 - base] };
+            try out.append(scratch, .{ .t0 = t0, .t1 = t1, .joint = joint, .side = .{ .piece = piece, .runs_on = runs_on } });
             t0 = t1;
             s0 = s1;
             if (k < cuts.items.len) joint = cuts.items[k].joint;
@@ -636,7 +730,7 @@ fn cutRun(b: *Builder, i: usize, p: *Prepared, before: ?Knot) Error!Knot {
         }
         if (last != null and !std.meta.eql(s.a, last.?)) try b.take(i, 1);
         s.cuts = try cut(b, i, .{ .run = .{ .run = &p.run, .stretch = s } });
-        try b.take(i, s.cuts);
+        try b.take(i, s.cuts.len);
         last = s.b;
     }
     return last.?;
@@ -654,101 +748,124 @@ const Source = union(enum) {
         };
     }
 
-    /// The knot at the end of cut c of `cuts`.
-    fn point(self: Source, c: usize, cuts: usize) Knot {
-        const u = @as(f64, @floatFromInt(c)) / @as(f64, @floatFromInt(cuts));
+    /// The knot at the fraction u of it, its own knots at its ends.
+    fn point(self: Source, u: f64) Knot {
         switch (self) {
             .through => |th| {
-                if (c == 0) return th.solved.knot(th.piece);
-                if (c == cuts) return th.solved.knot(th.piece + 1);
+                if (u == 0) return th.solved.knot(th.piece);
+                if (u == 1) return th.solved.knot(th.piece + 1);
                 const q = th.solved.at(th.piece, u);
                 const t0 = th.solved.times[th.piece];
                 return .{ .t = t0 + (th.solved.times[th.piece + 1] - t0) * u, .pos = q.pos, .vel = q.vel, .acc = q.acc };
             },
             .run => |r| {
-                if (c == 0) return r.stretch.a;
-                if (c == cuts) return r.stretch.b;
-                const t = r.stretch.t0 + (r.stretch.t1 - r.stretch.t0) * u;
-                const s = r.run.state(t, r.stretch.side);
-                return .{ .t = t, .pos = s.pos, .vel = s.vel.add(zero), .acc = s.acc.add(zero) };
+                if (u == 0) return r.stretch.a;
+                if (u == 1) return r.stretch.b;
+                return r.run.knot(r.stretch.t0 + (r.stretch.t1 - r.stretch.t0) * u, r.stretch.side);
             },
         }
     }
 };
 
-/// The fewest equal cuts of a stretch, found by doubling, whose knots' quintics lie within the tolerance of the
-/// built motion and, as far as finer cuts bring it nearer, within the bound of the receiver's domain between knots;
-/// where the built motion leaves the domain, the cuts it has then, the build marked out of the domain.
-fn cut(b: *Builder, i: usize, source: Source) Error!usize {
-    var cuts: usize = 1;
-    // The time the bound does not hold, at the two doublings before.
-    var unbounded: [2]f64 = @splat(std.math.inf(f64));
-    while (cuts <= max_knots - b.count) : (cuts *= 2) {
-        switch (within(source, cuts)) {
-            .unstorable => return switch (source) {
-                .through => |t| b.fail(try b.diags.arena.print("segments[{d}].through.places[{d}]", .{ i, t.piece }), "the path to this place cannot be stored: its velocity, acceleration or jerk is not finite", .{}),
-                .run => b.fail(try b.path(i, ""), "the path of this segment cannot be stored: its velocity, acceleration or jerk is not finite", .{}),
-            },
-            .leaves => |at| {
-                b.mark(i, at.time, at.reason);
-                return cuts;
-            },
-            .finer => {},
-            // The bound tightens as knots come nearer, unless it is the rounding of pieces too short; two
-            // doublings that do not shorten the time it fails show that, and the domain check then refuses.
-            .unbounded => |seconds| {
-                if (seconds == 0 or !(seconds < unbounded[0])) return cuts;
-                unbounded = .{ unbounded[1], seconds };
-            },
-        }
+/// A stretch cut by halving, level by level, the pieces that need it: each piece whose knots' quintic misses the
+/// tolerance of the built motion; once none does, each piece whose knots' bound of the receiver's domain fails, as
+/// far as halving brings it nearer. Where the built motion leaves the domain, the pieces it has then, the build
+/// marked out of the domain. Where its pieces end, as fractions of it.
+fn cut(b: *Builder, i: usize, source: Source) Error![]const f64 {
+    const Read = enum { holds, finer, unbounded };
+    const Piece = struct { to: f64, read: ?Read = null };
+    var pieces: std.ArrayList(Piece) = .empty;
+    try pieces.append(b.scratch, .{ .to = 1 });
+    var next: std.ArrayList(Piece) = .empty;
+    const first = source.point(0);
+    var left = false;
+    if (outside(first.pos, first.vel, first.acc)) |reason| {
+        b.mark(i, first.t, reason);
+        left = true;
     }
-    return b.fail(try b.path(i, ""), "the path needs more knots than the {d} a PHT holds", .{max_knots});
+    // The share of the stretch the bound does not hold, at the two levels before.
+    var unbounded: [2]f64 = @splat(std.math.inf(f64));
+    while (true) {
+        // The pieces not yet read, in the order of time, the first time the motion leaves the domain found first.
+        var from: f64 = 0;
+        var finer = false;
+        var failing: f64 = 0;
+        for (pieces.items) |*p| {
+            if (p.read == null) p.read = switch (within(source, source.point(from), source.point(p.to), left)) {
+                .unstorable => return switch (source) {
+                    .through => |t| b.fail(try b.diags.arena.print("segments[{d}].through.places[{d}]", .{ i, t.piece }), "the path to this place cannot be stored: its velocity, acceleration or jerk is not finite", .{}),
+                    .run => b.fail(try b.path(i, ""), "the path of this segment cannot be stored: its velocity, acceleration or jerk is not finite", .{}),
+                },
+                .leaves => |at| blk: {
+                    b.mark(i, at.time, at.reason);
+                    left = true;
+                    break :blk .holds;
+                },
+                .holds => .holds,
+                .finer => .finer,
+                .unbounded => .unbounded,
+            };
+            if (p.read == .finer) finer = true;
+            if (p.read == .unbounded) failing += p.to - from;
+            from = p.to;
+        }
+        if (left) break;
+        // The bound tightens as knots come nearer, unless it is the rounding of pieces too short; two levels that do
+        // not shorten the share it fails show that, and the domain check then refuses.
+        if (!finer) {
+            if (failing == 0 or !(failing < unbounded[0])) break;
+            unbounded = .{ unbounded[1], failing };
+        }
+        const halved: Read = if (finer) .finer else .unbounded;
+        next.clearRetainingCapacity();
+        from = 0;
+        for (pieces.items) |p| {
+            if (p.read == halved) try next.appendSlice(b.scratch, &.{ .{ .to = (from + p.to) / 2 }, .{ .to = p.to } }) else try next.append(b.scratch, p);
+            from = p.to;
+        }
+        if (b.count + next.items.len > max_knots) return b.fail(try b.path(i, ""), "the path needs more knots than the {d} a PHT holds", .{max_knots});
+        std.mem.swap(std.ArrayList(Piece), &pieces, &next);
+    }
+    const ends = try b.scratch.alloc(f64, pieces.items.len);
+    for (ends, pieces.items) |*end, p| end.* = p.to;
+    return ends;
 }
 
 const Within = union(enum) {
-    /// The time of the cut pieces the domain's bound does not hold: 0 where it holds everywhere.
-    unbounded: f64,
+    holds,
     finer,
+    /// The domain's bound between its knots fails.
+    unbounded,
     /// A quintic whose rates are not finite.
     unstorable,
     leaves: struct { time: f64, reason: trajectory.Error },
 };
 
-/// Whether the cuts hold the motion, read in one pass in the order of time: whether the knots can be stored at all,
-/// before all else; then the domain, at every knot and every point between them that the cutting reads, the first
-/// time it is left; then the tolerance, and the domain's bound between knots.
-fn within(source: Source, cuts: usize) Within {
-    var a = source.point(0, cuts);
-    var leaves: ?@FieldType(Within, "leaves") = if (outside(a.pos, a.vel, a.acc)) |reason| .{ .time = a.t, .reason = reason } else null;
+/// What a piece between knots a and z holds of the motion: whether its quintic can be stored at all, before all
+/// else; then, unless the motion has left the domain before it, the domain at the points it reads between its knots
+/// and at z (a was read before), the first time it is left; then the tolerance, and the domain's bound between its
+/// knots.
+fn within(source: Source, a: Knot, z: Knot, left: bool) Within {
+    const fractions = [_]f64{ 0.25, 0.5, 0.75 };
+    var stored: [fractions.len]trajectory.State = undefined;
+    for (&stored, fractions) |*q, f| {
+        q.* = trajectory.between(a, z, a.t + (z.t - a.t) * f);
+        for ([_]Ecef{ q.pos, q.vel, q.acc, q.jerk }) |v| if (!std.math.isFinite(v.norm())) return .unstorable;
+    }
+    if (left) return .holds;
     var in = a.t;
     var finer = false;
-    var unbounded: f64 = 0;
-    for (1..cuts + 1) |c| {
-        const b = source.point(c, cuts);
-        for ([_]f64{ 0.25, 0.5, 0.75 }) |f| {
-            const t = a.t + (b.t - a.t) * f;
-            const stored = trajectory.between(a, b, t);
-            for ([_]Ecef{ stored.pos, stored.vel, stored.acc, stored.jerk }) |v| if (!std.math.isFinite(v.norm())) return .unstorable;
-            if (leaves != null) continue;
-            const s = source.built(t);
-            if (outside(s.pos, s.vel, s.acc)) |reason| {
-                leaves = leaving(source, in, t, reason);
-                continue;
-            }
-            in = t;
-            if (!(stored.pos.sub(s.pos).norm() <= tolerance_m)) finer = true;
-        }
-        if (leaves == null) {
-            if (outside(b.pos, b.vel, b.acc)) |reason| leaves = leaving(source, in, b.t, reason) else in = b.t;
-        }
-        if (leaves == null and !finer) trajectory.checkKnot(&.{ a, b }, 1) catch |e| if (e == error.PathOutOfRange) {
-            unbounded += b.t - a.t;
-        };
-        a = b;
+    for (stored, fractions) |q, f| {
+        const t = a.t + (z.t - a.t) * f;
+        const s = source.built(t);
+        if (outside(s.pos, s.vel, s.acc)) |reason| return .{ .leaves = leaving(source, in, t, reason) };
+        in = t;
+        if (!(q.pos.sub(s.pos).norm() <= tolerance_m)) finer = true;
     }
-    if (leaves) |at| return .{ .leaves = at };
+    if (outside(z.pos, z.vel, z.acc)) |reason| return .{ .leaves = leaving(source, in, z.t, reason) };
     if (finer) return .finer;
-    return .{ .unbounded = unbounded };
+    trajectory.checkKnot(&.{ a, z }, 1) catch |e| if (e == error.PathOutOfRange) return .unbounded;
+    return .holds;
 }
 
 /// Where the built motion leaves the domain between a time it is in it and a later one it is not: by halving, the
@@ -785,8 +902,8 @@ const Solved = struct {
     start: struct { vel: ?Ecef, acc: ?Ecef },
     /// The state it ends in: at rest, or a run's first.
     end: ?Knot,
-    /// Into how many pieces each piece between two places is cut.
-    cuts: []usize,
+    /// For each stretch between two places, where its pieces end, as fractions of it: the last at 1.
+    cuts: [][]const f64,
 
     /// The knot at place k, the segment's start 0: at the place's position exactly, in the state held there where
     /// one is, or the path's.
@@ -856,7 +973,7 @@ fn solveThrough(b: *Builder, i: usize, before: State, visits: []const model.Visi
         held.end = .{ .velocity = .{ e.vel.x, e.vel.y, e.vel.z, local.height.first }, .acceleration = .{ e.acc.x, e.acc.y, e.acc.z, local.height.second } };
     }
     return switch (try through.solve(through.axes, b.scratch, times, values, held)) {
-        .solved => |states| .{ .times = times, .values = values, .states = states, .start = .{ .vel = before.vel, .acc = before.acc }, .end = end, .cuts = try b.scratch.alloc(usize, n - 1) },
+        .solved => |states| .{ .times = times, .values = values, .states = states, .start = .{ .vel = before.vel, .acc = before.acc }, .end = end, .cuts = try b.scratch.alloc([]const f64, n - 1) },
         .unsettled => |pieces| {
             for (pieces) |piece| try b.diags.err(.invalid_segment, try b.diags.arena.print("segments[{d}].through.places[{d}]", .{ i, piece }), "the path to this place cannot be solved in double precision: the gaps between the times about it differ too much", .{});
             return error.InvalidInput;

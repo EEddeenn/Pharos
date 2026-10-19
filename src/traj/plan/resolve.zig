@@ -118,6 +118,7 @@ pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
             try events.append(arena, .{ .name = id, .segment = i });
         }
     }
+    const checks = try limits(&r, raw);
     if (!r.ok) return error.InvalidInput;
     return .{
         .name = raw.name,
@@ -128,7 +129,63 @@ pub fn resolve(ctx: *const node.Ctx, raw: read.Raw) Error!model.Plan {
         .start = start,
         .segments = segments,
         .events = events.items,
+        .limits = checks,
     };
+}
+
+/// The limits, their segments by index: a max or a min or both; a min of a speed or the altitude only, not above
+/// the max; neither below 0 but the altitude's.
+fn limits(r: *Resolver, raw: read.Raw) Error![]const model.Limit {
+    const arena = r.ctx.arena;
+    const given = raw.limits orelse &.{};
+    var segment_ids: std.StringHashMapUnmanaged(usize) = .empty;
+    for (raw.segments, 0..) |s, i| if (s.id) |id| {
+        const found = try segment_ids.getOrPut(arena, id);
+        if (!found.found_existing) found.value_ptr.* = i;
+    };
+    var limit_ids: std.StringHashMapUnmanaged(usize) = .empty;
+    const out = try arena.alloc(model.Limit, given.len);
+    for (given, out, 0..) |limit, *resolved, i| {
+        const path = try node.element(r.ctx, "limits", i);
+        const quantity = limit.quantity;
+        if (limit.id) |id| {
+            const found = try limit_ids.getOrPut(arena, id);
+            if (found.found_existing) {
+                try r.err(.duplicate, try r.join(path, "id"), "the id \"{f}\" is given to limits[{d}] too", .{ Escaped{ .text = id }, found.value_ptr.* });
+            } else found.value_ptr.* = i;
+        }
+        if (limit.max == null and limit.min == null) try r.err(.missing_field, path, "a limit takes a max or a min, or both; 0 given (none)", .{});
+        if (quantity != .altitude) for ([_]?f64{ limit.max, limit.min }, [_][]const u8{ "max", "min" }) |bound, key| if (bound) |value| {
+            const range: Range = .{ .min = 0 };
+            if (!range.holds(value)) try r.err(.out_of_range, try r.join(path, key), "must be {f}, got {f}", .{ range, Number{ .value = value, .outside = range } });
+        };
+        if (limit.min) |min| {
+            if (quantity != .speed3d and quantity != .horizontal_speed and quantity != .altitude) {
+                try r.err(.out_of_range, try r.join(path, "min"), "a limit of {s} takes no min: only a speed or the altitude does", .{model.Quantity.names.get(quantity)});
+            } else if (limit.max) |max| if (min > max) {
+                try r.err(.out_of_range, try r.join(path, "min"), "must be at most {f}, the max, got {f}", .{ Number{ .value = max }, Number{ .value = min, .apart = max } });
+            };
+        }
+        var over: ?[]usize = null;
+        if (limit.over) |ids| {
+            const segments = try arena.alloc(usize, ids.len);
+            var named_ids: std.StringHashMapUnmanaged(usize) = .empty;
+            for (ids, segments, 0..) |id, *named, j| {
+                const where = try node.element(r.ctx, try r.join(path, "over"), j);
+                named.* = segment_ids.get(id) orelse blk: {
+                    try r.err(.unknown_name, where, "no segment has the id \"{f}\"", .{Escaped{ .text = id }});
+                    break :blk 0;
+                };
+                const found = try named_ids.getOrPut(arena, id);
+                if (found.found_existing) {
+                    try r.err(.duplicate, where, "the id \"{f}\" is given to over[{d}] too", .{ Escaped{ .text = id }, found.value_ptr.* });
+                } else found.value_ptr.* = j;
+            }
+            over = segments;
+        }
+        resolved.* = .{ .id = limit.id, .quantity = quantity, .max = limit.max, .min = limit.min, .over = over };
+    }
+    return out;
 }
 
 /// The start's course: at rest none; where the first segment gives its own direction none; where it takes its
@@ -256,7 +313,7 @@ fn segment(r: *Resolver, path: []const u8, given: read.RawSegment, before: Befor
         .turn => {
             const t = given.turn.?;
             const bends = @as(u8, @intFromBool(t.radius != null)) + @intFromBool(t.rate != null) + @intFromBool(t.lateral != null);
-            if (bends != 1) try r.err(.out_of_range, try r.join(path, "turn"), "a turn takes one of radius, rate, lateral; {d} given ({s})", .{ bends, if (bends == 0) "none" else try given_list(r, t) });
+            if (bends != 1) try r.err(.out_of_range, try r.join(path, "turn"), "a turn takes one of radius, rate, lateral; {d} given ({s})", .{ bends, if (bends == 0) "none" else try givenList(r, t) });
             if (t.onto != null and t.by != null) try r.err(.out_of_range, try r.join(path, "turn"), "a turn takes at most one of onto, by; 2 given (onto, by)", .{});
             const bend: model.Bend = if (t.radius) |v| .{ .radius = v } else if (t.rate) |v| .{ .rate = deg2rad(v) } else .{ .lateral = t.lateral orelse 1 };
             inline for (.{ "radius", "rate", "lateral", "by" }) |key| if (@field(t, key)) |v| if (v == 0) {
@@ -325,7 +382,7 @@ fn none(r: *Resolver, path: []const u8, given: read.RawSegment, comptime what: [
     }
 }
 
-fn given_list(r: *Resolver, t: read.RawTurn) Error![]const u8 {
+fn givenList(r: *Resolver, t: read.RawTurn) Error![]const u8 {
     var list: std.ArrayList(u8) = .empty;
     inline for (.{ "radius", "rate", "lateral" }) |key| if (@field(t, key) != null) {
         try list.appendSlice(r.ctx.arena, if (list.items.len == 0) key else ", " ++ key);
@@ -453,28 +510,26 @@ pub const Sketch = struct {
     guides: []const Drawn,
 };
 
+/// A plan's guides as far as they are whole: a place or a guide with a fault, which `diags` is told, is not whole,
+/// and the others are read all the same.
 pub fn drawn(ctx: *const node.Ctx, raw: read.Partial) Error!Sketch {
     const arena = ctx.arena;
-    var ok = true;
     var ids: std.StringHashMapUnmanaged(usize) = .empty;
     var known: std.ArrayList(model.Place) = .empty;
-    const altitude = if (raw.coordinates) |c| c.altitude else null;
-    for (raw.places orelse &.{}, 0..) |p, i| {
+    const altitude = if (raw.coordinates) |n| if (try element(read.PartialCoordinates, n)) |c| c.altitude else null else null;
+    for (raw.places orelse &.{}, 0..) |n, i| {
+        const p = try element(read.PartialPlace, n) orelse continue;
         const id = p.id orelse continue;
         const path = try node.element(ctx, "places", i);
         const found = try ids.getOrPut(arena, id);
         if (found.found_existing) {
             try ctx.diags.err(.duplicate, try node.join(ctx, path, "id"), "the id \"{f}\" is given to places[{d}] too", .{ Escaped{ .text = id }, found.value_ptr.* });
-            ok = false;
             continue;
         }
         found.value_ptr.* = i;
         const reference = altitude orelse continue;
         const place = at(id, p.latitude orelse continue, p.longitude orelse continue, p.altitude orelse continue, reference);
-        if (!try inDomain(ctx, path, place)) {
-            ok = false;
-            continue;
-        }
+        if (!try inDomain(ctx, path, place)) continue;
         try known.append(arena, place);
     }
     // The whole places by name, at their index in `known`: a place given but not whole names none.
@@ -482,18 +537,20 @@ pub fn drawn(ctx: *const node.Ctx, raw: read.Partial) Error!Sketch {
     for (known.items, 0..) |p, i| try whole.put(arena, p.id, i);
     const out = try arena.alloc(Drawn, if (raw.guides) |g| g.len else 0);
     var guide_ids: std.StringHashMapUnmanaged(usize) = .empty;
-    for (raw.guides orelse &.{}, out, 0..) |given, *d, i| {
-        d.* = .{ .id = given.id, .guide = null };
+    for (raw.guides orelse &.{}, out, 0..) |n, *d, i| {
+        // A guide with a fault is named as it is given.
+        d.* = .{ .id = givenId(n), .guide = null };
+        const given = try element(read.PartialGuide, n) orelse continue;
         if (given.id) |id| {
             const found = try guide_ids.getOrPut(arena, id);
             if (found.found_existing) {
                 try ctx.diags.err(.duplicate, try node.join(ctx, try node.element(ctx, "guides", i), "id"), "the id \"{f}\" is given to guides[{d}] too", .{ Escaped{ .text = id }, found.value_ptr.* });
-                ok = false;
-            } else found.value_ptr.* = i;
+                continue;
+            }
+            found.value_ptr.* = i;
         }
         if (given.polyline != null and given.bezier != null) {
             try ctx.diags.err(.out_of_range, try node.element(ctx, "guides", i), "a guide takes one of polyline, bezier; 2 given (polyline, bezier)", .{});
-            ok = false;
             continue;
         }
         const names = (if (given.polyline) |p| p.places else if (given.bezier) |b| b.places else null) orelse continue;
@@ -504,6 +561,22 @@ pub fn drawn(ctx: *const node.Ctx, raw: read.Partial) Error!Sketch {
             d.guide = .{ .id = given.id orelse "", .places = indices, .shape = if (given.polyline) |p| .{ .polyline = p.radius.? } else .bezier };
         }
     }
-    if (!ok) return error.InvalidInput;
     return .{ .places = known.items, .guides = out };
+}
+
+/// An object of a plan being written, read on its own: null where it has a fault.
+fn element(comptime T: type, n: node.Node) Error!?T {
+    return shared.json.table.read(T, try n.object() orelse return null);
+}
+
+/// The id an object gives as text, whatever else it holds.
+fn givenId(n: node.Node) ?[]const u8 {
+    const map = switch (n.value) {
+        .object => |m| m,
+        else => return null,
+    };
+    return switch (map.get("id") orelse return null) {
+        .string => |s| s,
+        else => null,
+    };
 }

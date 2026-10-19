@@ -174,9 +174,11 @@ fn corrections(tr: *const @import("window.zig").Track, k: *const geometry.Knot, 
     var pco_m: [spec.max_per_system]f64 = @splat(0);
     if (tr.ephemeris.phaseCentre()) |centre| {
         const lt = k.lt;
-        const frame: core.attitude.BodyAxes = .of(centre.law, rx.pos.add(lt.los.scale(lt.range_m)), lt.sat_vel, gnss.constants.get(tr.sat.system).omega_e, endpoint.sun);
-        const along: [3]f64 = .{ frame.x.dot(lt.los), frame.y.dot(lt.los), frame.z.dot(lt.los) };
-        for (&pco_m, centre.offset_m) |*m, off| m.* = off[0] * along[0] + off[1] * along[1] + off[2] * along[2];
+        // A satellite with no orbit plane has no attitude to place its phase centre by: none is applied.
+        if (core.attitude.BodyAxes.of(centre.law, rx.pos.add(lt.los.scale(lt.range_m)), lt.sat_vel, gnss.constants.get(tr.sat.system).omega_e, endpoint.sun)) |frame| {
+            const along: [3]f64 = .{ frame.x.dot(lt.los), frame.y.dot(lt.los), frame.z.dot(lt.los) };
+            for (&pco_m, centre.offset_m) |*m, off| m.* = off[0] * along[0] + off[1] * along[1] + off[2] * along[2];
+        }
     }
     return .{
         .iono_l1_m = endpoint.models.get(tr.sat.system).delayL1(k.state.pos, k.el_rad, k.az_rad),

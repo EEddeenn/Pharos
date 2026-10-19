@@ -24,7 +24,9 @@ const most_iterations = 32;
 const settled_m = 1e-9;
 const rounding = 4 * std.math.floatEps(f64);
 
-const d = [3]f64{ 1 / (constants.wgs_axis_a * constants.wgs_axis_a), 1 / (constants.wgs_axis_a * constants.wgs_axis_a), 1 / (constants.wgs_axis_b * constants.wgs_axis_b) };
+/// The ellipsoid's metric: a point x lies on it where the sum of metric[i] x[i]^2 is 1, its normal there along
+/// metric x.
+pub const metric = [3]f64{ 1 / (constants.wgs_axis_a * constants.wgs_axis_a), 1 / (constants.wgs_axis_a * constants.wgs_axis_a), 1 / (constants.wgs_axis_b * constants.wgs_axis_b) };
 
 pub const Error = error{OutOfMemory};
 
@@ -77,15 +79,15 @@ pub const Track = struct {
 
 /// The ellipsoid's normal at a point of it.
 pub fn normal(point: Ecef) Ecef {
-    return (Ecef{ .x = point.x * d[0], .y = point.y * d[1], .z = point.z * d[2] }).unit();
+    return (Ecef{ .x = point.x * metric[0], .y = point.y * metric[1], .z = point.z * metric[2] }).unit();
 }
 
 /// F'' at a node.
 pub fn curve(node: Node, curvature: f64) Ecef {
-    const scaled: Ecef = .{ .x = node.point.x * d[0], .y = node.point.y * d[1], .z = node.point.z * d[2] };
+    const scaled: Ecef = .{ .x = node.point.x * metric[0], .y = node.point.y * metric[1], .z = node.point.z * metric[2] };
     const n = scaled.unit();
     const t = node.tangent;
-    const across = t.x * t.x * d[0] + t.y * t.y * d[1] + t.z * t.z * d[2];
+    const across = t.x * t.x * metric[0] + t.y * t.y * metric[1] + t.z * t.z * metric[2];
     return n.scale(-across / scaled.norm()).add(t.cross(n).scale(curvature));
 }
 
@@ -111,7 +113,7 @@ pub fn heading(point: Ecef, angle: f64) Ecef {
 /// A point put onto the ellipsoid (along its ray from the centre, by far less than its rounding) and a tangent made
 /// a unit tangent there.
 fn settle(point: Ecef, tangent: Ecef) Node {
-    const q = point.x * point.x * d[0] + point.y * point.y * d[1] + point.z * point.z * d[2];
+    const q = point.x * point.x * metric[0] + point.y * point.y * metric[1] + point.z * point.z * metric[2];
     const on = point.scale(1 / @sqrt(q));
     return .{ .point = on, .tangent = along(on, tangent) };
 }

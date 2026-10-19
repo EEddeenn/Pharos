@@ -91,6 +91,8 @@ fn below(s: f64, length: f64) bool {
 pub const Side = struct {
     piece: usize = 0,
     cell: ?*const core.geoid.Cell = null,
+    /// Whether the piece, a leg, runs on before its start and past its end, into gentle corners' arcs.
+    runs_on: [2]bool = .{ false, false },
 };
 
 pub const Run = struct {
@@ -119,7 +121,7 @@ pub const Run = struct {
         const s = self.timing.at(t - self.start);
         return .{ .point = switch (self.ground) {
             .track => |*tr| tr.at(s.value),
-            .guide => |g| g.shape.ground(side.piece, g.from + s.value),
+            .guide => |g| g.shape.ground(side.piece, g.from + s.value, side.runs_on),
         }, .length = s };
     }
 
@@ -129,9 +131,9 @@ pub const Run = struct {
         const g = f.point;
         var point: frame.Vector = undefined;
         var scaled: frame.Vector = undefined;
-        for (&point, &scaled, g.point.toArray(), g.tangent.toArray(), g.curve.toArray(), axes_d) |*p, *q, coordinate, tangent, curve, d| {
+        for (&point, &scaled, g.point.toArray(), g.tangent.toArray(), g.curve.toArray(), track.metric) |*p, *q, coordinate, tangent, curve, m| {
             p.* = .{ .value = coordinate, .first = tangent * s.first, .second = curve * s.first * s.first + tangent * s.second };
-            q.* = p.scale(d);
+            q.* = p.scale(m);
         }
         const n = frame.unit(scaled);
         const height: Jet = switch (self.height) {
@@ -160,12 +162,6 @@ pub const Run = struct {
 };
 
 const zero: Ecef = .{ .x = 0, .y = 0, .z = 0 };
-
-const axes_d = [3]f64{
-    1 / (constants.wgs_axis_a * constants.wgs_axis_a),
-    1 / (constants.wgs_axis_a * constants.wgs_axis_a),
-    1 / (constants.wgs_axis_b * constants.wgs_axis_b),
-};
 
 fn value(v: frame.Vector) Ecef {
     return .{ .x = v[0].value, .y = v[1].value, .z = v[2].value };
