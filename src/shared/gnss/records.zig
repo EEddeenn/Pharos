@@ -110,10 +110,6 @@ pub const SourceExtra = union(NavSource) {
         };
     }
 
-    pub fn servesSignal(self: SourceExtra, signal: Signal) bool {
-        return self.signalStatus(signal).flies();
-    }
-
     pub fn transmissionLead(self: SourceExtra) ?f64 {
         return switch (self) {
             inline else => |x| @TypeOf(x).transmission_lead_s,

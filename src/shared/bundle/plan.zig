@@ -127,6 +127,15 @@ fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet,
     return null;
 }
 
+fn flies(leg: Leg, sat: types.SatId, signals: std.EnumSet(types.Signal)) bool {
+    const binding = leg.binding orelse return false;
+    var it = signals.iterator();
+    while (it.next()) |signal| {
+        if (signal.system() == sat.system and binding.air[gnss.spec.slot(signal)].status == .on_air) return true;
+    }
+    return false;
+}
+
 pub const Plan = struct {
     start: GpsTime,
     span_ms: u64,
@@ -152,7 +161,7 @@ pub const Plan = struct {
                 const all = timeline.legs;
                 while (at.* < all.len and all[at.*].from_ms <= covered) : (at.* += 1) {
                     const until = if (at.* + 1 < all.len) all[at.* + 1].from_ms else self.span_ms;
-                    if (all[at.*].binding != null and until > covered) {
+                    if (flies(all[at.*], timeline.sat, s.signals) and until > covered) {
                         covered = until;
                         moved = true;
                     }
@@ -160,6 +169,15 @@ pub const Plan = struct {
             }
         }
         return @min(covered, self.span_ms);
+    }
+
+    pub fn fliesAt(self: *const Plan, s: *const scenario.Scenario, t: GpsTime) bool {
+        for (self.timelines) |timeline| {
+            if (!s.transmitsListed(timeline.sat)) continue;
+            const leg = self.legAt(timeline.sat, t) orelse continue;
+            if (flies(leg.*, timeline.sat, s.signals)) return true;
+        }
+        return false;
     }
 
     pub fn validate(self: *const Plan, set: *const navigation.NavSet, config: *const scenario.Scenario) ?[]const u8 {

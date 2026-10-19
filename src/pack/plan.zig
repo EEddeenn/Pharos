@@ -292,10 +292,10 @@ pub fn reportCoverage(plan: *const Plan, s: *const model.Scenario, run_ms: u64, 
         const at = t.printed(null);
         const name = system.displayName();
         if (covered == 0) {
-            try diags.warn(.no_record, "ephemeris", "no {s} satellite has a record at the run start, {f}: its signals carry nothing until one does", .{ name, at });
+            try diags.warn(.no_record, "ephemeris", "no {s} satellite flies a listed signal at the run start, {f}: its signals carry nothing until one does", .{ name, at });
         } else {
             // Whole milliseconds, so every digit, as an integer is written.
-            try diags.warn(.no_record, "ephemeris", "no {s} satellite has a record from {f}, {d} s into the run", .{ name, at, @as(f64, @floatFromInt(covered)) / 1000 });
+            try diags.warn(.no_record, "ephemeris", "no {s} satellite flies a listed signal from {f}, {d} s into the run", .{ name, at, @as(f64, @floatFromInt(covered)) / 1000 });
         }
     }
 }

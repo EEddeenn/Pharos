@@ -50,7 +50,7 @@ pub fn generate(gpa: std.mem.Allocator, io: Io, args: Args, console: Console) u8
         if (!writeScenarioDump(arena.allocator(), io, dir, &b, console)) return 1;
     }
     if (args.tag and !writeTag(arena.allocator(), io, run.info.samples, run.entryTime(), output_path, console)) return 1;
-    var progress: Progress = .{ .console = console, .before_replan = report(console, &b, run, args) };
+    var progress: Progress = .{ .console = console, .b = &b, .before_replan = report(console, &b, run, args) };
     return writeSamples(gpa, io, run, &dumps, output_path, &progress);
 }
 
@@ -71,10 +71,10 @@ fn report(console: Console, b: *const Bundle, run: *Run, args: Args) ?usize {
     if (args.seek != null) {
         console.info("Starting at epoch {d} of {d}, {f}", .{ run.entryEpoch().ms, run.info.span.epochs, run.entryTime().printed(null) });
     }
-    return reportChannels(console, run);
+    return reportChannels(console, b, run);
 }
 
-fn reportChannels(console: Console, run: *Run) ?usize {
+fn reportChannels(console: Console, b: *const Bundle, run: *Run) ?usize {
     var held: usize = 0;
     while (run.nextEvent()) |ev| {
         if (ev == .channel_added) held += 1;
@@ -82,16 +82,20 @@ fn reportChannels(console: Console, run: *Run) ?usize {
     }
     const entry = run.entryEpoch();
     if (entry.ms != 0 and entry.ms % pharos_run.stage.channels.replan_epochs == 0) return held;
-    if (held == 0) warnNoChannel(console, entry);
+    if (held == 0) warnNoChannel(console, b, run);
     return null;
 }
 
-fn warnNoChannel(console: Console, entry: Epoch) void {
-    console.warn("No channel at epoch {d}: no satellite of a listed signal has a record there and stands above the elevation mask; the samples carry noise alone", .{entry.ms});
+fn warnNoChannel(console: Console, b: *const Bundle, run: *const Run) void {
+    const entry = run.entryEpoch();
+    if (b.plan.fliesAt(&b.scenario, run.entryTime())) {
+        console.warn("No channel at epoch {d}: no satellite flying a listed signal there stands above the elevation mask; the samples carry noise alone", .{entry.ms});
+    } else console.warn("No channel at epoch {d}: no satellite flies a listed signal there; the samples carry noise alone", .{entry.ms});
 }
 
 const Progress = struct {
     console: Console,
+    b: *const Bundle,
     before_replan: ?usize,
 };
 
@@ -140,7 +144,7 @@ fn reportBlock(progress: *Progress, run: *Run, block: engine.run.Block) void {
         reportEvent(progress.console, ev);
     }
     if (progress.before_replan) |held| {
-        if (held == 0) warnNoChannel(progress.console, entry);
+        if (held == 0) warnNoChannel(progress.console, progress.b, run);
         progress.before_replan = null;
     }
     if (run.epoch.ms / progress_every_epochs != block.epoch_first.ms / progress_every_epochs) progress.console.info("{d} / {d} ms generated", .{ run.epoch.ms, run.info.span.epochs });

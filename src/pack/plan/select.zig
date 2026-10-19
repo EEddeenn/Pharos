@@ -10,6 +10,8 @@ const records = gnss.records;
 const NavSet = bundle.navigation.NavSet;
 const Ref = bundle.plan.Ref;
 const Interval = bundle.plan.Interval;
+const resolve = @import("resolve.zig");
+const air = @import("air.zig").air;
 
 const kepler_window_s: f64 = gnss.kepler.window_s;
 const flight_after_tb_ms: u32 = 1_800_000;
@@ -79,11 +81,11 @@ pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, signals: std.
         for (std.enums.values(records.NavSource)) |source| {
             if (carries(signals, source.family()) != enabled) continue;
             const index = candidates.get(source).record(set) orelse continue;
-            const e = &set.kepler[index];
             if (signals.count() != 0) {
+                const candidate = resolve.binding(set, .{ .kepler = index }, t, leap);
                 var it = signals.iterator();
                 const alive = while (it.next()) |signal| {
-                    if (e.extra.servesSignal(signal)) break true;
+                    if (air(set, &candidate, signals, signal).status == .on_air) break true;
                 } else false;
                 if (!alive) continue;
             }

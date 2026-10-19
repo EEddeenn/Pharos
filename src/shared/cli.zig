@@ -474,7 +474,7 @@ pub fn reportCoverage(console: Console, b: *const bundle.Bundle) void {
     const covered = b.plan.coveredMs(&b.scenario, null);
     if (covered >= b.epochs()) return;
     // Whole milliseconds, so every digit, as an integer is written.
-    console.warn("No satellite of a listed signal flies a record from {d} s into the run: nothing is transmitted from there on", .{@as(f64, @floatFromInt(covered)) / 1000.0});
+    console.warn("No satellite flies a listed signal from {d} s into the run: nothing is transmitted from there on", .{@as(f64, @floatFromInt(covered)) / 1000.0});
 }
 
 fn reportPrecise(console: Console, product: *const bundle.precise.Product) void {
