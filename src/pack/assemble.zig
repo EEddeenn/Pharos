@@ -91,8 +91,8 @@ pub fn describe(arena: std.mem.Allocator, file: nav.files.File, diags: *Diagnost
 fn checkMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, run_ms: u64, diags: *Diagnostics) Error!void {
     const s = &b.scenario;
     if (s.samples == null) return;
-    const families = messages.familiesOf(s.signals);
-    const allocation = gnss.allocation.at(s.start);
+    const payload = gnss.payload.at(s.start);
+    const families = payload.families(s.signals);
     const broadcast = s.ionosphere.ready.broadcast;
     var failure: messages.PreparationFailure = undefined;
     const prepared = messages.Messages.prepare(arena, s.messages, families, s.start, &failure) catch |e| switch (e) {
@@ -105,13 +105,13 @@ fn checkMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, run_ms: u64,
             const storage = try arena.create(messages.Set(family));
             var t = s.start;
             while (t.lessThan(end)) {
-                messages.build(family, storage, b, &allocation, &broadcast, prepared, .{}, t) catch |e| {
+                messages.build(family, storage, b, &payload, &broadcast, prepared, .{}, t) catch |e| {
                     try diags.err(.out_of_range, "ephemeris", "{s} at {d} s into the run: the navigation data cannot be encoded into its message set ({s})", .{ family.name(), into(s, t), encoding(e) });
                     return error.InvalidInput;
                 };
                 var snapshot: messages.Snapshot = .{};
                 @field(snapshot, @tagName(family)) = storage;
-                try requireData(family, snapshot, s, &allocation, t, diags);
+                try requireData(family, snapshot, s, &payload, t, diags);
                 t = bundle.plan.nextLegBoundary(family.system(), t, b.plan.leap);
             }
         }
@@ -123,14 +123,13 @@ fn into(s: *const bundle.scenario.Scenario, t: GpsTime) f64 {
     return @as(f64, @floatFromInt(t.ms - s.start.ms)) / 1000;
 }
 
-fn requireData(family: NavFamily, snapshot: messages.Snapshot, s: *const bundle.scenario.Scenario, allocation: *const gnss.allocation.Allocation, t: GpsTime, diags: *Diagnostics) Error!void {
+fn requireData(family: NavFamily, snapshot: messages.Snapshot, s: *const bundle.scenario.Scenario, payload: *const gnss.payload.Payload, t: GpsTime, diags: *Diagnostics) Error!void {
     var it = s.signals.iterator();
     while (it.next()) |signal| {
-        if (gnss.spec.get(signal).family != family) continue;
-        const set = messages.forSignal(snapshot, signal).?;
         var sats = signal.system().satellites();
         while (sats.next()) |sat| {
-            if (!allocation.transmits(sat, signal)) continue;
+            if (payload.familyOf(sat, signal) != family) continue;
+            const set = messages.forChannel(snapshot, payload, .init(sat, signal)).?;
             set.requireData(sat.prn()) catch |e| {
                 try diags.err(.missing_field, "ephemeris", "{s} at {d} s into the run: {s}", .{ family.name(), into(s, t), messages.reason(e) });
                 return error.InvalidInput;

@@ -4,6 +4,7 @@ pub const almanac_reference = @import("gnss/almanac_reference.zig");
 pub const almanac = @import("gnss/almanac.zig");
 pub const accuracy = @import("gnss/accuracy.zig");
 pub const allocation = @import("gnss/allocation.zig");
+pub const payload = @import("gnss/payload.zig");
 pub const health = @import("gnss/health.zig");
 pub const air = @import("gnss/air.zig");
 pub const plausible = @import("gnss/plausible.zig");

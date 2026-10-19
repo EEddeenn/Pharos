@@ -36,8 +36,8 @@ pub const Sky = struct {
     all_mask: f64 = 0,
     receiver: geo.receiver.Frame = undefined,
 
-    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation) error{OutOfMemory}!Sky {
-        var window = try geo.Window.init(gpa, b, allocation, .initFill(.empty));
+    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload) error{OutOfMemory}!Sky {
+        var window = try geo.Window.init(gpa, b, payload, .initFill(.empty));
         errdefer window.deinit(gpa);
         const satellites = try gpa.alloc(Satellite, window.tracks.len);
         var self: Sky = .{ .gpa = gpa, .b = b, .span = b.span(), .window = window, .satellites = satellites };

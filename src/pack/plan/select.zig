@@ -74,19 +74,19 @@ fn valueOrder(a: anytype, b: @TypeOf(a)) std.math.Order {
     return .eq;
 }
 
-pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, signals: std.EnumSet(types.Signal), leap: civil.Leap) ?Ref {
+pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), leap: civil.Leap) ?Ref {
     if (sat.system == .glo) return .{ .glonass = glonassFlight(set, sat, t, leap) orelse return null };
     const candidates = sourcesAt(set, sat, t, leap);
     for ([_]bool{ true, false }) |enabled| {
         for (std.enums.values(records.NavSource)) |source| {
-            if (carries(signals, source.family()) != enabled) continue;
+            if (carries(carried, signals, source.family()) != enabled) continue;
             const index = candidates.get(source).record(set) orelse continue;
             if (signals.count() != 0) {
                 // A row's status reads the health and the allocation alone, so the delays' donors are not looked for.
                 const candidate: bundle.plan.Binding = .{ .reference = .{ .kepler = index }, .attributes = resolve.attributesAt(set, &set.kepler[index], t, leap), .air = &.{} };
                 var it = signals.iterator();
                 const alive = while (it.next()) |signal| {
-                    if (air(set, &candidate, signals, signal).status == .on_air) break true;
+                    if (air(set, &candidate, carried, signal).status == .on_air) break true;
                 } else false;
                 if (!alive) continue;
             }
@@ -96,9 +96,9 @@ pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, signals: std.
     return null;
 }
 
-fn carries(signals: std.EnumSet(types.Signal), family: types.NavFamily) bool {
+fn carries(carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), family: types.NavFamily) bool {
     var it = signals.iterator();
-    while (it.next()) |signal| if (gnss.spec.get(signal).family == family) return true;
+    while (it.next()) |signal| if (carried.get(signal) == family) return true;
     return false;
 }
 

@@ -27,9 +27,10 @@ pub const Window = struct { from: GpsTime, until: GpsTime };
 pub const View = struct {
     window: Window,
     snapshot: messages.Snapshot,
+    family: NavFamily,
 
     pub fn forSignal(self: View, signal: types.Signal) ?messages.MessageSet {
-        return messages.forSignal(self.snapshot, signal);
+        return messages.forFamily(self.snapshot, self.family, signal);
     }
 };
 
@@ -47,7 +48,7 @@ pub const InitError = error{ OutOfMemory, MessageSet };
 
 pub const Sequence = struct {
     b: *const bundle.Bundle,
-    allocation: *const gnss.allocation.Allocation,
+    payload: *const gnss.payload.Payload,
     broadcast: Broadcast,
     kinds: std.EnumSet(NavFamily),
     prepared: messages.Messages,
@@ -61,9 +62,9 @@ pub const Sequence = struct {
     held: std.ArrayList(Held) = .empty,
     changes: std.ArrayList(Change) = .empty,
 
-    pub fn init(gpa: std.mem.Allocator, prepared: messages.Messages, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, broadcast: Broadcast, samples: bundle.scenario.Samples, log: *const Log, sats: []const types.SatId) InitError!Sequence {
+    pub fn init(gpa: std.mem.Allocator, prepared: messages.Messages, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, broadcast: Broadcast, samples: bundle.scenario.Samples, log: *const Log, sats: []const types.SatId) InitError!Sequence {
         const scenario = &b.scenario;
-        const kinds = messages.familiesOf(scenario.signals);
+        const kinds = payload.families(scenario.signals);
 
         var sets: messages.Sets(Generations) = .{};
         errdefer freeSets(gpa, sets);
@@ -87,12 +88,12 @@ pub const Sequence = struct {
 
         return .{
             .b = b,
-            .allocation = allocation,
+            .payload = payload,
             .broadcast = broadcast,
             .kinds = kinds,
             .prepared = prepared,
             .sets = sets,
-            .rules = .{ .allocation = allocation, .samples = samples },
+            .rules = .{ .payload = payload, .samples = samples },
             .log = log,
             .sats = sats,
             .states = states,
@@ -129,11 +130,10 @@ pub const Sequence = struct {
     }
 
     fn buildSet(self: *const Sequence, comptime family: NavFamily, out: *messages.Set(family), t: GpsTime, sources: messages.Sources) error{MessageSet}!void {
-        messages.build(family, out, self.b, self.allocation, &self.broadcast, self.prepared, sources, t) catch return error.MessageSet;
+        messages.build(family, out, self.b, self.payload, &self.broadcast, self.prepared, sources, t) catch return error.MessageSet;
     }
 
-    pub fn viewAt(self: *const Sequence, arena: std.mem.Allocator, signal: types.Signal, t: GpsTime) error{ OutOfMemory, MessageSet }!?View {
-        const family = gnss.spec.get(signal).family;
+    pub fn viewAt(self: *const Sequence, arena: std.mem.Allocator, family: NavFamily, t: GpsTime) error{ OutOfMemory, MessageSet }!?View {
         if (!self.kinds.contains(family)) return null;
         const window = windowAt(self.b, family.system(), t);
         switch (family) {
@@ -151,6 +151,7 @@ pub const Sequence = struct {
                         .until = core.time.atEpoch(start, until),
                     },
                     .snapshot = snap,
+                    .family = family,
                 };
             },
         }
@@ -178,8 +179,8 @@ pub const Sequence = struct {
         try self.build(d.families, d.at, sources);
         const snap = self.snapshot();
         for (self.held.items) |h| {
-            if (!d.families.contains(gnss.spec.get(h.key.signal).family)) continue;
-            if (messages.forSignal(snap, h.key.signal)) |set| try set.requireData(h.key.sat.prn());
+            const set = messages.forChannel(snap, self.payload, h.key) orelse continue;
+            if (d.families.contains(std.meta.activeTag(set))) try set.requireData(h.key.sat.prn());
         }
     }
 
@@ -208,7 +209,7 @@ pub const Sequence = struct {
         const snap = self.snapshot();
 
         for (self.held.items) |h| {
-            const state = channels.keep(h.key, sights[h.track], mask_rad, snap);
+            const state = channels.keep(h.key, sights[h.track], mask_rad, snap, self.payload);
             if (state != .held) self.record(h.track, h.key.signal, state);
         }
 
@@ -218,7 +219,7 @@ pub const Sequence = struct {
                 if (sat.system != signal.system()) continue;
                 const key = types.ChannelKey.init(sat, signal);
                 const was = self.states[track].get(signal);
-                const previous = if (was == .held) channels.keep(key, sights[track], mask_rad, snap) else was;
+                const previous = if (was == .held) channels.keep(key, sights[track], mask_rad, snap, self.payload) else was;
                 if (previous == .held) continue;
                 const state = try self.rules.admit(key, sights[track], mask_rad, snap);
                 if (state != previous) self.record(track, signal, state);

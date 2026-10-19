@@ -12,13 +12,13 @@ const Mark = track.provider.Mark;
 
 pub const Move = enum { kept, shifted, begun };
 
-pub fn tracksOf(gpa: std.mem.Allocator, signals: std.EnumSet(types.Signal), mask_out: std.EnumArray(types.System, types.SatSet), allocation: *const gnss.allocation.Allocation) std.mem.Allocator.Error![]Track {
+pub fn tracksOf(gpa: std.mem.Allocator, signals: std.EnumSet(types.Signal), mask_out: std.EnumArray(types.System, types.SatSet), payload: *const gnss.payload.Payload) std.mem.Allocator.Error![]Track {
     var tracks: std.ArrayList(Track) = .empty;
     errdefer tracks.deinit(gpa);
     for (types.System.all) |system| {
         var sats = system.satellites();
         while (sats.next()) |sat| {
-            if (mask_out.get(system).contains(sat) or !allocation.transmitsAny(sat, signals)) continue;
+            if (mask_out.get(system).contains(sat) or !payload.transmitsAny(sat, signals)) continue;
             try tracks.append(gpa, .{ .sat = sat });
         }
     }
@@ -77,8 +77,8 @@ pub const Window = struct {
     ends: [2]receiver.Frame = undefined,
     move: Move = .kept,
 
-    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, mask_out: std.EnumArray(types.System, types.SatSet)) std.mem.Allocator.Error!Window {
-        const tracks = try tracksOf(gpa, b.scenario.signals, mask_out, allocation);
+    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, mask_out: std.EnumArray(types.System, types.SatSet)) std.mem.Allocator.Error!Window {
+        const tracks = try tracksOf(gpa, b.scenario.signals, mask_out, payload);
         errdefer gpa.free(tracks);
         const entries = try gpa.alloc(geometry.Entry, tracks.len);
         for (tracks, entries) |t, *entry| entry.* = .{ .sat = t.sat };

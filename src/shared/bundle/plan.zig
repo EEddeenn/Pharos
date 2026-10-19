@@ -195,8 +195,9 @@ pub const Plan = struct {
 
         var prepared_index: usize = 0;
         if (config.samples != null and config.carries(.d1d2)) {
+            const payload = gnss.payload.at(self.start);
             for (self.timelines) |timeline| {
-                if (!gnss.allocation.transmitsFamily(timeline.sat, .d1d2, self.start)) continue;
+                if (!payload.carries(timeline.sat, .d1d2)) continue;
                 for (timeline.legs, 0..) |*leg, i| {
                     const binding = if (leg.binding) |*b| b else continue;
                     const reference = binding.kepler(set) orelse continue;

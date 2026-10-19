@@ -1,7 +1,6 @@
 const std = @import("std");
 const types = @import("../core.zig").types;
 const records = @import("records.zig");
-const spec = @import("spec.zig");
 
 pub const Attributes = struct {
     lnav: ?@FieldType(records.SourceExtra, "lnav") = null,
@@ -45,8 +44,7 @@ pub const Kepler = struct {
         return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), self.record.sat.prn(), signal, component);
     }
 
-    pub fn attributesFor(self: Kepler, signal: types.Signal) records.SourceExtra {
-        const family = spec.get(signal).family;
+    pub fn attributesFor(self: Kepler, family: types.NavFamily) records.SourceExtra {
         inline for (std.meta.tags(records.NavSource)) |source| {
             if (family == source.family()) {
                 if (self.attribute(source)) |attributes| return attributes;

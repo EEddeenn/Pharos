@@ -103,13 +103,6 @@ pub fn reason(e: Failure) []const u8 {
     };
 }
 
-pub fn familiesOf(signals: std.EnumSet(Signal)) std.EnumSet(NavFamily) {
-    var out = std.EnumSet(NavFamily).empty;
-    var it = signals.iterator();
-    while (it.next()) |signal| out.insert(spec.get(signal).family);
-    return out;
-}
-
 pub const MessageSet = union(NavFamily) {
     lnav: Family(.lnav),
     cnav: Family(.cnav),
@@ -192,8 +185,12 @@ fn OptionalPtr(comptime S: type) type {
 
 pub const Snapshot = Sets(OptionalPtr);
 
-pub fn forSignal(snapshot: Snapshot, signal: Signal) ?MessageSet {
-    switch (spec.get(signal).family) {
+pub fn forChannel(snapshot: Snapshot, payload: *const gnss.payload.Payload, key: core.types.ChannelKey) ?MessageSet {
+    return forFamily(snapshot, payload.familyOf(key.sat, key.signal) orelse return null, key.signal);
+}
+
+pub fn forFamily(snapshot: Snapshot, family: NavFamily, signal: Signal) ?MessageSet {
+    switch (family) {
         inline else => |f| {
             const set = @field(snapshot, @tagName(f)) orelse return null;
             return @unionInit(MessageSet, @tagName(f), @FieldType(MessageSet, @tagName(f)).of(set, signal));
@@ -244,17 +241,17 @@ pub const Messages = struct {
 
 pub const Sources = struct { has: ?cnav_has.PageSource = null, ppp_b2b: ?bcnav3.FrameSource = null, d2: ?d1d2.augmentation.Source = null, dc: ?gnss.gps.dc.Source = null };
 
-pub fn build(comptime family: NavFamily, out: *Set(family), b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, broadcast: *const Broadcast, messages: Messages, sources: Sources, t: GpsTime) field.Error!void {
+pub fn build(comptime family: NavFamily, out: *Set(family), b: *const bundle.Bundle, payload: *const gnss.payload.Payload, broadcast: *const Broadcast, messages: Messages, sources: Sources, t: GpsTime) field.Error!void {
     return out.build(switch (family) {
-        .lnav => inputs.lnav(b, allocation, broadcast, messages.gps, messages.configuration, t),
-        .cnav => inputs.cnav(b, allocation, broadcast, messages.gps, sources.dc, t),
-        .cnav2 => inputs.cnav2(b, allocation, broadcast, messages.cnav2, messages.cnav2_configuration, sources.dc, t),
-        .inav => inputs.inav(b, allocation, broadcast, messages.inav, t),
-        .fnav => inputs.fnav(b, allocation, broadcast, t),
+        .lnav => inputs.lnav(b, payload, broadcast, messages.gps, messages.configuration, t),
+        .cnav => inputs.cnav(b, payload, broadcast, messages.gps, sources.dc, t),
+        .cnav2 => inputs.cnav2(b, payload, broadcast, messages.cnav2, messages.cnav2_configuration, sources.dc, t),
+        .inav => inputs.inav(b, payload, broadcast, messages.inav, t),
+        .fnav => inputs.fnav(b, payload, broadcast, t),
         .cnav_has => .{ .pages = sources.has },
-        .d1d2 => inputs.d1d2(b, allocation, broadcast, sources.d2, t),
-        .bcnav1, .bcnav2 => inputs.bcnav(b, allocation, broadcast, family, t),
-        .bcnav3 => inputs.bcnav3(b, allocation, broadcast, sources.ppp_b2b, t),
+        .d1d2 => inputs.d1d2(b, payload, broadcast, sources.d2, t),
+        .bcnav1, .bcnav2 => inputs.bcnav(b, payload, broadcast, family, t),
+        .bcnav3 => inputs.bcnav3(b, payload, broadcast, sources.ppp_b2b, t),
         .gnav => inputs.gnav(b, t),
     });
 }

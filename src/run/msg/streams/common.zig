@@ -53,10 +53,10 @@ pub const Source = struct {
 
 pub const Served = struct {
     signals: std.EnumSet(types.Signal),
-    allocation: *const gnss.allocation.Allocation,
+    payload: *const gnss.payload.Payload,
 
-    pub fn init(b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation) Served {
-        return .{ .signals = b.scenario.signals, .allocation = allocation };
+    pub fn init(b: *const bundle.Bundle, payload: *const gnss.payload.Payload) Served {
+        return .{ .signals = b.scenario.signals, .payload = payload };
     }
 
     pub fn lists(self: Served, signal: types.Signal) bool {
@@ -64,7 +64,7 @@ pub const Served = struct {
     }
 
     pub fn transmits(self: Served, sat: types.SatId, signal: types.Signal) bool {
-        return self.lists(signal) and self.allocation.transmits(sat, signal);
+        return self.lists(signal) and self.payload.transmits(sat, signal);
     }
 
     pub fn listsAny(self: Served, comptime T: type, table: []const T) bool {

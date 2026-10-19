@@ -90,8 +90,8 @@ pub const Stream = struct {
     cadence: common.Cadence,
     scratch: Scratch = undefined,
 
-    pub fn init(self: *Stream, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, config: bundle.scenario.PppB2b) void {
-        const served: common.Served = .init(b, allocation);
+    pub fn init(self: *Stream, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, config: bundle.scenario.PppB2b) void {
+        const served: common.Served = .init(b, payload);
         var corrected: std.EnumSet(Corrected) = .initOne(.bds);
         if (served.listsAny(ppp.Mode, &ppp.gps_modes)) corrected.insert(.gps);
         if (served.listsAny(ppp.Mode, &ppp.galileo_modes)) corrected.insert(.gal);
@@ -106,7 +106,7 @@ pub const Stream = struct {
 
     pub fn reset(self: *Stream) void {
         const config = self.config;
-        self.init(self.source.b, self.served.allocation, config);
+        self.init(self.source.b, self.served.payload, config);
     }
 
     pub fn advanceTo(self: *Stream, end: GpsTime) void {
@@ -130,7 +130,7 @@ pub const Stream = struct {
     }
 
     fn correction(self: *Stream, e: *Entry, t: GpsTime) ?CorrectedState {
-        const record = inputs.recordOf(self.source.b, self.served.allocation, systems.get(e.corrected).family, e.sat, self.source.notBefore(t)) orelse return null;
+        const record = inputs.recordOf(self.source.b, self.served.payload, systems.get(e.corrected).family, e.sat, self.source.notBefore(t)) orelse return null;
         e.follow(record);
         const reference = if (e.broadcast) |*r| r else return null;
         const value = self.source.correctionAgainst(e.sat, record, &reference.parameters, t, .icd_periodic) orelse return null;

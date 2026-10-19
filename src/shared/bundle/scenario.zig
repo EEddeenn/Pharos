@@ -41,7 +41,10 @@ pub const Scenario = struct {
 
     pub fn carries(self: anytype, family: core.types.NavFamily) bool {
         var it = self.signals.iterator();
-        while (it.next()) |signal| if (gnss.spec.get(signal).family == family) return true;
+        while (it.next()) |signal| {
+            var sats = signal.system().satellites();
+            while (sats.next()) |sat| if (gnss.payload.familyAt(sat, signal, self.start) == family) return true;
+        }
         return false;
     }
 

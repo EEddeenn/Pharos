@@ -89,8 +89,8 @@ pub const Observation = struct {
     ends: [2]Endpoint = undefined,
     entries: []Entry,
 
-    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, models: *const core.iono.Models, mask_out: std.EnumArray(types.System, types.SatSet)) std.mem.Allocator.Error!Observation {
-        var window = try Window.init(gpa, b, allocation, mask_out);
+    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, models: *const core.iono.Models, mask_out: std.EnumArray(types.System, types.SatSet)) std.mem.Allocator.Error!Observation {
+        var window = try Window.init(gpa, b, payload, mask_out);
         errdefer window.deinit(gpa);
         const entries = try gpa.alloc(Entry, window.tracks.len);
         for (window.tracks, entries) |tr, *entry| entry.* = .{ .sat = tr.sat };

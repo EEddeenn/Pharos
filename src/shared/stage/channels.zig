@@ -39,9 +39,9 @@ fn offAir(status: gnss.air.Status) ?State {
     };
 }
 
-pub fn keep(key: types.ChannelKey, sight: ?Sight, mask_rad: f64, snapshot: messages.Snapshot) State {
+pub fn keep(key: types.ChannelKey, sight: ?Sight, mask_rad: f64, snapshot: messages.Snapshot, payload: *const gnss.payload.Payload) State {
     const seen = sight orelse return .no_record;
-    const set = messages.forSignal(snapshot, key.signal) orelse return .no_frames;
+    const set = messages.forChannel(snapshot, payload, key) orelse return .no_frames;
     if (offAir(seen.air[gnss.spec.slot(key.signal)].status)) |state| return state;
     if (seen.el_rad < mask_rad - hysteresis_rad) return .below_mask;
     if (!set.hasFrames(key.sat.prn())) return .no_frames;
@@ -49,16 +49,16 @@ pub fn keep(key: types.ChannelKey, sight: ?Sight, mask_rad: f64, snapshot: messa
 }
 
 pub const Rules = struct {
-    allocation: *const gnss.allocation.Allocation,
+    payload: *const gnss.payload.Payload,
     samples: bundle.scenario.Samples,
 
     pub fn admit(self: *const Rules, key: types.ChannelKey, sight: ?Sight, mask_rad: f64, snapshot: messages.Snapshot) messages.MissingData!State {
-        if (!self.allocation.transmits(key.sat, key.signal)) return .not_broadcast;
+        if (!self.payload.transmits(key.sat, key.signal)) return .not_broadcast;
         const seen = sight orelse return .no_record;
         if (offAir(seen.air[gnss.spec.slot(key.signal)].status)) |state| return state;
         if (seen.el_rad < mask_rad) return .below_mask;
         if (!self.samples.inBand(gnss.spec.get(key.signal).carrierHz(seen.freq))) return .outside_band;
-        const set = messages.forSignal(snapshot, key.signal) orelse return .no_frames;
+        const set = messages.forChannel(snapshot, self.payload, key) orelse return .no_frames;
         try set.requireData(key.sat.prn());
         if (!set.hasFrames(key.sat.prn())) return .no_frames;
         return .held;

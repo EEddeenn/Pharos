@@ -15,23 +15,23 @@ pub const Streams = struct {
     d2: ?*d2.Stream = null,
     dc: ?*dc.Stream = null,
 
-    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, messages: set.Messages, bds_model: *const core.iono.Model) error{OutOfMemory}!Streams {
+    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, messages: set.Messages, bds_model: *const core.iono.Model) error{OutOfMemory}!Streams {
         const scenario = &b.scenario;
         var out: Streams = .{};
         errdefer out.deinit(gpa);
         if (scenario.has) |config| if (scenario.signals.contains(.e6)) {
             const s = try gpa.create(has.Stream);
-            s.init(b, allocation, config);
+            s.init(b, payload, config);
             out.has = s;
         };
         if (scenario.ppp_b2b) |config| if (scenario.signals.contains(.b2b)) {
             const s = try gpa.create(ppp_b2b.Stream);
-            s.init(b, allocation, config);
+            s.init(b, payload, config);
             out.ppp_b2b = s;
         };
         if (messages.d2.len > 0) {
             const s = try gpa.create(d2.Stream);
-            s.init(b, allocation, messages.d2, bds_model);
+            s.init(b, payload, messages.d2, bds_model);
             out.d2 = s;
         }
         if (b.navigation.precise != null and declaresDifferential(scenario.messages.gps) and

@@ -42,14 +42,14 @@ fn sampleTimes(arena: std.mem.Allocator, start: GpsTime, span_ms: u64, system: t
     return out.items;
 }
 
-fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, allocated: std.EnumSet(types.Signal), signals: std.EnumSet(types.Signal), times: []const GpsTime, leap: civil.Leap) std.mem.Allocator.Error![]const Leg {
+fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), times: []const GpsTime, leap: civil.Leap) std.mem.Allocator.Error![]const Leg {
     var out: std.ArrayList(Leg) = .empty;
     var last: ?Binding = null;
     for (times, 0..) |t, i| {
-        const binding = if (select.reference(set, sat, t, signals, leap)) |ref| resolve.binding(set, ref, t, leap) else null;
+        const binding = if (select.reference(set, sat, t, carried, signals, leap)) |ref| resolve.binding(set, ref, t, leap) else null;
         if (i == 0 or !sameBinding(binding, last)) {
             var leg: Leg = .{ .from_ms = @intCast(t.ms - times[0].ms), .binding = binding };
-            if (leg.binding) |*b| b.air = try air.rows(arena, set, sat, b, allocated);
+            if (leg.binding) |*b| b.air = try air.rows(arena, set, sat, b, carried);
             try out.append(arena, leg);
         }
         last = binding;
@@ -72,6 +72,8 @@ fn sameBinding(a: ?Binding, b: ?Binding) bool {
 
 pub const Covered = struct { system: types.System, satellites: types.SatSet, from: GpsTime, until: GpsTime, leap_seconds: i8 };
 
+const transmits_nothing: gnss.payload.Carried = .initFill(null);
+
 pub fn coverage(arena: std.mem.Allocator, set: *const NavSet, leap: civil.Leap) Error![]const Covered {
     var out: std.ArrayList(Covered) = .empty;
     for (types.System.all) |system| {
@@ -91,7 +93,7 @@ pub fn coverage(arena: std.mem.Allocator, set: *const NavSet, leap: civil.Leap) 
             const own = try ownRecords(arena, set, sat);
             if (own.kepler.len == 0 and own.glonass.len == 0) continue;
             for (times, present) |t, *flying| {
-                if (select.reference(&own, sat, t, .empty, leap) != null) flying.insert(sat);
+                if (select.reference(&own, sat, t, &transmits_nothing, .empty, leap) != null) flying.insert(sat);
             }
         }
         var i: usize = 0;
@@ -131,13 +133,12 @@ fn ownRecords(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId) st
 pub fn build(arena: std.mem.Allocator, s: *const model.Scenario, set: *const NavSet, file_almanacs: []const records.Almanac, run_ms: u64, leap: civil.Leap) Error!Plan {
     const span_ms = run_ms + tail_ms;
     const timelines = try arena.alloc(Timeline, bundle.plan.satellite_count);
-    const allocation = gnss.allocation.at(s.start);
+    const payload = gnss.payload.at(s.start);
     for (types.System.all) |system| {
         const times = try sampleTimes(arena, s.start, span_ms, system, leap);
         var sats = system.satellites();
         while (sats.next()) |sat| {
-            const allocated = allocation.signals[sat.key()];
-            timelines[bundle.plan.slot(sat)] = .{ .sat = sat, .legs = try legs(arena, set, sat, allocated, s.signals.intersectWith(allocated), times, leap) };
+            timelines[bundle.plan.slot(sat)] = .{ .sat = sat, .legs = try legs(arena, set, sat, payload.of(sat), s.signals.intersectWith(payload.transmitted(sat)), times, leap) };
         }
     }
     return .{
@@ -167,10 +168,10 @@ fn scales(set: *const NavSet, start: GpsTime) std.EnumMap(types.System, core.clo
 
 pub fn warnUnfit(s: *const model.Scenario, set: *const NavSet, p: *const Plan, diags: *Diagnostics) std.mem.Allocator.Error!void {
     if (s.samples == null) return;
-    const allocation = gnss.allocation.at(s.start);
+    const payload = gnss.payload.at(s.start);
     for (p.timelines) |timeline| {
         for ([_]records.NavSource{ .cnav, .cnav2, .bcnav1, .bcnav2, .bcnav3 }) |source| {
-            if (!s.carries(source.family()) or !allocation.transmitsFamily(timeline.sat, source.family())) continue;
+            if (!s.carries(source.family()) or !payload.carries(timeline.sat, source.family())) continue;
             if (source == .bcnav3 and gnss.bds.allocation.carriesPppB2b(timeline.sat.prn())) continue;
             for (timeline.legs) |*leg| {
                 const binding = if (leg.binding) |*binding| binding else continue;
@@ -180,7 +181,7 @@ pub fn warnUnfit(s: *const model.Scenario, set: *const NavSet, p: *const Plan, d
                 try warnRecord(reference.record, source, unfit, diags);
             }
         }
-        if (!s.carries(.d1d2) or !allocation.transmitsFamily(timeline.sat, .d1d2)) continue;
+        if (!s.carries(.d1d2) or !payload.carries(timeline.sat, .d1d2)) continue;
         for (timeline.legs) |leg| {
             const k = keplerOf(leg) orelse continue;
             const e = &set.kepler[k];

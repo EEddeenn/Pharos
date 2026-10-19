@@ -100,8 +100,8 @@ pub const Stream = struct {
     started: bool = false,
     scratch: Scratch = undefined,
 
-    pub fn init(self: *Stream, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, config: bundle.scenario.Has) void {
-        const served: common.Served = .init(b, allocation);
+    pub fn init(self: *Stream, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, config: bundle.scenario.Has) void {
+        const served: common.Served = .init(b, payload);
         const status: has.Status = switch (config.status) {
             .test_mode => .test_mode,
             .operational => .operational,
@@ -120,7 +120,7 @@ pub const Stream = struct {
 
     pub fn reset(self: *Stream) void {
         const config = self.config;
-        self.init(self.source.b, self.served.allocation, config);
+        self.init(self.source.b, self.served.payload, config);
     }
 
     pub fn advanceTo(self: *Stream, t: GpsTime) void {

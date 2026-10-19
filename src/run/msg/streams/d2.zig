@@ -17,7 +17,7 @@ const ring_len = 16;
 const lead_ms = 3000;
 
 pub const Stream = struct {
-    allocation: *const gnss.allocation.Allocation,
+    payload: *const gnss.payload.Payload,
     publications: []const augmentation.PreparedPublication,
     model: *const core.iono.Model,
     source: common.Source,
@@ -26,12 +26,12 @@ pub const Stream = struct {
     superframe: ?i64 = null,
     delays: [grid.igp_count]u9 = undefined,
 
-    pub fn init(self: *Stream, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, publications: []const augmentation.PreparedPublication, model: *const core.iono.Model) void {
-        self.* = .{ .allocation = allocation, .publications = publications, .model = model, .source = .{ .b = b, .scale = .bds }, .cadence = .init(core.time.bds_offset_ms, b.scenario.start.addMs(-lead_ms)) };
+    pub fn init(self: *Stream, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, publications: []const augmentation.PreparedPublication, model: *const core.iono.Model) void {
+        self.* = .{ .payload = payload, .publications = publications, .model = model, .source = .{ .b = b, .scale = .bds }, .cadence = .init(core.time.bds_offset_ms, b.scenario.start.addMs(-lead_ms)) };
     }
 
     pub fn reset(self: *Stream) void {
-        self.init(self.source.b, self.allocation, self.publications, self.model);
+        self.init(self.source.b, self.payload, self.publications, self.model);
     }
 
     pub fn advanceTo(self: *Stream, t: GpsTime) void {
@@ -65,7 +65,7 @@ pub const Stream = struct {
     }
 
     fn equivalentClock(self: *Stream, sat: types.SatId, t: GpsTime, rx: core.coord.Ecef) ?f64 {
-        const flight = inputs.d1d2Reference(self.source.b, self.allocation, sat, self.source.notBefore(d1d2.cycleStart(t))) orelse return null;
+        const flight = inputs.d1d2Reference(self.source.b, self.payload, sat, self.source.notBefore(d1d2.cycleStart(t))) orelse return null;
         const c = self.source.correctionAgainst(sat, flight.record, &flight.prepared.decoded, t, .icd_periodic) orelse return null;
         return c.equivalentClock(rx);
     }

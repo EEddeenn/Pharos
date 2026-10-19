@@ -23,7 +23,7 @@ const Span = struct { first: usize, end: usize };
 pub const Evaluator = struct {
     gpa: std.mem.Allocator,
     bundle: *const shared.bundle.Bundle,
-    allocation: gnss.allocation.Allocation,
+    payload: gnss.payload.Payload,
     ionosphere: Ionosphere,
     geometry: geo.Observation,
     spans: []Span,
@@ -37,7 +37,7 @@ pub const Evaluator = struct {
         self.* = .{
             .gpa = gpa,
             .bundle = b,
-            .allocation = gnss.allocation.at(b.scenario.start),
+            .payload = gnss.payload.at(b.scenario.start),
             .ionosphere = try Ionosphere.create(gpa, &b.scenario.ionosphere.ready, b.scenario.signals),
             .geometry = undefined,
             .spans = &.{},
@@ -46,7 +46,7 @@ pub const Evaluator = struct {
             .values = &.{},
         };
         errdefer self.ionosphere.deinit(gpa);
-        self.geometry = try geo.Observation.init(gpa, b, &self.allocation, &self.ionosphere.models, b.scenario.mask_out);
+        self.geometry = try geo.Observation.init(gpa, b, &self.payload, &self.ionosphere.models, b.scenario.mask_out);
         errdefer self.geometry.deinit(gpa);
         const tracks = self.geometry.frame().tracks;
         self.spans = try gpa.alloc(Span, tracks.len);
@@ -55,7 +55,7 @@ pub const Evaluator = struct {
         for (tracks, self.spans) |track, *span| {
             span.first = count;
             for (std.meta.tags(types.Signal)) |signal| {
-                if (b.scenario.signals.contains(signal) and self.allocation.transmits(track.sat, signal)) count += 1;
+                if (b.scenario.signals.contains(signal) and self.payload.transmits(track.sat, signal)) count += 1;
             }
             span.end = count;
         }
@@ -64,7 +64,7 @@ pub const Evaluator = struct {
         for (tracks, self.spans) |track, span| {
             var next = span.first;
             for (std.meta.tags(types.Signal)) |signal| {
-                if (!b.scenario.signals.contains(signal) or !self.allocation.transmits(track.sat, signal)) continue;
+                if (!b.scenario.signals.contains(signal) or !self.payload.transmits(track.sat, signal)) continue;
                 self.signals[next] = signal;
                 next += 1;
             }

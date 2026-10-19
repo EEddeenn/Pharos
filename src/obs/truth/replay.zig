@@ -81,9 +81,9 @@ pub const Replay = struct {
         for (self.tracks, out.marks) |*track, *m| m.* = track.ephemeris.mark();
     }
 
-    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, prepared: stage.messages.Messages, log: *const stage.commands.Log) (error{OutOfMemory} || stage.messages.Failure)!Replay {
+    pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, prepared: stage.messages.Messages, log: *const stage.commands.Log) (error{OutOfMemory} || stage.messages.Failure)!Replay {
         const scenario = &b.scenario;
-        const tracks = try geo.window.tracksOf(gpa, scenario.signals, scenario.mask_out, allocation);
+        const tracks = try geo.window.tracksOf(gpa, scenario.signals, scenario.mask_out, payload);
         errdefer gpa.free(tracks);
         const sats = try gpa.alloc(types.SatId, tracks.len);
         errdefer gpa.free(sats);
@@ -93,7 +93,7 @@ pub const Replay = struct {
         const past = try gpa.alloc(States, tracks.len);
         errdefer gpa.free(past);
         const initial_log: stage.commands.Log = .{};
-        var seq = try sequence.Sequence.init(gpa, prepared, b, allocation, scenario.ionosphere.ready.broadcast, scenario.samples.?, &initial_log, sats);
+        var seq = try sequence.Sequence.init(gpa, prepared, b, payload, scenario.ionosphere.ready.broadcast, scenario.samples.?, &initial_log, sats);
         errdefer seq.deinit(gpa);
         try seq.reset(.{});
         var self: Replay = .{
@@ -131,8 +131,7 @@ pub const Replay = struct {
         return states[index].get(signal);
     }
 
-    pub fn viewAt(self: *Replay, signal: types.Signal, t: core.time.GpsTime) error{ OutOfMemory, MessageSet }!?sequence.View {
-        const family = gnss.spec.get(signal).family;
+    pub fn viewAt(self: *Replay, family: types.NavFamily, t: core.time.GpsTime) error{ OutOfMemory, MessageSet }!?sequence.View {
         if (!self.seq.kinds.contains(family)) return null;
         const cached = self.views.getPtr(family);
         if (cached.view) |view| {
@@ -140,7 +139,7 @@ pub const Replay = struct {
         }
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         errdefer arena.deinit();
-        const view = try self.seq.viewAt(arena.allocator(), signal, t);
+        const view = try self.seq.viewAt(arena.allocator(), family, t);
         cached.arena.deinit();
         cached.* = .{ .arena = arena, .view = view };
         return view;

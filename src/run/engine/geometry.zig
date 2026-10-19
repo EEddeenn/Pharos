@@ -31,7 +31,7 @@ pub const Segment = struct { first: Epoch, count: u32 };
 pub const Error = error{OutOfMemory};
 
 pub const Resolved = struct {
-    allocation: *const gnss.allocation.Allocation,
+    payload: *const gnss.payload.Payload,
     broadcast: Broadcast,
     models: *const core.iono.Models,
     tracks: []const geo.observation.Entry,
@@ -40,7 +40,7 @@ pub const Resolved = struct {
 pub const Stage = struct {
     gpa: std.mem.Allocator,
     start: GpsTime,
-    allocation: gnss.allocation.Allocation,
+    payload: gnss.payload.Payload,
     observation: geo.Observation,
     b: *const bundle.Bundle,
     ionosphere: Ionosphere,
@@ -59,7 +59,7 @@ pub const Stage = struct {
         self.* = .{
             .gpa = gpa,
             .start = scenario.start,
-            .allocation = gnss.allocation.at(scenario.start),
+            .payload = gnss.payload.at(scenario.start),
             .observation = undefined,
             .b = b,
             .ionosphere = ionosphere,
@@ -67,7 +67,7 @@ pub const Stage = struct {
             .rows_per_epoch = 0,
             .needed = undefined,
         };
-        self.observation = try geo.Observation.init(gpa, b, &self.allocation, &self.ionosphere.models, scenario.mask_out);
+        self.observation = try geo.Observation.init(gpa, b, &self.payload, &self.ionosphere.models, scenario.mask_out);
         errdefer self.observation.deinit(gpa);
         const count = self.observation.window.tracks.len;
         const rows_per_buffer = (@as(usize, block_epochs) + 1) * count;
@@ -99,7 +99,7 @@ pub const Stage = struct {
     }
 
     pub fn resolved(self: *const Stage) Resolved {
-        return .{ .allocation = &self.allocation, .broadcast = self.ionosphere.broadcast, .models = &self.ionosphere.models, .tracks = self.observation.frame().tracks };
+        return .{ .payload = &self.payload, .broadcast = self.ionosphere.broadcast, .models = &self.ionosphere.models, .tracks = self.observation.frame().tracks };
     }
 
     fn reselectAt(self: *Stage, epoch: Epoch, ring: *events.Ring) void {

@@ -44,7 +44,7 @@ pub const Truth = struct {
     arena: std.heap.ArenaAllocator,
     b: *const bundle.Bundle,
     span: bundle.Span,
-    allocation: gnss.allocation.Allocation,
+    payload: gnss.payload.Payload,
     power: Power,
     power_epoch: ?Epoch = null,
     next_power: usize = 0,
@@ -65,7 +65,7 @@ pub const Truth = struct {
             .arena = .init(gpa),
             .b = b,
             .span = b.span(),
-            .allocation = gnss.allocation.at(b.scenario.start),
+            .payload = gnss.payload.at(b.scenario.start),
             .power = Power.init(b.scenario.power),
             .geometry = undefined,
             .signals = &.{},
@@ -74,7 +74,7 @@ pub const Truth = struct {
         errdefer self.arena.deinit();
         var it = b.scenario.signals.iterator();
         while (it.next()) |signal| self.system_signals.getPtr(signal.system()).insert(signal);
-        self.geometry = try sky_values.Sky.init(gpa, b, &self.allocation);
+        self.geometry = try sky_values.Sky.init(gpa, b, &self.payload);
         errdefer self.geometry.deinit();
         var count: usize = 0;
         if (b.scenario.samples != null) {
@@ -106,7 +106,7 @@ pub const Truth = struct {
         if (self.prepared) |prepared| return prepared;
         const scenario = &self.b.scenario;
         var failure: stage.messages.PreparationFailure = undefined;
-        const prepared = stage.messages.Messages.prepare(self.arena.allocator(), scenario.messages, stage.messages.familiesOf(scenario.signals), scenario.start, &failure) catch |e| switch (e) {
+        const prepared = stage.messages.Messages.prepare(self.arena.allocator(), scenario.messages, self.payload.families(scenario.signals), scenario.start, &failure) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidPublication => return error.MessageSet,
         };
@@ -116,7 +116,7 @@ pub const Truth = struct {
 
     fn history(self: *Truth) QueryError!*Replay {
         if (self.b.scenario.samples == null) return error.NoSamples;
-        if (self.replay == null) self.replay = try Replay.init(self.gpa, self.b, &self.allocation, try self.messages(), &self.log);
+        if (self.replay == null) self.replay = try Replay.init(self.gpa, self.b, &self.payload, try self.messages(), &self.log);
         return &self.replay.?;
     }
 
@@ -203,7 +203,9 @@ pub const Truth = struct {
         const scenario = &self.b.scenario;
         const sampled = scenario.samples != null;
         const configured = scenario.signals.contains(query.signal);
-        const broadcasts = self.allocation.transmits(query.sat, query.signal);
+        const broadcasts = self.payload.transmits(query.sat, query.signal);
+        // A signal the satellite does not transmit is shown with the family its signal names.
+        const family = self.payload.familyOf(query.sat, query.signal) orelse gnss.spec.get(query.signal).family;
         const mask = self.maskAt(query.epoch);
         const satellite = try self.geometry.target(query.epoch, query.sat, mask);
         self.powerAt(query.epoch);
@@ -233,7 +235,7 @@ pub const Truth = struct {
         var result: inspect_values.Result = .{
             .epochMs = .{ .value = @intCast(query.epoch.ms) },
             .endpoint = query.epoch.ms == self.span.epochs,
-            .target = .{ .system = query.sat.system, .svid = query.sat.prn(), .signal = query.signal, .family = gnss.spec.get(query.signal).family },
+            .target = .{ .system = query.sat.system, .svid = query.sat.prn(), .signal = query.signal, .family = family },
             .channel = channel,
         };
         const t = core.time.atEpoch(self.span.start, query.epoch);
@@ -244,18 +246,18 @@ pub const Truth = struct {
                 break :fallback &local;
             };
             const state = if (query.includes(.model) and provider.current != null) provider.stateAt(t) else null;
-            const projected = inspect_values.model.project(self.b, provider, state, query.sat, query.signal, t, .{ .model = query.includes(.model), .navigation = query.includes(.navigation) });
+            const projected = inspect_values.model.project(self.b, provider, state, query.sat, query.signal, family, t, .{ .model = query.includes(.model), .navigation = query.includes(.navigation) });
             result.model = projected.model;
             result.navigation = projected.navigation;
         }
         if (query.includes(.messages) or query.includes(.service)) {
             const r = channels.replanAt(query.epoch, self.span.epochs);
-            const view = if (sampled and query.includes(.messages)) try self.replay.?.viewAt(query.signal, core.time.atEpoch(self.span.start, r)) else null;
+            const view = if (sampled and query.includes(.messages)) try self.replay.?.viewAt(family, core.time.atEpoch(self.span.start, r)) else null;
             const window = if (view) |v| v.window else stage.sequence.Window{ .from = self.span.start, .until = self.span.start };
             const end = core.time.atEpoch(self.span.start, .{ .ms = self.span.epochs });
             const until = if (end.lessThan(window.until)) end else window.until;
             const prepared = if (sampled) self.prepared.? else stage.messages.Messages{};
-            const projected = try inspect_values.messages.project(arena, self.b, &self.allocation, prepared, if (view) |v| v.forSignal(query.signal) else null, window.from, until, t, query.sat, query.signal, sampled, .{ .messages = query.includes(.messages), .service = query.includes(.service) });
+            const projected = try inspect_values.messages.project(arena, self.b, &self.payload, prepared, if (view) |v| v.forSignal(query.signal) else null, window.from, until, t, query.sat, query.signal, family, sampled, .{ .messages = query.includes(.messages), .service = query.includes(.service) });
             result.messages = projected.messages;
             result.service = projected.service;
         }

@@ -77,7 +77,7 @@ pub const ChannelTable = struct {
         }
     }
 
-    pub fn apply(self: *ChannelTable, epoch: Epoch, changes: []const stage.sequence.Change, rows: []const geometry.Row, table_set: *const tables.TableSet, snapshot: stage.messages.Snapshot, ring: *events.Ring) !void {
+    pub fn apply(self: *ChannelTable, epoch: Epoch, changes: []const stage.sequence.Change, rows: []const geometry.Row, table_set: *const tables.TableSet, snapshot: stage.messages.Snapshot, payload: *const gnss.payload.Payload, ring: *events.Ring) !void {
         for (changes) |change| {
             const row = rows[change.track];
             const key = types.ChannelKey.init(row.sat, change.signal);
@@ -103,7 +103,7 @@ pub const ChannelTable = struct {
                     .table = table_set.find(key) orelse return error.Internal,
                 },
                 .freq = freq,
-                .symbols = msg.symbol.SymbolSource.init(stage.messages.forSignal(snapshot, change.signal).?, row.sat, change.signal),
+                .symbols = msg.symbol.SymbolSource.init(stage.messages.forChannel(snapshot, payload, key).?, row.sat, change.signal),
                 .first_epoch = epoch,
             });
             self.changes += 1;

@@ -328,7 +328,7 @@ fn publications(arena: std.mem.Allocator, b: *const bundle.Bundle, prepared: mes
     return out;
 }
 
-fn serviceValue(b: *const bundle.Bundle, sat: SatId, signal: Signal, sampled: bool, publication_enabled: bool) Service {
+fn serviceValue(b: *const bundle.Bundle, sat: SatId, signal: Signal, family: NavFamily, sampled: bool, publication_enabled: bool) Service {
     var out: Service = .{};
     if (signal == .e6) {
         out.kind = .has;
@@ -345,10 +345,10 @@ fn serviceValue(b: *const bundle.Bundle, sat: SatId, signal: Signal, sampled: bo
             out.clockIntervalS = s.clock_interval_s;
             out.orbitIntervalS = s.orbit_interval_s;
         }
-    } else if (gnss.spec.get(signal).family == .d1d2 and gnss.bds.records.isGeo(sat.prn())) {
+    } else if (family == .d1d2 and gnss.bds.records.isGeo(sat.prn())) {
         out.kind = .d2;
         out.enabled = publication_enabled;
-    } else if (gnss.spec.get(signal).family == .cnav or gnss.spec.get(signal).family == .cnav2) {
+    } else if (family == .cnav or family == .cnav2) {
         out.kind = .gps_differential;
         out.enabled = publication_enabled;
     } else return out;
@@ -365,8 +365,8 @@ fn serviceValue(b: *const bundle.Bundle, sat: SatId, signal: Signal, sampled: bo
     return out;
 }
 
-fn servicePublication(prepared: messages.Messages, sat: SatId, signal: Signal, t: GpsTime) bool {
-    return switch (gnss.spec.get(signal).family) {
+fn servicePublication(prepared: messages.Messages, sat: SatId, family: NavFamily, t: GpsTime) bool {
+    return switch (family) {
         .d1d2 => gnss.bds.records.isGeo(sat.prn()) and gnss.bds.d1d2.augmentation.PreparedPublication.at(prepared.d2, t) != null,
         .cnav => if (gnss.gps.messages.Publication.at(prepared.gps, t)) |p| p.content.differential != null else false,
         .cnav2 => if (gnss.gps.cnav2.publications.PreparedPublication.at(prepared.cnav2, t)) |p| p.content.sources.differential != null else false,
@@ -374,15 +374,14 @@ fn servicePublication(prepared: messages.Messages, sat: SatId, signal: Signal, t
     };
 }
 
-pub fn project(arena: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, prepared: messages.Messages, set: ?messages.MessageSet, boundary: GpsTime, until: GpsTime, query_time: GpsTime, sat: SatId, signal: Signal, sampled: bool, needs: Needs) error{OutOfMemory}!Result {
+pub fn project(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, prepared: messages.Messages, set: ?messages.MessageSet, boundary: GpsTime, until: GpsTime, query_time: GpsTime, sat: SatId, signal: Signal, family: NavFamily, sampled: bool, needs: Needs) error{OutOfMemory}!Result {
     return .{
-        .messages = if (needs.messages) try projectMessages(arena, b, allocation, prepared, set, boundary, until, query_time, sat, signal, sampled) else null,
-        .service = if (needs.service) serviceValue(b, sat, signal, sampled, sampled and b.scenario.signals.contains(signal) and servicePublication(prepared, sat, signal, query_time)) else null,
+        .messages = if (needs.messages) try projectMessages(arena, b, payload, prepared, set, boundary, until, query_time, sat, signal, family, sampled) else null,
+        .service = if (needs.service) serviceValue(b, sat, signal, family, sampled, sampled and b.scenario.signals.contains(signal) and servicePublication(prepared, sat, family, query_time)) else null,
     };
 }
 
-fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, prepared: messages.Messages, set: ?messages.MessageSet, boundary: GpsTime, until: GpsTime, query_time: GpsTime, sat: SatId, signal: Signal, sampled: bool) error{OutOfMemory}!Messages {
-    const family = gnss.spec.get(signal).family;
+fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, prepared: messages.Messages, set: ?messages.MessageSet, boundary: GpsTime, until: GpsTime, query_time: GpsTime, sat: SatId, signal: Signal, family: NavFamily, sampled: bool) error{OutOfMemory}!Messages {
     var out: Messages = .{ .family = family };
     if (!sampled) {
         out.reason = .no_samples;
@@ -393,7 +392,7 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, allocation
         return out;
     }
     out.publication = try publications(arena, b, prepared, sat, family, query_time);
-    if (!allocation.transmitsFamily(sat, family)) {
+    if (!payload.carries(sat, family)) {
         out.reason = .satellite_not_broadcast;
         return out;
     }

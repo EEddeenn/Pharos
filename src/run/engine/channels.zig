@@ -111,7 +111,7 @@ pub const Stage = struct {
 
     pub fn init(gpa: std.mem.Allocator, b: *const bundle.Bundle, resolved: geometry.Resolved, opts: Options) error{ OutOfMemory, MessageSet }!*Stage {
         const scenario = &b.scenario;
-        const allocation = resolved.allocation;
+        const payload = resolved.payload;
         const window_epochs = opts.window_epochs;
         const samples = opts.samples;
         const self = try gpa.create(Stage);
@@ -133,11 +133,11 @@ pub const Stage = struct {
         const sights = try gpa.alloc(?stage.channels.Sight, sats.len);
         errdefer gpa.free(sights);
         var failure: stage.messages.PreparationFailure = undefined;
-        const prepared = stage.messages.Messages.prepare(arena.allocator(), scenario.messages, stage.messages.familiesOf(scenario.signals), scenario.start, &failure) catch |err| switch (err) {
+        const prepared = stage.messages.Messages.prepare(arena.allocator(), scenario.messages, payload.families(scenario.signals), scenario.start, &failure) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidPublication => return error.MessageSet,
         };
-        var seq = try stage.sequence.Sequence.init(gpa, prepared, b, allocation, resolved.broadcast, samples, &self.log, sats);
+        var seq = try stage.sequence.Sequence.init(gpa, prepared, b, payload, resolved.broadcast, samples, &self.log, sats);
         errdefer seq.deinit(gpa);
         const rows = try gpa.alloc(?params.EpochParams, window_epochs * capacity);
         errdefer gpa.free(rows);
@@ -150,7 +150,7 @@ pub const Stage = struct {
         const masks_per_channel = masksPerChannel(window_epochs, min_code_ms);
         const masks = try gpa.alloc(u8, masks_per_channel * capacity);
         errdefer gpa.free(masks);
-        var streams = try msg.streams.Streams.init(gpa, b, allocation, seq.prepared, resolved.models.get(.bds));
+        var streams = try msg.streams.Streams.init(gpa, b, payload, seq.prepared, resolved.models.get(.bds));
         errdefer streams.deinit(gpa);
         self.* = .{
             .gpa = gpa,
@@ -203,8 +203,9 @@ pub const Stage = struct {
         try self.seq.refresh(due, self.streams.sources());
         const snap = self.seq.snapshot();
         for (self.table.channels.items) |*c| {
-            if (c.last_epoch != null or !due.families.contains(gnss.spec.get(c.key.signal).family)) continue;
-            if (stage.messages.forSignal(snap, c.key.signal)) |messages| c.symbols.replaceSet(messages);
+            if (c.last_epoch != null) continue;
+            const messages = stage.messages.forChannel(snap, self.seq.payload, c.key) orelse continue;
+            if (due.families.contains(std.meta.activeTag(messages))) c.symbols.replaceSet(messages);
         }
     }
 
@@ -219,7 +220,7 @@ pub const Stage = struct {
             for (rows, self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .air = seen.delays.air, .freq = seen.delays.freq, .el_rad = seen.epoch.el_rad } else null;
             try self.seq.replan(self.sights, first);
             const before = self.table.changes;
-            try self.table.apply(first, self.seq.changes.items, rows, &self.tables, self.seq.snapshot(), ring);
+            try self.table.apply(first, self.seq.changes.items, rows, &self.tables, self.seq.snapshot(), self.seq.payload, ring);
             if (self.table.changes != before) if (self.dump_plan) |w| self.dumpPlan(w, first) catch {};
         }
         while (self.seq.due(core.time.atEpoch(self.start, first.plus(count - 1)))) |due| try self.refreshSets(due);
