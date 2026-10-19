@@ -15,6 +15,7 @@ pub const Rejection = rinex_records.Rejection;
 pub const declaration = header.declaration;
 
 const first_version = 3.0;
+const glonass_status_version = 3.05;
 const unsupported_version = 5.0;
 
 pub fn parse(pools: *Pools, source: []const u8, scope: diagnostics.Scope) diagnostics.InputError!Header {
@@ -74,7 +75,12 @@ fn parseRaw(pools: *Pools, source: []const u8, at: *usize) Error!Header {
                     pools.skipped += 1;
                     continue;
                 };
-                if (try rinex_records.glonassRecord(pools, prn, ep, &body, null)) |rec| try pools.glonass.append(pools.arena, rec) else pools.skipped += 1;
+                const fourth: ?[4]?f64 = if (version < glonass_status_version) null else rinex_fields.optionalBodyLine(&lines) catch {
+                    try rinex_records.rejectMalformed(pools, .glo, prn, ep, "fdma");
+                    pools.skipped += 1;
+                    continue;
+                };
+                if (try rinex_records.glonassRecord(pools, prn, ep, &body, fourth)) |rec| try pools.glonass.append(pools.arena, rec) else pools.skipped += 1;
             },
             inline .gps, .gal, .bds => |s| {
                 const kind = rinex_records.systemRecord(s).rinex3_kind;
