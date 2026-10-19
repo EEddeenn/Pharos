@@ -79,8 +79,8 @@ fn completeRinex4Cnav(body: *record.Body, toc: time.GpsTime, flags: ?f64) Error!
         .delta_n_dot = delta_n_dot,
         .extra = .{ .cnav = .{
             .ura = .{
-                .ed = if (body.opt(5, 0)) |v| try record.clamped(i5, v) else -16,
-                .ned0 = if (body.opt(4, 2)) |v| try record.clamped(i5, v) else -16,
+                .ed = if (body.opt(5, 0)) |v| try record.clamped(i5, v) else 15,
+                .ned0 = if (body.opt(4, 2)) |v| try record.clamped(i5, v) else 15,
                 .ned1 = try record.clamped(u3, try body.get(4, 3, "ura_ned1")),
                 .ned2 = try record.clamped(u3, try body.get(5, 3, "ura_ned2")),
             },
