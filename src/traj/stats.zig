@@ -20,8 +20,8 @@ pub const Stats = struct {
 };
 
 /// The path's true extremes, read as its limits read it, and the steps its doubled knots make.
-pub fn of(gpa: std.mem.Allocator, traj: Trajectory) check.Error!Stats {
-    const extremes = try check.extremes(gpa, traj.knots);
+pub fn of(allocator: std.mem.Allocator, traj: Trajectory) check.Error!Stats {
+    const extremes = try check.extremes(allocator, traj.knots);
     var st: Stats = .{
         .knots = traj.knots.len,
         .duration_s = traj.duration(),

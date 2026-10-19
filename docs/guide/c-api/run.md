@@ -298,24 +298,24 @@ submits its commands and seeks.
 |---|---|
 | `noise mode <n> is not defined (0 counter, 1 off)` | `pharos_run_create` |
 | `gain mode <n> is not defined (0 adaptive, 1 constant)` | `pharos_run_create` |
-| `gain_db must lie within -60..60, got <v>` | `pharos_run_create`: a constant gain; NaN and the infinities among them |
+| `gain_db must be from -60 to 60, got <v>` | `pharos_run_create`: a constant gain; NaN and the infinities among them |
 | `gain_db must be 0 under the adaptive gain, got <v>` | `pharos_run_create` |
 | `<message>` | `pharos_run_create`: `E_BUNDLE`, with the bundle decoder's reason; `out of memory` for `E_NOMEM` ([the bundle](../scenarios.md#the-bundle)) |
 | `the bundle has no samples block: nothing to generate` | `pharos_run_create`: `E_BUNDLE` |
-| `cannot create the run: <error> (<reason>)` | `pharos_run_create`: another failure; `E_NOMEM` for `OutOfMemory` |
+| `cannot create the run: <reason>` | `pharos_run_create`: another failure; `E_NOMEM` for `out of memory` |
 | `max_epochs is 0 or the buffer holds no epoch of <n> bytes` | `pharos_run_pull`: `E_ARG` |
 | `epoch <n> lies beyond the run's <m> epochs` | `pharos_run_seek`: `E_ARG` |
 | `seeking needs a constant gain: the adaptive AGC depends on every epoch before the target` | `pharos_run_seek`: `E_ARG` |
 | `seeking to epoch <n> is refused: the seek starts the run over, which would drop the commands it has applied` | `pharos_run_seek`: `E_ARG` |
-| `epoch <n> of <m> could not be generated: <error> (<reason>)` | `pharos_run_pull`, `pharos_run_seek`, `pharos_run_to_file`: a failed epoch |
+| `epoch <n> of <m> could not be generated: <reason>` | `pharos_run_pull`, `pharos_run_seek`, `pharos_run_to_file`: a failed epoch |
 | `malformed command` | `pharos_run_submit`: an unknown kind, system, satellite or unit |
-| `submit rejected: InvalidValue` | `pharos_run_submit`: a value out of range |
-| `submit rejected: EpochPassed` | `pharos_run_submit`: an epoch already produced |
+| `submit rejected: the command's value is out of range` | `pharos_run_submit`: a value out of range |
+| `submit rejected: the command's epoch has passed` | `pharos_run_submit`: an epoch already produced |
 | `the command queue holds 256 pending commands: pull, then submit again` | `pharos_run_submit`: `E_BUSY` |
 | `<field> is not UTF-8` | `pharos_run_manifest_json` |
 | `the .tag format has no <format> format` | `pharos_run_tag_text` |
 | `cannot write <path>: <error>` | `pharos_run_to_file`: `E_IO`, the file cannot be created, written or flushed; a long path elided |
 | `out of memory` | any other call that returns `E_NOMEM` |
 
-The errors and reasons of a failed epoch are those of `pharos-run`
+The reasons of a failed epoch are those of `pharos-run`
 ([samples](../samples.md#limits-and-messages)).

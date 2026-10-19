@@ -99,6 +99,11 @@ pub const Along = struct {
     to: usize,
 };
 
+pub const Through = struct {
+    visits: []const Visit,
+    end: End,
+};
+
 pub const Segment = struct {
     id: ?[]const u8,
     span: ?Span,
@@ -113,7 +118,7 @@ pub const Segment = struct {
         straight: Straight,
         turn: Turn,
         along: Along,
-        through: struct { visits: []const Visit, end: End },
+        through: Through,
     },
 };
 

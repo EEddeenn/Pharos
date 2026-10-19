@@ -77,7 +77,7 @@ flowchart LR
 | key order | free |
 | dictionary words | matched exactly and case-sensitively |
 | a word outside its dictionary | an error listing every word of the dictionary |
-| an unknown key | a warning with its path |
+| an unknown key | an error with its path, naming the keys the object takes |
 | a number beyond the range of a double | `out_of_range` |
 | every diagnostic | a code, severity, source name, field path, optional line and column, and message |
 | outputs | at least one of `samples`, `observation` and `position` |
@@ -304,7 +304,7 @@ the GLONASS frequency numbers still come from the navigation plan.
 | a satellite's clock | its `AS` records when it has two or more, else the SP3 clocks |
 | the pair | also places the orbit, with `antenna`, at the pair's ionosphere-free phase centre |
 | a pair of another system | error `unknown_name` |
-| an unknown system | warning `unknown_key` |
+| an unknown system | error `unknown_key` |
 | a binding still lacking a group delay of its pair after resolution | the satellite is dark during that binding (`no_record`) |
 | a satellite the product does not serve at the start | dark until the product serves it (`no_record`) |
 
@@ -452,7 +452,7 @@ same list with its codes
 | `invalid_json` | 0 | error | the text is not JSON; line and column identify the syntax error |
 | `wrong_type` | 1 | error | a value of the wrong JSON type |
 | `missing_field` | 2 | error | a required key absent or empty |
-| `unknown_key` | 3 | warning | a key the reader does not know |
+| `unknown_key` | 3 | error | a key the reader does not know |
 | `unknown_name` | 4 | error | a dictionary word not recognised |
 | `out_of_range` | 5 | error, or a warning where stated | a value outside its range or field |
 | `duplicate` | 6 | error; a warning for a signal listed twice | a value given twice |
@@ -460,7 +460,7 @@ same list with its codes
 | `sample_rate_rounded` | 8 | warning | the sample rate moved onto the kHz grid |
 | `band_excluded` | 9 | warning | a listed signal's carrier outside the sampled band |
 | `no_signal` | 10 | error | no signal for `samples` or `observation` |
-| `invalid_segment` | 11 | error | trajectory problem construction or solve failure; never from `pharos-pack` |
+| `invalid_segment` | 11 | error | a segment of a trajectory plan that cannot be built, or a built path that leaves the receiver's domain; never from `pharos-pack` |
 | `no_output` | 12 | error | no `samples`, `observation` or `position` block |
 | `no_effect` | 13 | warning | a block or entry nothing uses |
 | `implausible_record` | 14 | warning | navigation data outside its fields, or not readable; skipped |
@@ -536,39 +536,39 @@ bundle cannot be written, an argument is wrong or memory runs out.
 |---|---|
 | `required` | `missing_field`, the key |
 | `must be non-empty` | `missing_field`, a path key |
-| `expected <a type>, found <type>`: `expected an integer, found float`, `expected an array` | `wrong_type` |
-| `<n> is out of range`, `<v> does not fit an integer` | `out_of_range`, an integer key |
+| `expected <a type>, found <what it is>`: `expected a string, found a number`, `expected an array, found an object`; a fraction at an integer key: `expected an integer, found 2026.5` | `wrong_type` |
+| `must be from <min> to <max>, got <n>`, the type's range at a key without one of its own: `must be from 0 to 65535, got 70000`; `<v> does not fit an integer`: `1e30 does not fit an integer` | `out_of_range`, an integer key |
 | `<s> is beyond the range of a double` | `out_of_range` |
-| `must be in [<min>, <max>], got <v>` | `out_of_range`, a ranged key |
+| `must be <range>, got <v>`: `must be from 1 to 12, got 13`, `must be at least 0 and below 60, got 60`, `must be above 0 and at most 6000, got 0` | `out_of_range`, a ranged key |
 | `must contain exactly <n> items, got <m>`, `must contain <min> to <max> items, got <m>`, `must contain at least <n> items, got <m>` | `out_of_range`, a list with an item-count constraint |
 | `unknown <what> "<word>"; the <what> words are <list>` | `unknown_name` |
-| `unknown key, ignored` | `unknown_key` |
+| `unknown key; the keys here are <list>`; `unknown key` for each further one of the object | `unknown_key` |
 | `the <word> <what> takes no <key>` | `no_effect` warning: a key only another `type` or `service` takes, dropped |
 | `<y>-<mm>-<dd> is not a calendar date` | `out_of_range`, `time.day` |
 | `the trajectory lasts <D> s` | `out_of_range`, `duration` longer than the trajectory |
 | `the trajectory lasts <D> s, less than an epoch of 1 ms` | `out_of_range`, `trajectory` |
 | `the samples and the observation file need at least one navigation file` | `missing_field`, `ephemeris` |
-| `<signal> is listed twice` | `duplicate`, `signals[i]` |
+| `<signal> is listed twice` | `duplicate` warning, `signals[i]` |
 | `<signal> is transmitted by no satellite at the start` | `no_effect`, `signals` |
 | `the GPS satellite allocation starts on 2025-01-01; an earlier start takes its first state` | `out_of_range` warning, `time` |
 | `no signal is listed` | `no_signal`, `signals` |
 | `no samples, observation or position block` | `no_output` |
-| `svid <n> is not a <System> satellite (1..<cap>)` | `out_of_range`, `maskOut[i].svid[j]`: a number within [1, 63] beyond its system's count |
+| `a <System> svid must be from 1 to <cap>, got <n>` | `out_of_range`, `maskOut[i].svid[j]`: a number within [1, 63] beyond its system's count |
 | `<System> satellites are masked out but no <System> signal is listed` | `no_effect`, `maskOut` |
 | `every <System> satellite transmitting a listed signal at the start is masked out; the run has no <System> channel` | `no_effect`, `maskOut` |
 | `IQ2 packs two samples per byte; <n> samples per millisecond is odd` | `odd_sample_count`, `samples.sampleFreq` |
 | `sample rate moved onto the kHz grid: <a> MHz -> <b> MHz` | `sample_rate_rounded` |
 | `centre frequency moved onto whole hertz: <a> MHz -> <b> MHz` | `center_rounded` |
 | `<signal> at <f> MHz lies outside the sampled band and will not be generated` | `band_excluded`, `signals` |
-| `<signal> at <a>-<b> MHz (k -7..6) lies outside the sampled band and will not be generated` | `band_excluded`, every FDMA channel outside |
+| `<signal> from <a> to <b> MHz (k from -7 to 6) lies outside the sampled band and will not be generated` | `band_excluded`, every FDMA channel outside |
 | `<signal> channels k <outside> lie outside the sampled band and will not be generated (k <inside> inside)` | `band_excluded`, some FDMA channels outside |
-| `noise floor <v> dBm/Hz is outside the usual [-200, -100]` | `out_of_range` warning |
-| `C/N0 <v> dB-Hz lies outside [-100, 100]` | `out_of_range`, `power.initPower` or a `powerValue` |
-| `initial C/N0 <v> dB-Hz is outside the usual [0, 60]` | `out_of_range` warning |
+| `the noise floor is usually from -200 to -100 dBm/Hz, got <v>` | `out_of_range` warning |
+| `C/N0 must be from -100 to 100 dB-Hz, got <v>` | `out_of_range`, `power.initPower` or a `powerValue` |
+| `the initial C/N0 is usually from 0 to 60 dB-Hz, got <v>` | `out_of_range` warning |
 | `the schedule expands to more than 100000 entries of one satellite and one value` | `out_of_range`, `power.signalPower` |
 | `an entry sets <System> power but no <System> signal is listed` | `no_effect`, `power.signalPower` |
 | `must contain at least 1 item, got 0` | `out_of_range`, `precise.orbit` |
-| `unknown system, ignored` | `unknown_key`, a `clockReference` key |
+| `unknown key; the keys here are GPS, BDS, Galileo, GLONASS` | `unknown_key`, a `clockReference` key |
 | `<pair> is not a <System> clock reference` | `unknown_name`, a `clockReference` key |
 | `<service> is transmitted in the samples and there is no samples block` | `no_effect`, `has` or `pppB2b` |
 | `<service> is carried on <signal>, which is not listed` | `no_effect`, `has` or `pppB2b` |
@@ -582,8 +582,8 @@ bundle cannot be written, an argument is wrong or memory runs out.
 | `an E5a signal is listed but the navigation data transmit no GST-UTC usable at the run start: F/NAV page 4 would be a dummy page for the whole run, carrying neither Cic and Cis nor the GGTO` | `missing_field`, `ephemeris` |
 | `must be later than from` | `out_of_range`, a publication's `until` |
 | `publication intervals must be ordered and non-overlapping` | `out_of_range`, a publication's `from` |
-| `the publication cannot be encoded for <family> (<error>)` | `out_of_range`, `messages.gps[i]` and the like |
-| `<family> at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` | `out_of_range`, `ephemeris` |
+| `the publication cannot be encoded for <family> (<error>)` | `out_of_range`, `messages.gps[i]` and the like; `<error>` is `a value lies outside its range`, `a value does not fit its field` or `a value is missing` |
+| `<family> at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` | `out_of_range`, `ephemeris`; `<error>` as above |
 | `<family> at <n> s into the run: <reason>` | `missing_field`, `ephemeris` |
 
 The `messages` payload diagnostics are on each system's data page. The

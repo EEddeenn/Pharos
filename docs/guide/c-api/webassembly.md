@@ -5,7 +5,7 @@ host. Each imports nothing and exposes one product's C API.
 
 | Module | Does |
 |---|---|
-| `pharos_traj.wasm` | solves trajectory plans, reads internal `.pht` products and describes draft geometry |
+| `pharos_traj.wasm` | builds trajectory plans, reads `.pht` files and describes the guides of a plan being written |
 | `pharos_pack.wasm` | packs a scenario from files the host holds in memory and describes navigation files |
 | `pharos_obs.wasm` | writes a bundle's observation and position files and tells what the run's receiver sees at any epoch |
 
@@ -138,32 +138,33 @@ between a trajectory, its packed scenario and the bundle's outputs.
 | `pharos_pack_file.name` | in | UTF-8, NUL-terminated |
 | `pharos_pack_file.bytes` | in | bytes and `len` |
 | `pharos_traj_bytes`, `pharos_traj_kml` | out | retained UTF-8 pointer and length, no NUL |
-| `pharos_traj_inspect` | out | retained UTF-8 JSON pointer and length, no NUL; valid until the next inspection on the trajectory, or its destruction |
+| `pharos_traj_inspect` | out | retained UTF-8 JSON pointer and length, no NUL; valid until the next inspection on the trajectory that passes its argument checks, or its destruction |
 | `pharos_traj_geometry_bytes` | out | retained UTF-8 JSON pointer and length, no NUL; valid until the geometry description is destroyed |
 | `pharos_obs_output_pull` | out | borrowed UTF-8 `data` and `len` in `pharos_obs_output_batch`, no NUL; consume or copy before the output's next operation or destruction |
 | `pharos_obs_truth_inspect` | out | borrowed UTF-8 JSON `data` and `len` in `pharos_obs_bytes`, no NUL; consume or copy before the truth's next operation or destruction |
 | `pharos_pack_bytes` | out | a pointer into the module's memory and a length |
 | a diagnostic's `source`, `path` and `message`, `pharos_*_error`, `pharos_*_last_error` | out | UTF-8 in the module's memory, NUL-terminated |
 
-`pharos_traj_build(json, len, out)` solves one trajectory plan. The
-trajectory ABI version is `0x00010000`. A failed solve can retain an
-inspectable candidate; `.pht` serialization requires verification, while
-KML can visualize the candidate.
+`pharos_traj_build(json, len, out)` builds one trajectory plan. The
+trajectory ABI version is `0x00010000`. A path that leaves the receiver's
+domain or breaks a limit stays inspectable; its `.pht` text is refused,
+while KML still draws it.
 
 `pharos_traj_inspect(t, sample_count, bytes, len)` takes a JavaScript
-number of at least 2 regular time samples, including both endpoints.
-It also samples both sides of events and knots, so the result may have
-more samples. It returns the solve report, events, sections, samples
-and rule reports ([trajectory inspection](traj.md#source-inspection)).
-Copy or parse the result before requesting another inspection. A
-trajectory created by `pharos_traj_read` or `pharos_traj_static` returns
-`OK` with a NULL pointer and zero length; check those before parsing JSON.
+number of at least 2 even samples, both ends included. It also samples
+both sides of every knot, so the result may have more samples. It
+returns the events, segments, checks and samples
+([inspection](traj.md#inspection)). Copy or parse the result before
+requesting another inspection. A trajectory created by `pharos_traj_read`
+or `pharos_traj_static` returns `OK` with a NULL pointer and zero length;
+check those before parsing JSON.
 
-`pharos_traj_describe_geometry(json, len, subdivisions, out)` samples
-draft guide curves and region boundaries without solving. Its input
-contains only `coordinates` and `geometry`. Read its JSON through
-`pharos_traj_geometry_bytes` and destroy the short-lived description
-through `pharos_traj_geometry_destroy` ([geometry inspection](traj.md#geometry-inspection)).
+`pharos_traj_describe_geometry(json, len, subdivisions, out)` describes
+the guides of a plan being written, each in the plan's order, whole or
+not, without building it: it reads the plan's coordinates, places and
+guides. Read its JSON through `pharos_traj_geometry_bytes` and destroy the
+short-lived description through `pharos_traj_geometry_destroy`
+([geometry](traj.md#geometry)).
 
 ## Layouts
 
@@ -258,6 +259,7 @@ record, which the host copies or parses before the next truth operation.
 | threads | one caller at a time per instance; its per-thread message buffers are plain globals |
 | memory | independent per instance; grows on demand up to the 4 GiB of wasm32, as far as the engine allows; it never shrinks |
 | values | the module computes sines, cosines and the like with its own functions: a double may differ from a native build's in its last bits, and a numerical solve can amplify those differences |
+| trajectories | a PHT's numbers may differ from a native build's in their last bits, and its knots in number where the halving ends at other pieces: Wuhan to Paris at 9 km is 40 knots natively and 34 in the module, each within 1 µm of the motion |
 | bundles | one from `pharos_pack.wasm` may differ from a native pack's in a few bytes; every build of the same source reads it |
 | observation files | the last digit of a few Doppler values may differ from `pharos-obs`'s; position files are the same |
-| the files of a bundle | only those it declares: otherwise `E_BUNDLE`, `cannot create the <kind> file: NoSuchOutput`; a bundle's start and length come from `pharos_pack_info_get` |
+| the files of a bundle | only those it declares: otherwise `E_BUNDLE`, `cannot create the <kind> file: the bundle declares none`; a bundle's start and length come from `pharos_pack_info_get` |

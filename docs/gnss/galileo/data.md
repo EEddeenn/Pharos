@@ -273,9 +273,9 @@ The example `examples/scenarios/galileo_e6_has_precise.json` flies a precise pro
 | an XML almanac without a readable `issueDate` | `pharos-pack` error | `<file>:<line>: <path>: the almanac has no usable issue date` |
 | `testMessage`, `reference`, `satellites` or an index missing | error `missing_field` on the key | `required` |
 | a `service` outside the three words | error `unknown_name` on `ism.service` | the message lists the three words |
-| a malformed `testMessage` | error `out_of_range` | `must be exactly 22 hexadecimal digits with first digit 0..7`, or `must contain only hexadecimal digits` |
-| a satellite outside 1 to 63 | error `out_of_range` | `must be in [1, 63], got <n>` |
-| satellites of both banks | error `out_of_range` | `satellites must share one mask bank: 1..32 or 33..63` |
+| a malformed `testMessage` | error `out_of_range` | `must be exactly 22 hexadecimal digits, the first from 0 to 7`, or `must contain only hexadecimal digits` |
+| a satellite outside 1 to 63 | error `out_of_range` | `must be from 1 to 63, got <n>` |
+| satellites of both banks | error `out_of_range` | `satellites must share one mask bank: from 1 to 32 or from 33 to 63` |
 | a satellite listed twice | error `duplicate` | `satellite <n> is repeated` |
 | `reference` off the grid | error `out_of_range` | `must lie on the whole 30-minute grid of GST, the ISM time of week counting 30-minute units` |
 | a key the service does not take | warning `no_effect` | `the <service> service takes no test message`, or `the <service> service takes no <key>` |

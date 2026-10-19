@@ -174,7 +174,9 @@ when one is available, and an availability state. Unsupported or
 unavailable values remain explicit; they are not filled from a different
 satellite or signal. Unrequested groups and absent optional fields are
 omitted; use each group's availability and reason to interpret missing
-values.
+values. A value that is not finite, as a model fed values far outside
+what a satellite does can give, is left out the same way: the response
+writes no `null`.
 
 Every absolute instant uses `gps_ms`, a decimal string of milliseconds
 since the GPS epoch, and `sub_ms`, a numeric fraction in `[0, 1)`.
@@ -407,7 +409,7 @@ selects the frozen reported span ([ranges](#ranges)).
 | the log | the run, the observation file and the truth keep the commands in one log type, which power replays and each re-plan takes its mask from |
 | the plan at epoch 0 | made twice, as a run makes it: an initial plan before commands, then the first epoch-0 re-plan with commands; the truth builds both lazily when replay is first needed, preserving the run's creation and first-pull semantics and its 0.5-degree hysteresis |
 | an epoch beyond the run's end | accepted, never applied |
-| a file | refuses a command at or before `generated_through`: `EpochPassed`, even if the host has not yet consumed the bytes; a position file takes later commands and is the same without them |
+| a file | refuses a command at or before `generated_through` (`submit rejected: the command's epoch has passed`), even if the host has not yet consumed the bytes; a position file takes later commands and is the same without them |
 | an observation file's mask | the satellites listed at an epoch are those at or above the mask of the last re-plan at or before it ([observations](../observations.md#commands)) |
 | a truth | takes a command at any epoch; an elevation-mask command at or before the furthest re-plan planned sends the plan back to the snapshot before its first re-plan, and the next get that reaches them makes the re-plans from there again |
 | `commanded` | set by a signal-power command with a level; cleared by a later schedule entry for the satellite or its system, and by a `use_default` command; a noise-floor command shifts the level and keeps it |
@@ -417,23 +419,23 @@ selects the frozen reported span ([ranges](#ranges)).
 | Message | Function and case |
 |---|---|
 | `output kind <n> is not defined (0 observation, 1 position)` | a creation call: `E_ARG` |
-| `created_unix_s must lie within 0..253402300799, got <n>` | `pharos_obs_output_create_dated`: `E_ARG` |
-| `the wall clock reads <n> s, outside 0..253402300799` | `pharos_obs_output_create`: `E_ARG`, from a clock before 1970 or after 9999 |
+| `created_unix_s must be from 0 to 253402300799, got <n>` | `pharos_obs_output_create_dated`: `E_ARG` |
+| `the wall clock must read from 0 to 253402300799 s, got <n>` | `pharos_obs_output_create`: `E_ARG`, from a clock before 1970 or after 9999 |
 | `<message>` | `pharos_obs_source_create`: `E_BUNDLE`, with the bundle decoder's reason; `out of memory` for `E_NOMEM` ([the bundle](../scenarios.md#the-bundle)) |
-| `cannot create the <kind> file: NoSuchOutput` | a creation call: the bundle declares no such file, `E_BUNDLE`; `<kind>` is `observation` or `position` |
-| `cannot create the <kind> file: OutOfMemory` | a creation call: `E_NOMEM` |
+| `cannot create the <kind> file: the bundle declares none` | a creation call: the bundle declares no such file, `E_BUNDLE`; `<kind>` is `observation` or `position` |
+| `cannot create the <kind> file: out of memory` | a creation call: `E_NOMEM` |
 | `the bundle has no samples block: no run to replay` | `pharos_obs_truth_get`: `E_BUNDLE` |
-| `max_epochs must lie within 1..64, got <n>` | `pharos_obs_output_pull`: `E_ARG` |
+| `max_epochs must be from 1 to 64, got <n>` | `pharos_obs_output_pull`: `E_ARG` |
 | `epoch <n> lies beyond the run's <m> epochs` | `pharos_obs_truth_get`, `pharos_obs_truth_sky`, `pharos_obs_truth_inspect`, `pharos_obs_truth_visible_counts`: `E_ARG` |
 | `malformed inspect query` | `pharos_obs_truth_inspect`: `E_ARG` for an invalid system, PRN, signal, system/signal combination, or unknown group bit |
 | `malformed command` | `pharos_obs_output_submit`, `pharos_obs_truth_submit`: an unknown kind, system, satellite or unit |
-| `submit rejected: InvalidValue` | `pharos_obs_output_submit`, `pharos_obs_truth_submit`: a value out of range |
-| `submit rejected: EpochPassed` | `pharos_obs_output_submit`: an epoch at or before the file's generation cursor, observation or position |
+| `submit rejected: the command's value is out of range` | `pharos_obs_output_submit`, `pharos_obs_truth_submit`: a value out of range |
+| `submit rejected: the command's epoch has passed` | `pharos_obs_output_submit`: an epoch at or before the file's generation cursor, observation or position |
 | `the file has begun: a range comes before the first pull` | `pharos_obs_output_set_range`: `E_ARG` after the first successful pull |
-| `range [<first>, <end>) lies outside the model extent [0, <extent>)` | `pharos_obs_output_set_range`: `E_ARG` for bounds outside the original full prediction |
-| `range [<first>, <end>) is empty or reversed` | `pharos_obs_output_set_range`: `E_ARG` when `first >= end` |
-| `range [<first>, <end>) contains no output epoch` | `pharos_obs_output_set_range`: `E_ARG` for a span with no epoch on the output grid |
-| `epoch <n> of <m> could not be planned: <error> (<reason>)` | `pharos_obs_truth_get`, `pharos_obs_truth_inspect`: a re-plan failed; `E_BUNDLE` for `MessageSet`, `E_NAV` for missing auxiliary data, as a run fails ([samples](../samples.md#limits-and-messages)) |
+| `end_epoch must be at most <extent>, got <end>` | `pharos_obs_output_set_range`: `E_ARG` for an end beyond the original full prediction, which ends at `<extent>` |
+| `end_epoch must be above first_epoch (<first>), got <end>` | `pharos_obs_output_set_range`: `E_ARG` when `first >= end` |
+| `first_epoch <first> and end_epoch <end> select no output epoch` | `pharos_obs_output_set_range`: `E_ARG` for a span with no epoch on the output grid |
+| `epoch <n> of <m> could not be planned: <reason>` | `pharos_obs_truth_get`, `pharos_obs_truth_inspect`: a re-plan failed; `E_BUNDLE` when the message content cannot be encoded, `E_NAV` for missing auxiliary data, as a run fails ([samples](../samples.md#limits-and-messages)) |
 | `out of memory` | any other call that returns `E_NOMEM` |
 
 When ionosphere is active, the bundle contains the applied model,

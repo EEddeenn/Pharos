@@ -39,16 +39,19 @@ from the embedded grid. The blend matches height, gradient and curvature
 at both boundaries. The polar surface has one finite gradient and curvature
 at the pole, independent of a longitude convention.
 
-Altitude conversions and trajectory solving use the same height surface.
-The solver evaluates altitude, climb rate and vertical acceleration in
-the plan's selected reference. An altitude rule in an EGM96 plan therefore
-constrains height above this surface.
+Altitude conversions and trajectory building use the same height surface.
+Over EGM96 a straight's or a turn's altitude is its height above it, and
+the limits read the altitude, climb rate and vertical acceleration above
+it, each point in the grid cell it lies in. An altitude limit in an EGM96
+plan therefore bounds height above this surface. A level leg's knots fall
+where its track crosses the grid's lines, where the surface's slope steps
+the leg's velocity.
 
 ## Where altitudes are used
 
 | Place | Altitude |
 |---|---|
-| trajectory plans | geometry, altitude rules and vertical motion use the plan's explicit `EGM96` or `ellipsoid` reference |
+| trajectory plans | the places' altitudes, a straight's and a turn's vertical motion and the altitude limits use the plan's explicit `EGM96` or `ellipsoid` reference; an along's heights pass its guide's places |
 | `pharos-traj static` | the altitude given with `--lla` |
 | LLA position files | the output height column above the geoid |
 | KML files | `absolute` altitudes above the geoid |

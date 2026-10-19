@@ -59,6 +59,14 @@ pub fn positionInRange(pos: Ecef) bool {
     return r >= min_radius_m and r <= max_radius_m;
 }
 
+/// The bound of the receiver's domain a state breaks, if any.
+pub fn outside(pos: Ecef, vel: Ecef, acc: Ecef) ?Error {
+    if (!positionInRange(pos)) return error.PositionOutOfRange;
+    if (!(vel.norm() <= max_speed_mps)) return error.SpeedOutOfRange;
+    if (!(acc.norm() <= max_acceleration_mps2)) return error.AccelerationOutOfRange;
+    return null;
+}
+
 pub const Trajectory = struct {
     name: []const u8 = "",
     knots: []const Knot,
@@ -119,9 +127,7 @@ pub fn checkKnot(knots: []const Knot, i: usize) Error!void {
         if (!std.math.isFinite(v.x) or !std.math.isFinite(v.y) or !std.math.isFinite(v.z)) return error.NotFinite;
     }
     if (!std.math.isFinite(k.t)) return error.NotFinite;
-    if (!positionInRange(k.pos)) return error.PositionOutOfRange;
-    if (!(k.vel.norm() <= max_speed_mps)) return error.SpeedOutOfRange;
-    if (!(k.acc.norm() <= max_acceleration_mps2)) return error.AccelerationOutOfRange;
+    if (outside(k.pos, k.vel, k.acc)) |e| return e;
     if (i == 0) {
         if (k.t != 0) return error.FirstKnotNotAtZero;
         return;
@@ -137,7 +143,9 @@ pub fn checkKnot(knots: []const Knot, i: usize) Error!void {
     if (!pathInRange(prev, k)) return error.PathOutOfRange;
 }
 
-fn pathInRange(k0: Knot, k1: Knot) bool {
+/// Whether the quintic between two knots of a positive span keeps to the receiver's domain, by a bound of its
+/// distance from the geocentre, its speed and its acceleration from the knots' states.
+pub fn pathInRange(k0: Knot, k1: Knot) bool {
     const h = k1.t - k0.t;
     const dp = k1.pos.sub(k0.pos);
     const drift = dp.sub(k0.vel.scale(h)).norm();
@@ -169,22 +177,29 @@ fn extrapolate(k: Knot, t: f64) State {
     };
 }
 
+/// The quintics of the stored piece from k0 to k1, an axis each, by the fraction of its time.
+pub fn coefficients(k0: Knot, k1: Knot) [3]hermite.Scalar.Quintic {
+    const h = k1.t - k0.t;
+    const p0 = k0.pos.toArray();
+    const v0 = k0.vel.toArray();
+    const a0 = k0.acc.toArray();
+    const p1 = k1.pos.toArray();
+    const v1 = k1.vel.toArray();
+    const a1 = k1.acc.toArray();
+    var out: [3]hermite.Scalar.Quintic = undefined;
+    for (&out, 0..) |*c, axis| c.* = hermite.Scalar.quintic(p0[axis], v0[axis], a0[axis], p1[axis], v1[axis], a1[axis], h);
+    return out;
+}
+
 pub fn between(k0: Knot, k1: Knot, t: f64) State {
     const h = k1.t - k0.t;
     const u = (t - k0.t) / h;
-    const left_p = k0.pos.toArray();
-    const left_v = k0.vel.toArray();
-    const left_a = k0.acc.toArray();
-    const right_p = k1.pos.toArray();
-    const right_v = k1.vel.toArray();
-    const right_a = k1.acc.toArray();
     var position: [3]f64 = undefined;
     var velocity: [3]f64 = undefined;
     var acceleration: [3]f64 = undefined;
     var jerk: [3]f64 = undefined;
-    for (0..3) |axis| {
-        const coefficients = hermite.Scalar.quintic(left_p[axis], left_v[axis], left_a[axis], right_p[axis], right_v[axis], right_a[axis], h);
-        const value = hermite.Scalar.motion(coefficients, h, u);
+    for (coefficients(k0, k1), 0..) |c, axis| {
+        const value = hermite.Scalar.motion(c, h, u);
         position[axis] = value.position;
         velocity[axis] = value.velocity;
         acceleration[axis] = value.acceleration;

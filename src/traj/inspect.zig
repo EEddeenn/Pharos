@@ -8,11 +8,13 @@ const core = shared.core;
 const coord = core.coord;
 const trajectory = shared.trajectory;
 const Knot = trajectory.Knot;
+const Scalar = trajectory.hermite.Scalar;
 const source = @import("source.zig");
 const model = @import("plan.zig").model;
 const frame = @import("frame.zig");
 const check = @import("check.zig");
 const path = @import("path.zig");
+const measure = @import("measure.zig");
 
 pub const Event = struct {
     id: []const u8,
@@ -50,7 +52,18 @@ pub const Check = struct {
     min: ?f64,
     holds: bool,
     worst: ?check.Worst,
-    broken: []const check.Stretch,
+    broken: Broken,
+};
+
+/// The stretches where a limit is broken, by their times: the segment each begins in is the finding's.
+const Broken = struct {
+    stretches: []const check.Stretch,
+
+    pub fn jsonStringify(self: Broken, jw: anytype) !void {
+        try jw.beginArray();
+        for (self.stretches) |s| try jw.write(.{ .from = s.from, .to = s.to });
+        try jw.endArray();
+    }
 };
 
 /// The motion at a time, as it moves at its height: the limits' quantities, read as they read them.
@@ -73,22 +86,49 @@ pub const Sample = struct {
     turnRate: ?f64,
 };
 
-pub const Error = std.Io.Writer.Error || error{OutOfMemory};
+/// The path's length in space to each knot and to each sample, told once for a text its caller counts and then
+/// writes.
+pub const Lengths = struct {
+    knots: []f64,
+    samples: []f64,
 
-/// `sample_count` at least 2: so many samples evenly over the path, besides one on each side of every knot, each
-/// written as it is read.
-pub fn write(allocator: std.mem.Allocator, w: *std.Io.Writer, built: source.Result, sample_count: usize) Error!void {
+    /// `sample_count` at least 2.
+    pub fn of(allocator: std.mem.Allocator, built: source.Result, sample_count: usize) error{OutOfMemory}!Lengths {
+        const knots = built.trajectory.knots;
+        const to_knots = try allocator.alloc(f64, knots.len);
+        errdefer allocator.free(to_knots);
+        to_knots[0] = 0;
+        for (to_knots[1..], knots[0 .. knots.len - 1], knots[1..], 0..) |*d, k0, k1, i| d.* = to_knots[i] + distance(k0, k1, k1.t);
+        const first: Requests = .{ .knots = knots, .duration = built.trajectory.duration(), .sample_count = sample_count };
+        var counting = first;
+        var count: usize = 0;
+        while (counting.next()) |_| count += 1;
+        const to_samples = try allocator.alloc(f64, count);
+        var requests = first;
+        for (to_samples) |*d| {
+            const request = requests.next().?;
+            const piece = pieceAt(knots, request);
+            const k1 = knots[piece + 1];
+            d.* = if (request.time_s == k1.t) to_knots[piece + 1] else to_knots[piece] + distance(knots[piece], k1, request.time_s);
+        }
+        return .{ .knots = to_knots, .samples = to_samples };
+    }
+
+    pub fn deinit(self: Lengths, allocator: std.mem.Allocator) void {
+        allocator.free(self.knots);
+        allocator.free(self.samples);
+    }
+};
+
+/// `sample_count` at least 2, the one `lengths` were told for: so many samples evenly over the path, besides one on
+/// each side of every knot, each written as it is read.
+pub fn write(w: *std.Io.Writer, built: source.Result, sample_count: usize, lengths: Lengths) std.Io.Writer.Error!void {
     const knots = built.trajectory.knots;
     const duration = built.trajectory.duration();
-    // The path's length to each knot.
-    const distances = try allocator.alloc(f64, knots.len);
-    defer allocator.free(distances);
-    distances[0] = 0;
-    for (distances[1..], knots[0 .. knots.len - 1], knots[1..], 0..) |*d, k0, k1, i| d.* = distances[i] + distance(k0, k1, k1.t);
     var jw: std.json.Stringify = .{ .writer = w };
     try jw.beginObject();
     try jw.objectField("distance3d");
-    try jw.write(distances[knots.len - 1]);
+    try jw.write(lengths.knots[knots.len - 1]);
     try jw.objectField("duration");
     try jw.write(duration);
 
@@ -151,37 +191,20 @@ pub fn write(allocator: std.mem.Allocator, w: *std.Io.Writer, built: source.Resu
         .min = limit.min,
         .holds = c.holds,
         .worst = c.worst,
-        .broken = c.broken,
+        .broken = .{ .stretches = c.broken },
     });
     try jw.endArray();
 
-    // The samples in the order of time, the knots' two sides with the even ones.
     try jw.objectField("samples");
     try jw.beginArray();
-    var walk: Walk = .{ .knots = knots, .distances = distances, .datum = built.plan.altitude };
-    const intervals: f64 = @floatFromInt(sample_count - 1);
-    var knot: usize = 0;
-    var even: usize = 0;
+    var walk: Walk = .{ .knots = knots, .datum = built.plan.altitude };
+    var requests: Requests = .{ .knots = knots, .duration = duration, .sample_count = sample_count };
     var previous: ?Sample = null;
-    while (knot < knots.len or even < sample_count) {
-        const at_even = duration * @as(f64, @floatFromInt(even)) / intervals;
-        var requests: [2]Request = undefined;
-        var count: usize = 1;
-        if (knot < knots.len and (even == sample_count or knots[knot].t <= at_even)) {
-            requests = .{ .{ .time_s = knots[knot].t, .before = true }, .{ .time_s = knots[knot].t } };
-            // The two knots of a step share their time, and its two sides are read at the first.
-            count = if (knot > 0 and knots[knot - 1].t == knots[knot].t) 0 else 2;
-            knot += 1;
-        } else {
-            requests[0] = .{ .time_s = at_even };
-            even += 1;
-        }
-        for (requests[0..count]) |request| {
-            const value = walk.sample(request);
-            if (previous) |p| if (std.meta.eql(p, value)) continue;
-            try jw.write(value);
-            previous = value;
-        }
+    for (lengths.samples) |distance3d| {
+        const value = walk.sample(requests.next().?, distance3d);
+        if (previous) |p| if (std.meta.eql(p, value)) continue;
+        try jw.write(value);
+        previous = value;
     }
     try jw.endArray();
     try jw.endObject();
@@ -190,17 +213,54 @@ pub fn write(allocator: std.mem.Allocator, w: *std.Io.Writer, built: source.Resu
 /// A sample at a time, on the piece that ends there or on the one that begins there.
 const Request = struct { time_s: f64, before: bool = false };
 
+/// The samples in the order of time, the knots' two sides with the even ones.
+const Requests = struct {
+    knots: []const Knot,
+    duration: f64,
+    sample_count: usize,
+    knot: usize = 0,
+    even: usize = 0,
+    /// A knot's side after it, the next to read.
+    after: ?f64 = null,
+
+    fn next(self: *Requests) ?Request {
+        if (self.after) |t| {
+            self.after = null;
+            return .{ .time_s = t };
+        }
+        const intervals: f64 = @floatFromInt(self.sample_count - 1);
+        while (self.knot < self.knots.len or self.even < self.sample_count) {
+            const at_even = self.duration * @as(f64, @floatFromInt(self.even)) / intervals;
+            if (self.knot < self.knots.len and (self.even == self.sample_count or self.knots[self.knot].t <= at_even)) {
+                const t = self.knots[self.knot].t;
+                self.knot += 1;
+                // The two knots of a step share their time, and its two sides are read at the first.
+                if (self.knot > 1 and self.knots[self.knot - 2].t == t) continue;
+                self.after = t;
+                return .{ .time_s = t, .before = true };
+            }
+            self.even += 1;
+            return .{ .time_s = at_even };
+        }
+        return null;
+    }
+};
+
+/// The position of the first knot of the piece a request is read on.
+fn pieceAt(knots: []const Knot, request: Request) usize {
+    const after = if (request.before) std.sort.partitionPoint(Knot, knots, request.time_s, before) else std.sort.partitionPoint(Knot, knots, request.time_s, atOrBefore);
+    return std.math.clamp(after, 1, knots.len - 1) - 1;
+}
+
 /// The pieces the samples are read on, and over EGM96 the geoid's cells.
 const Walk = struct {
     knots: []const Knot,
-    distances: []const f64,
     datum: model.Altitude,
     cells: frame.Cells = .{},
 
-    fn sample(self: *Walk, request: Request) Sample {
+    fn sample(self: *Walk, request: Request, distance3d: f64) Sample {
         const knots = self.knots;
-        const after = if (request.before) std.sort.partitionPoint(Knot, knots, request.time_s, before) else std.sort.partitionPoint(Knot, knots, request.time_s, atOrBefore);
-        const piece = std.math.clamp(after, 1, knots.len - 1) - 1;
+        const piece = pieceAt(knots, request);
         const k0 = knots[piece];
         const k1 = knots[piece + 1];
         var state = trajectory.between(k0, k1, request.time_s);
@@ -221,7 +281,7 @@ const Walk = struct {
         const lla = coord.ecefToLla(state.pos);
         return .{
             .time = request.time_s,
-            .distance3d = self.distances[piece] + distance(k0, k1, request.time_s),
+            .distance3d = distance3d,
             .latitude = lla.latDeg(),
             .longitude = lla.lonDeg(),
             .altitude = reading.altitude_m,
@@ -248,14 +308,33 @@ fn atOrBefore(t: f64, k: Knot) bool {
     return k.t <= t;
 }
 
-/// The length of the path from k0 to the time t of its piece to k1, by five-point Gauss-Legendre; nothing across the
-/// two knots of a step, which share their time.
+/// The length of the path from k0 to the time t of its piece to k1, a length told; nothing across the two knots of a
+/// step, which share their time.
 fn distance(k0: Knot, k1: Knot, t: f64) f64 {
-    const nodes = [_]f64{ 0, -0.5384693101056831, 0.5384693101056831, -0.9061798459386640, 0.9061798459386640 };
-    const weights = [_]f64{ 0.5688888888888889, 0.4786286704993665, 0.4786286704993665, 0.2369268850561891, 0.2369268850561891 };
-    const span = t - k0.t;
-    if (span == 0) return 0;
-    var sum: f64 = 0;
-    for (nodes, weights) |node, weight| sum += weight * trajectory.between(k0, k1, k0.t + (node + 1) * span / 2).vel.norm();
-    return sum * span / 2;
+    if (t == k0.t) return 0;
+    return measure.told(Span.of(k0, k1, t));
 }
+
+/// The stored path from k0 over its piece to k1, up to a time of it, by the fraction of that span: its speed by the
+/// fraction, and that speed's rate.
+const Span = struct {
+    coefficients: [3]Scalar.Quintic,
+    /// The fraction of the piece it ends at.
+    end: f64,
+
+    fn of(k0: Knot, k1: Knot, t: f64) Span {
+        return .{ .coefficients = trajectory.coefficients(k0, k1), .end = (t - k0.t) / (k1.t - k0.t) };
+    }
+
+    pub fn speed(self: Span, u: f64) [2]f64 {
+        var rate: [3]f64 = undefined;
+        var second: [3]f64 = undefined;
+        for (self.coefficients, &rate, &second) |c, *r, *s| {
+            r.* = Scalar.evaluate(1, c, self.end * u) * self.end;
+            s.* = Scalar.evaluate(2, c, self.end * u) * self.end * self.end;
+        }
+        const v: coord.Ecef = .fromArray(rate);
+        const value = v.norm();
+        return .{ value, v.dot(.fromArray(second)) / value };
+    }
+};

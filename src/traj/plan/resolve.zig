@@ -24,11 +24,14 @@ const Before = struct {
     direction: bool,
     /// The place the segment begins at, by identity.
     at: ?usize,
-    /// The guide an along before ended on, and where on it: the index of its place in the guide.
-    guide: ?struct { index: usize, place: usize } = null,
+    /// The guide an along before ended on, and where on it.
+    guide: ?OnGuide = null,
     /// Why it ends moving, for a stay that follows.
     why: []const u8 = "",
 };
+
+/// A guide by its index, and a place of it by the place's index in the guide.
+const OnGuide = struct { index: usize, place: usize };
 
 const Resolver = struct {
     ctx: *const node.Ctx,
@@ -418,7 +421,7 @@ fn speeds(r: *Resolver, path: []const u8, given: read.RawSegment, before: Before
 
 /// A through's places, each after the one before it and the first after the segment's start, where the plan's
 /// text gives that (`now`).
-fn through(r: *Resolver, path: []const u8, given: read.RawThrough, now: ?f64, events: *std.ArrayList(model.Event), index: usize) Error!@FieldType(@FieldType(model.Segment, "motion"), "through") {
+fn through(r: *Resolver, path: []const u8, given: read.RawThrough, now: ?f64, events: *std.ArrayList(model.Event), index: usize) Error!model.Through {
     const visits = try r.ctx.arena.alloc(model.Visit, given.places.len);
     const places_path = try r.join(path, "through.places");
     var last = now;
@@ -455,7 +458,7 @@ fn leaves(r: *Resolver, path: []const u8, segment_: model.Segment, before: Befor
     };
 }
 
-fn built(r: *Resolver, path: []const u8, segment_: model.Segment, place: ?usize, on: @FieldType(Before, "guide")) Error!Before {
+fn built(r: *Resolver, path: []const u8, segment_: model.Segment, place: ?usize, on: ?OnGuide) Error!Before {
     const rest = if (segment_.speed) |v| v == 0 else false;
     return .{
         .motion = if (rest) .rest else .moving,
@@ -468,7 +471,7 @@ fn built(r: *Resolver, path: []const u8, segment_: model.Segment, place: ?usize,
 
 /// The places in ECEF; a place whose id another took, or that lies outside the receiver's domain, is reported and
 /// `ok` made false.
-pub fn places(ctx: *const node.Ctx, altitude: model.Altitude, given: []const read.RawPlace, ok: *bool) Error![]const model.Place {
+fn places(ctx: *const node.Ctx, altitude: model.Altitude, given: []const read.RawPlace, ok: *bool) Error![]const model.Place {
     const out = try ctx.arena.alloc(model.Place, given.len);
     var seen: std.StringHashMapUnmanaged(usize) = .empty;
     for (given, out, 0..) |p, *place, i| {

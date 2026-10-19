@@ -9,17 +9,15 @@ const Ecef = shared.core.coord.Ecef;
 const model = @import("plan.zig").model;
 const frame = @import("frame.zig");
 const track = @import("track.zig");
+const measure = @import("measure.zig");
 
 /// A part's length is settled when its halves' agree with it to a nanometre, or to its own rounding.
 const settled_m = 1e-9;
-const rounding = 4 * std.math.floatEps(f64);
 /// A piece takes this many parts at most, each halved this many times at most: the hardest a caller draws (a
 /// cusp, a tip of centimetres) takes some 30 parts; one that takes more passes so near the geocentre that its foot
 /// is no longer one point of the ellipsoid.
 const most_parts = 1024;
 const most_halvings = 40;
-const nodes = [8]f64{ -0.9602898564975363, -0.7966664774136267, -0.5255324099163290, -0.1834346424956498, 0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363 };
-const weights = [8]f64{ 0.1012285362903763, 0.2223810344533745, 0.3137066458778873, 0.3626837833783620, 0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763 };
 
 pub const Error = error{OutOfMemory};
 
@@ -54,6 +52,12 @@ pub const Piece = union(enum) {
     /// The direction its foot on the ellipsoid moves in at u.
     pub fn direction(self: Piece, u: f64) Ecef {
         return foot(self.at(u))[1].unit();
+    }
+
+    /// Its foot's speed over the ground by u, and that speed's rate.
+    pub fn speed(self: Piece, u: f64) [2]f64 {
+        const q = self.at(u);
+        return track.footSpeed(q[0], q[1], q[2]);
     }
 };
 
@@ -101,10 +105,9 @@ pub const Shape = struct {
         var u = low.u + (high.u - low.u) * std.math.clamp((local - low.s) / (high.s - low.s), 0, 1);
         var bracket = [2]f64{ low.u, high.u };
         for (0..64) |_| {
-            const miss = length(piece_, low.u, u) - (local - low.s);
+            const miss = measure.length(piece_, low.u, u) - (local - low.s);
             if (miss > 0) bracket[1] = u else bracket[0] = u;
-            const q = piece_.at(u);
-            const next = u - miss / footSpeed(q[0], q[1]);
+            const next = u - miss / piece_.speed(u)[0];
             const kept = if (next > bracket[0] and next < bracket[1]) next else (bracket[0] + bracket[1]) / 2;
             if (kept == u) break;
             u = kept;
@@ -124,19 +127,14 @@ fn endsBefore(s: f64, part: Part) bool {
     return part.s <= s;
 }
 
-/// Whether a part's length agrees with its halves' to `settled` metres, or to its own rounding.
-fn settles(whole: f64, left: f64, right: f64, settled: f64) bool {
-    return @abs(whole - left - right) <= @max(settled, rounding * whole);
-}
-
 /// Appends a piece's parts from low to high, `whole` the length from low to high and s0 the ground length to low
 /// from the piece's start, a part halved until its length agrees with its halves'; returns the length to high, or
 /// null where a part does not settle.
 fn split(arena: std.mem.Allocator, ends: *std.ArrayList(Part), p: Piece, low: f64, high: f64, whole: f64, s0: f64, depth: usize) Error!?f64 {
     const mid = (low + high) / 2;
-    const left = length(p, low, mid);
-    const right = length(p, mid, high);
-    if (settles(whole, left, right, settled_m)) {
+    const left = measure.length(p, low, mid);
+    const right = measure.length(p, mid, high);
+    if (measure.settles(whole, left, right, settled_m)) {
         try ends.append(arena, .{ .u = high, .s = s0 + whole });
         return s0 + whole;
     }
@@ -156,50 +154,6 @@ fn foot(p: [3]Ecef) [3]Ecef {
         out[2][axis] = f.second;
     }
     return .{ .fromArray(out[0]), .fromArray(out[1]), .fromArray(out[2]) };
-}
-
-/// The ground length of a piece between two of its parameters, by eight-point Gauss-Legendre.
-fn length(p: anytype, low: f64, high: f64) f64 {
-    var sum: f64 = 0;
-    for (nodes, weights) |x, w| {
-        const q = p.at(low + (x + 1) / 2 * (high - low));
-        sum += w * footSpeed(q[0], q[1]);
-    }
-    return sum * (high - low) / 2;
-}
-
-/// The ground length of a path over its parameter from 0 to 1 (anything whose `at` gives a point and its rate by the
-/// parameter), a part halved as a guide's parts are while its length disagrees with its halves' by more than
-/// `relative` of the whole, in at most `most` parts; a part that ends gives its halves' sum.
-pub fn settledLength(p: anytype, relative: f64, most: usize) f64 {
-    const whole = length(p, 0, 1);
-    var halvings = most - 1;
-    return settledPart(p, 0, 1, whole, relative * whole, &halvings);
-}
-
-fn settledPart(p: anytype, low: f64, high: f64, whole: f64, settled: f64, halvings: *usize) f64 {
-    const mid = (low + high) / 2;
-    const left = length(p, low, mid);
-    const right = length(p, mid, high);
-    if (settles(whole, left, right, settled) or halvings.* == 0) return left + right;
-    halvings.* -= 1;
-    return settledPart(p, low, mid, left, settled, halvings) + settledPart(p, mid, high, right, settled, halvings);
-}
-
-/// The rate of the foot's ground length by the path's parameter, from a point and its rate: over the ellipsoid,
-/// whose principal directions are north and east (curvatures 1/M and 1/N), the foot moves by the path's tangent
-/// part over 1 + h/M north and 1 + h/N east, at the height h.
-pub fn footSpeed(point: Ecef, rate: Ecef) f64 {
-    const lla = shared.core.coord.ecefToLla(point);
-    const sine = @sin(lla.lat_rad);
-    const cosine = @cos(lla.lat_rad);
-    const e2 = shared.core.constants.wgs_e1_sqr;
-    const w = 1 - e2 * sine * sine;
-    const n = shared.core.constants.wgs_axis_a / @sqrt(w);
-    const m = n * (1 - e2) / w;
-    const east: Ecef = .{ .x = -@sin(lla.lon_rad), .y = @cos(lla.lon_rad), .z = 0 };
-    const north: Ecef = .{ .x = -sine * @cos(lla.lon_rad), .y = -sine * @sin(lla.lon_rad), .z = cosine };
-    return std.math.hypot(rate.dot(north) / (1 + lla.height_m / m), rate.dot(east) / (1 + lla.height_m / n));
 }
 
 /// What a guide's places do not allow, by a place's position in the guide.
@@ -282,8 +236,8 @@ pub fn build(arena: std.mem.Allocator, places: []const model.Place, g: model.Gui
     for (pieces.items, lists, middles, 0..) |p, *list, *middle, k| {
         // In halves at least, so that an arc's middle, where its corner's place is, ends a part.
         var ends: std.ArrayList(Part) = .empty;
-        middle.* = (try split(arena, &ends, p, 0, 0.5, length(p, 0, 0.5), 0, 0)) orelse return unsettled(at, k);
-        starts[k + 1] = starts[k] + ((try split(arena, &ends, p, 0.5, 1, length(p, 0.5, 1), middle.*, 0)) orelse return unsettled(at, k));
+        middle.* = (try split(arena, &ends, p, 0, 0.5, measure.length(p, 0, 0.5), 0, 0)) orelse return unsettled(at, k);
+        starts[k + 1] = starts[k] + ((try split(arena, &ends, p, 0.5, 1, measure.length(p, 0.5, 1), middle.*, 0)) orelse return unsettled(at, k));
         list.* = ends.items;
     }
     const lengths_at = try arena.alloc(f64, g.places.len);

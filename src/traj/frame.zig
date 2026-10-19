@@ -94,7 +94,7 @@ pub fn positionJet(pos: core.coord.Ecef, vel: core.coord.Ecef, acc: core.coord.E
     };
 }
 
-pub fn dot(a: Vector, b: Vector) Jet {
+fn dot(a: Vector, b: Vector) Jet {
     return a[0].mul(b[0]).add(a[1].mul(b[1])).add(a[2].mul(b[2]));
 }
 
@@ -157,7 +157,7 @@ pub const Frame = struct {
 };
 
 /// A course in [0, 360) degrees clockwise from north.
-pub fn courseDeg(rad: f64) f64 {
+fn courseDeg(rad: f64) f64 {
     const deg = constants.rad2deg(rad);
     const wrapped = if (deg < 0) deg + 360 else deg;
     // A course just under 0 rounds to 360; and -0 is 0.

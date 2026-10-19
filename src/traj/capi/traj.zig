@@ -254,19 +254,16 @@ pub fn pharos_traj_inspect(h: ?*Handle, sample_count: usize, out: ?*?[*]const u8
     // instance every block a growing buffer leaves stays taken.
     if (t.inspection_bytes) |previous| allocator.free(previous);
     t.inspection_bytes = null;
+    const lengths = inspect.Lengths.of(allocator, built, sample_count) catch return nomem(&t.err);
+    defer lengths.deinit(allocator);
+    // Neither write fails: the first only counts, and the block holds what it counted.
     var buffer: [4096]u8 = undefined;
     var counted: Io.Writer.Discarding = .init(&buffer);
-    inspect.write(allocator, &counted.writer, built, sample_count) catch return nomem(&t.err);
+    inspect.write(&counted.writer, built, sample_count, lengths) catch unreachable;
     const size = std.math.cast(usize, counted.fullCount()) orelse return nomem(&t.err);
     const bytes = allocator.alloc(u8, size) catch return nomem(&t.err);
     var text: Io.Writer = .fixed(bytes);
-    inspect.write(allocator, &text, built, sample_count) catch |e| {
-        allocator.free(bytes);
-        return switch (e) {
-            error.OutOfMemory => nomem(&t.err),
-            error.WriteFailed => unreachable,
-        };
-    };
+    inspect.write(&text, built, sample_count, lengths) catch unreachable;
     t.inspection_bytes = bytes;
     dst.* = bytes.ptr;
     count.* = bytes.len;

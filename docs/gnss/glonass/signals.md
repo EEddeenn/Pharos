@@ -124,7 +124,7 @@ value of `clockReference`.
 | Case | Limit or message |
 |---|---|
 | in band | inside when twice the carrier's offset from the centre is at most the sample rate |
-| no channel inside (`band_excluded` on `signals`) | G1 at 1598.0625-1605.375 MHz (k -7..6) lies outside the sampled band and will not be generated |
-| some channels outside (`band_excluded` on `signals`) | G1 channels k a..b lie outside the sampled band and will not be generated (k c..d inside) |
+| no channel inside (`band_excluded` on `signals`) | G1 from 1598.0625 to 1605.375 MHz (k from -7 to 6) lies outside the sampled band and will not be generated |
+| some channels outside (`band_excluded` on `signals`), here 4.092 MHz about 1602 MHz | G1 channels k from -7 to -4 and from 4 to 6 lie outside the sampled band and will not be generated (k from -3 to 3 inside) |
 | frequency number of a record | from -7 to 13, else the record is skipped |
 | a record without Delta tau_n under `precise` (`no_record` on `ephemeris`) | Rnn: a record it flies carries no G2 group delay, which the G1G2 clock of the precise product refers to: the satellite is dark while that record is selected |

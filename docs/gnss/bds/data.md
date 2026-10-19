@@ -298,8 +298,8 @@ delays blend while messages use the current binding's delay table.
 | a repeated grid point | `duplicate` on `messages.bds.d2[i].grid.notMonitored[k]`: `grid point <n> is repeated` |
 | no `samples`, or none of B1I, B2I, B3I listed | `no_effect` on `messages.bds.d2`: `the D2 augmentation is transmitted by the GEO satellites' B1I, B2I and B3I in the samples` |
 | no GEO satellite outside `maskOut` carries a listed one | `no_effect` on `messages.bds.d2`: `no GEO satellite outside maskOut transmits a listed B1I, B2I or B3I at the start (the BDS allocation) to carry the D2 augmentation` |
-| B2I listed, with a satellite above 30 or more than 18 of 1-30 | `no_effect` on `messages.bds.d2[i].integrity.satellites`: `B2I describes satellites 1-30 only, at most 18 (BDS-SIS-ICD 2.1 5.3.3.5); the others are described on B1I and B3I only` |
-| a publication D2 cannot encode | `out_of_range` on `messages.bds.d2[i]`: `the publication cannot be encoded for D2 (<Error>)` |
+| B2I listed, with a satellite above 30 or more than 18 of 1-30 | `no_effect` on `messages.bds.d2[i].integrity.satellites`: `B2I describes satellites from 1 to 30 only, at most 18 (BDS-SIS-ICD 2.1 5.3.3.5); the others are described on B1I and B3I only` |
+| a publication D2 cannot encode | `out_of_range` on `messages.bds.d2[i]`: `the publication cannot be encoded for D2 (<error>)` |
 | a record outside its fields | `implausible_record` on the file's key: `<n> BDS <type> record(s) skipped, <field> outside its ICD range: <records>` |
 | no eligible source for a signal's base delay | that signal is unavailable; the raw record remains in the navigation data |
 | D1/D2 without encodable BDT-UTC, B-CNAV3 without EOP or BDT-UTC | `missing_field` on `ephemeris` ([D1 and D2](d1-d2.md#limits-and-messages), [B-CNAV3](b-cnav3.md#limits-and-messages)) |

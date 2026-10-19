@@ -91,7 +91,7 @@ is built every GPS minute and taken up at the next frame.
 
 | Case | Result |
 |---|---|
-| navigation data outside the B-CNAV1 fields at a set's epoch | `pharos-pack`: `out_of_range` on `ephemeris`: `B-CNAV1 at <n> s into the run: the navigation data cannot be encoded into its message set (<Error>)` |
+| navigation data outside the B-CNAV1 fields at a set's epoch | `pharos-pack`: `out_of_range` on `ephemeris`: `B-CNAV1 at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` |
 | a record of another type outside the fields | `unfit_record` on `ephemeris`: `<sat> <type> record of <toc> GPST: <field> outside its CNV1 field, sent there as unavailable while it is selected` |
 | a satellite without B-CNAV1 frames | no channel in the samples; the observation file still lists it |
 | an almanac outside the reduced or midi fields | left out of B-CNAV1; its packets are zero |

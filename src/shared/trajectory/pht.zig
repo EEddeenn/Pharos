@@ -42,7 +42,7 @@ pub fn read(arena: std.mem.Allocator, bytes: []const u8, scope: diagnostics.Scop
         try knots.append(arena, value);
     }
     result.knots = knots.items;
-    if (count) |given| if (given != knots.items.len) return scope.fail(.invalid_format, .{ .line = 1 }, "the header says {d} knots; the file has {d}", .{ given, knots.items.len });
+    if (count) |given| if (given != knots.items.len) return scope.fail(.invalid_format, .{ .line = 1 }, "the header says {d} knot{s}; the file has {d}", .{ given, if (given == 1) "" else "s", knots.items.len });
     if (result.invalid()) |bad| {
         const code: diagnostics.Code = switch (bad.reason) {
             error.NoKnots, error.FirstKnotNotAtZero, error.TimeGoesBack, error.TimeGivenThrice, error.PositionJump => .invalid_format,

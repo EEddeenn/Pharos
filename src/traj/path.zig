@@ -33,13 +33,14 @@ const through = @import("through.zig");
 const track = @import("track.zig");
 const guide = @import("guide.zig");
 const motion = @import("motion.zig");
+const measure = @import("measure.zig");
 
 /// How near the stored path stays to the built one, in metres.
 const tolerance_m: f64 = 1e-6;
 /// A piece of the stored path shorter than this carries its knots' rounding as motion: it is read at its knots
 /// alone, and no gentle corner's arc is built as one.
 pub const short_s: f64 = 1e-2;
-pub const max_knots = trajectory.pht.max_knots;
+const max_knots = trajectory.pht.max_knots;
 /// Within this angle of the point opposite where a straight begins (the flattening's share of a half turn), the
 /// geodesics from it part: several reach a place there.
 const parting_deg = 180 * (1 - core.constants.wgs_axis_b / core.constants.wgs_axis_a);
@@ -275,7 +276,7 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
         .through => |*t| {
             length.* = groundLength(t);
             const end = t.knot(t.times.len - 1);
-            speed.* = guide.footSpeed(end.pos, end.vel);
+            speed.* = track.footSpeed(end.pos, end.vel, end.acc)[0];
         },
         .run => |*p| {
             length.* = p.run.timing.length();
@@ -318,26 +319,22 @@ pub fn build(arena: std.mem.Allocator, scratch: std.mem.Allocator, plan: *const 
     return .{ .knots = knots, .first_knots = first_knots, .ends = ends, .lengths = lengths, .end_speeds = end_speeds, .outside = b.outside };
 }
 
-/// A through's length over the ground: its foot's speed over each piece between its places, as a guide's lengths are
-/// found, each piece on its own to `length_settled` of its length in at most `length_parts` parts.
+/// A through's length over the ground: its foot's speed over each piece between its places, a length told.
 fn groundLength(s: *const Solved) f64 {
     var sum: f64 = 0;
-    for (0..s.times.len - 1) |k| sum += guide.settledLength(ThroughPiece{ .solved = s, .piece = k }, length_settled, length_parts);
+    for (0..s.times.len - 1) |k| sum += measure.told(ThroughPiece{ .solved = s, .piece = k });
     return sum;
 }
 
-/// A through's length is told, not built on: each piece to a billionth of its length, in a bounded number of parts.
-const length_settled = 1e-9;
-const length_parts = 16;
-
-/// A piece of a through by the fraction of it: its point, and its rate by that fraction.
+/// A piece of a through by the fraction of it: its foot's speed over the ground by that fraction, and that speed's
+/// rate, of its track P, whose foot is the path's (the height moves the path along the ellipsoid's normal).
 const ThroughPiece = struct {
     solved: *const Solved,
     piece: usize,
 
-    pub fn at(self: ThroughPiece, u: f64) [2]Ecef {
-        const q = self.solved.at(self.piece, u);
-        return .{ q.pos, q.vel.scale(self.solved.times[self.piece + 1] - self.solved.times[self.piece]) };
+    pub fn speed(self: ThroughPiece, u: f64) [2]f64 {
+        const q = self.solved.trackAt(self.piece, u);
+        return track.footSpeed(q[0], q[1], q[2]);
     }
 };
 
@@ -779,7 +776,7 @@ fn cut(b: *Builder, i: usize, source: Source) Error![]const f64 {
     var next: std.ArrayList(Piece) = .empty;
     const first = source.point(0);
     var left = false;
-    if (outside(first.pos, first.vel, first.acc)) |reason| {
+    if (trajectory.outside(first.pos, first.vel, first.acc)) |reason| {
         b.mark(i, first.t, reason);
         left = true;
     }
@@ -838,8 +835,11 @@ const Within = union(enum) {
     unbounded,
     /// A quintic whose rates are not finite.
     unstorable,
-    leaves: struct { time: f64, reason: trajectory.Error },
+    leaves: Leaving,
 };
+
+/// Where the built motion is first found out of the receiver's domain, and the bound it breaks there.
+const Leaving = struct { time: f64, reason: trajectory.Error };
 
 /// What a piece between knots a and z holds of the motion: whether its quintic can be stored at all, before all
 /// else; then, unless the motion has left the domain before it, the domain at the points it reads between its knots
@@ -858,19 +858,19 @@ fn within(source: Source, a: Knot, z: Knot, left: bool) Within {
     for (stored, fractions) |q, f| {
         const t = a.t + (z.t - a.t) * f;
         const s = source.built(t);
-        if (outside(s.pos, s.vel, s.acc)) |reason| return .{ .leaves = leaving(source, in, t, reason) };
+        if (trajectory.outside(s.pos, s.vel, s.acc)) |reason| return .{ .leaves = leaving(source, in, t, reason) };
         in = t;
         if (!(q.pos.sub(s.pos).norm() <= tolerance_m)) finer = true;
     }
-    if (outside(z.pos, z.vel, z.acc)) |reason| return .{ .leaves = leaving(source, in, z.t, reason) };
+    if (trajectory.outside(z.pos, z.vel, z.acc)) |reason| return .{ .leaves = leaving(source, in, z.t, reason) };
     if (finer) return .finer;
-    trajectory.checkKnot(&.{ a, z }, 1) catch |e| if (e == error.PathOutOfRange) return .unbounded;
+    if (!trajectory.pathInRange(a, z)) return .unbounded;
     return .holds;
 }
 
 /// Where the built motion leaves the domain between a time it is in it and a later one it is not: by halving, the
 /// first time found out of it, and the bound it breaks there.
-fn leaving(source: Source, in: f64, out: f64, reason: trajectory.Error) @FieldType(Within, "leaves") {
+fn leaving(source: Source, in: f64, out: f64, reason: trajectory.Error) Leaving {
     var low = in;
     var high = out;
     var why = reason;
@@ -878,19 +878,11 @@ fn leaving(source: Source, in: f64, out: f64, reason: trajectory.Error) @FieldTy
         const mid = (low + high) / 2;
         if (mid <= low or mid >= high) return .{ .time = high, .reason = why };
         const s = source.built(mid);
-        if (outside(s.pos, s.vel, s.acc)) |broken| {
+        if (trajectory.outside(s.pos, s.vel, s.acc)) |broken| {
             high = mid;
             why = broken;
         } else low = mid;
     }
-}
-
-/// The bound of the receiver's domain a state breaks, if any.
-fn outside(pos: Ecef, vel: Ecef, acc: Ecef) ?trajectory.Error {
-    if (!trajectory.positionInRange(pos)) return error.PositionOutOfRange;
-    if (!(vel.norm() <= trajectory.max_speed_mps)) return error.SpeedOutOfRange;
-    if (!(acc.norm() <= trajectory.max_acceleration_mps2)) return error.AccelerationOutOfRange;
-    return null;
 }
 
 /// A solved through: its knots' times, positions and heights, and the solve's velocities and accelerations.
@@ -925,11 +917,27 @@ const Solved = struct {
         const h = self.times[k + 1] - self.times[k];
         var p: [through.axes]frame.Jet = undefined;
         for (&p, 0..) |*axis, a| {
-            const coefficients = Scalar.quintic(self.values[k][a], self.states[k].velocity[a], self.states[k].acceleration[a], self.values[k + 1][a], self.states[k + 1].velocity[a], self.states[k + 1].acceleration[a], h);
-            const m = Scalar.motion(coefficients, h, u);
+            const m = Scalar.motion(self.quintic(k, a), h, u);
             axis.* = .{ .value = m.position, .first = m.velocity, .second = m.acceleration };
         }
         return lifted4(p);
+    }
+
+    /// The track P at the fraction u of piece k, with its first and second rates by that fraction.
+    fn trackAt(self: *const Solved, k: usize, u: f64) [3]Ecef {
+        var out: [3][3]f64 = undefined;
+        for (0..3) |a| {
+            const c = self.quintic(k, a);
+            out[0][a] = Scalar.evaluate(0, c, u);
+            out[1][a] = Scalar.evaluate(1, c, u);
+            out[2][a] = Scalar.evaluate(2, c, u);
+        }
+        return .{ .fromArray(out[0]), .fromArray(out[1]), .fromArray(out[2]) };
+    }
+
+    /// Piece k's quintic on one axis, in its fraction.
+    fn quintic(self: *const Solved, k: usize, a: usize) Scalar.Quintic {
+        return Scalar.quintic(self.values[k][a], self.states[k].velocity[a], self.states[k].acceleration[a], self.values[k + 1][a], self.states[k + 1].velocity[a], self.states[k + 1].acceleration[a], self.times[k + 1] - self.times[k]);
     }
 };
 

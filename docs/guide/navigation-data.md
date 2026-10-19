@@ -550,7 +550,7 @@ lines, and empty for a record line that does not read.
 |---|---|
 | `declares <n> leap seconds, a count below zero` | `out_of_range`, the file's key |
 | `declares <n> leap seconds where <m> were in force at the run start, <date> GPST: inside the built-in history the data cannot declare another count` | `out_of_range`, the file's key |
-| `<family> at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` | `out_of_range`, `ephemeris` |
+| `<family> at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` | `out_of_range`, `ephemeris`; `<error>` is `a value lies outside its range`, `a value does not fit its field` or `a value is missing` |
 | `<family> at <n> s into the run: <reason>` | `missing_field`, `ephemeris` |
 
 | `<reason>` | Missing |

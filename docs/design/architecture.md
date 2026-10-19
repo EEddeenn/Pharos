@@ -24,7 +24,7 @@ state is the per-thread error buffer of each C ABI.
 
 ```mermaid
 flowchart LR
-    program["trajectory.json<br/>geometry, events, sections, rules"] --> traj(["pharos-traj"])
+    program["trajectory.json<br/>places, guides, start, segments, limits"] --> traj(["pharos-traj"])
     traj --> pht[".pht trajectory"]
     scenario["scenario JSON"] --> pack(["pharos-pack"])
     pht --> pack
@@ -140,7 +140,7 @@ handle the product gives out.
 
 | Product | Layers, lower first | Joined by |
 |---|---|---|
-| `src/traj` | plan; solve over plan; source joins reading and solving; inspect over the solved result; static, stats and kml | capi, over source, inspect and trajectory operations |
+| `src/traj` | plan; track, guide, motion and through, under path, which builds a plan; check over the stored path; source joins reading, building and checking; inspect, stats and kml over its result; static | capi, over source, inspect and trajectory operations |
 | `src/pack` | scenario, nav, plan | assemble; capi over assemble and nav |
 | `src/run` | msg, synth; engine over msg and synth; io over engine | capi, over engine, io and synth |
 | `src/obs` | observe owns numerical values; formats renders them; output owns file progression over both; inspect projects typed values; truth joins sky queries and channel replay | capi source, output and truth adapters |
@@ -165,7 +165,7 @@ module directly.
 | systems never import each other | a new system cannot break another |
 | the root files of `gnss` assemble the systems | one table per concern: signals, constants, records, codes, delays |
 | behaviour attaches by enum tag and `switch` | the compiler finds every place a new tag must reach |
-| runtime function pointers are confined to frame suppliers, the GPS correction source and computed fields | sample synthesis and the trajectory solver's typed evaluator keep direct calls |
+| runtime function pointers are confined to frame suppliers, the GPS correction source and computed fields | sample synthesis and the trajectory build keep direct calls |
 | a multi-file family is an entry file over a directory of the same name, such as `src/shared/gnss/gps/cnav.zig` | the entry owns the contract; its tables stay private |
 | family encoders take typed inputs built in `stage` | a family knows neither the file readers nor the engine |
 | tables too large to derive are blobs in a directory's `manifest.zig` | size checked at compile time, digest recorded |
@@ -200,15 +200,16 @@ src/shared/                the shared module
                            commands
   cli.zig                  the console, the command-line convention and the command entry point
   capi/                    command (the shared C ABI code is in capi.zig)
-src/traj/                  plan/, solve/, source, inspect, static, stats, kml, capi/, cli/
-  plan/                    model, read, resolve, geometry, quantities
-  solve/                   kernel, rules, mesh, problem, nlp, candidate, verify
-    kernel/                domain, autodiff
-    mesh/                  seed, presolve
-    problem/               prepare, evaluate
-    verify/                polynomial
-  source.zig               reads one TrajectoryPlan and returns solve.Result
-  inspect.zig              returns the solve report, events, sections, rules and trajectory samples
+src/traj/                  plan/, the build, check, source, inspect, static, stats, kml, capi/, cli/
+  plan/                    model, read, resolve, geometry
+  path.zig                 the build: segments, stretches, knots, the segments' lengths
+  through.zig              the least-jerk solve
+  track.zig, guide.zig     ground tracks of constant geodesic curvature; guides' paths
+  motion.zig               a run's motion in time, at its height
+  frame.zig, measure.zig   the local frame and a state read in it; lengths from speeds
+  check.zig                the limits held against the stored path, and its extremes
+  source.zig               reads one plan, builds it and checks it into source.Result
+  inspect.zig              writes the events, segments, checks and samples as JSON
 src/pack/                  scenario/, nav/, plan/, assemble, capi/, cli/
 src/run/                   msg/, synth/, io/, engine/, capi/, cli/
 src/obs/                   observe, output, formats, inspect/, truth/, capi/, cli/
@@ -229,48 +230,29 @@ belong to the host.
 
 | Trajectory boundary | Ownership |
 |---|---|
-| `rules.Prepared` | authored checks and prepared geometry, built once per plan |
-| `problem.Layout` and `problem.Workspace` | numerical rows, sparse columns, batches and evaluation caches for one mesh |
-| `nlp` | numerical bounds and separate value and derivative requests through a typed evaluator |
-| `candidate.Path` | physical nodes, cell coefficients, section durations, event times and sampling |
-| `verify` | independent checks of prepared rules over a candidate path |
-| `solve.Result` | the parsed plan, final path and trajectory, solver report and rule reports |
+| `plan.model.Plan` | the plan as read: places, guides, the start, the segments, the events and the limits |
+| `path.Built` | the knots, each segment's first knot, end, length and end speed, and where the built motion leaves the domain |
+| `check.Check` | a limit's verdict, its worst value and the stretches where it is broken |
+| `source.Result` | the plan, the trajectory, the segments' figures, the checks, whether the path lies in the domain and whether it can be written |
 
-`source.build(allocator, result_allocator, text, diags)` parses a single
-`plan.model.Plan` and returns `solve.Result`. The result allocator owns
-the plan and retained result. Temporary preparation lasts for the build;
-each mesh pass frees its layout, evaluator and verification storage.
-The numerical solver frees its own workspace when it returns. Refinement
-keeps one copied path to seed the next mesh.
+`source.build(allocator, result_allocator, text, diags)` reads one
+`plan.model.Plan`, builds it and checks it, and returns `source.Result`.
+The result allocator owns the plan and the result; the solves, tracks and
+guides live in a scratch arena for one build. The C trajectory handle
+holds no path, a loaded trajectory or a built result, from which it
+tells whether a `.pht` may be written.
 
-Positions, derivatives, course and section durations are variables of
-one solve. The scalar and automatic differentiation evaluators share
-Hermite interpolation and physical quantity definitions through
-`solve.kernel`; derivative arithmetic uses SIMD groups selected for the
-target, with a scalar fallback.
-Hard rules must pass independent verification before the candidate can
-be serialized as the internal `.pht` product.
+`inspect.write(writer, result, sample_count, lengths)` writes the
+events, segments, checks and samples as JSON straight to its writer, with
+the lengths `inspect.Lengths.of(allocator, result, sample_count)` tells
+once for both writes of `pharos_traj_inspect`
+([inspection](../guide/c-api/traj.md#inspection)). The plan and the
+result must stay alive while it writes.
 
-In the resolved plan, a quantity rule's comparison determines its kind;
-a relation is hard or target. A section's position in the chain determines
-its two adjacent events. The C trajectory handle holds either no path,
-a loaded trajectory or a solved result, from which it derives the path
-and verification state.
-
-`inspect.of(arena, result, sample_count)` returns typed events, sections,
-rule reports and samples at the requested density; the C adapter
-serializes that result for `pharos_traj_inspect`. The inspection arrays
-use the supplied arena and identifiers refer to the retained plan. Both
-must remain alive while using the inspection. Numerical failure retains a
-candidate for diagnosis; it does not turn that candidate into an accepted
-trajectory.
-
-`plan.read.parseGeometry` reads the same coordinates and geometry into a
-resolved geometry value without requiring a complete journey.
-`inspect.geometry` samples its ECEF curves and local ENU region boundaries
-for draft editors. It reuses the plan's geometry operations and does not
-run the solver. The C adapter owns the resulting JSON in a short-lived
-geometry description.
+`plan.read.parseGeometry` reads a plan's coordinates, places and guides,
+each on its own, without requiring a complete plan; `guide.outline`
+traces each whole guide for `pharos_traj_describe_geometry`, whose C
+adapter owns the resulting JSON in a short-lived geometry description.
 
 ## Central types
 

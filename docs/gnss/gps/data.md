@@ -375,17 +375,17 @@ The `unfit_record` warnings come only for a scenario with a `samples` block.
 | `ism`, none of `L2C`, `L5`, `L1C` listed | warning `no_effect` on `messages.gps` | `the ISM is carried by L2C, L5 and L1C, none of which is listed` |
 | `differential`, none of `L2C`, `L5`, `L1C` listed | warning `no_effect` on `messages.gps` | `the differential corrections are carried by L2C, L5 and L1C, none of which is listed` |
 | `differential` without `precise` | warning `no_effect` on `messages.gps` | `the signals fly with the broadcast records, so there is no differential correction to broadcast` |
-| `isf`, `alert`, `udra` or `udraRate` out of range | error `out_of_range` | `must be in [<min>, <max>], got <v>` |
-| an `ism` index above 15 | error `out_of_range` | `<v> is out of range` |
+| `isf`, `alert`, `udra` or `udraRate` out of range | error `out_of_range` | `must be from <min> to <max>, got <v>` |
+| an `ism` index above 15 | error `out_of_range` | `must be from 0 to 15, got <v>` |
 | a text character outside the alphabet | error `out_of_range` | `contains a character outside the broadcast alphabet` |
 | a text of 0 or more than 288 characters | error `out_of_range` | `must contain 1 to 288 broadcast characters` |
 | a PRN twice in `alert` | error `duplicate` | `PRN 5 occurs more than once` |
 | not 63 configuration codes | error `out_of_range` | `must contain exactly 63 items, got <n>` |
-| a code above 5 | error `out_of_range` | `must be in [0, 5], got <v>` |
+| a code above 5 | error `out_of_range` | `must be from 0 to 5, got <v>` |
 | an ISM reference off the grid | error `out_of_range` | `must lie on the whole 4-hour grid of GPS time, the ISM time of week counting 4-hour units` |
-| 15 in `tCorrel`, `rSat` or `pConst` | error `out_of_range` | `must be in [0, 14], got 15` |
+| 15 in `tCorrel`, `rSat` or `pConst` | error `out_of_range` | `must be from 0 to 14, got 15` |
 | satellites for `unavailable` | error `out_of_range` | `unavailable constellation has no satellite identifier mapping` |
-| a satellite outside the range | error `out_of_range` | `satellite must be in [1, 63]` |
+| a satellite outside the range | error `out_of_range` | `satellite must be from <first> to <last>, got <n>`, the constellation's range: `satellite must be from 1 to 63, got 64` for `gps` |
 | a satellite twice | error `duplicate` | `satellite 3 occurs more than once` |
 | a publication a family cannot encode | error `out_of_range` on `messages.gps[i]` | `the publication cannot be encoded for CNAV-2 (<error>)` |
 | data a family cannot encode | error `out_of_range` on `ephemeris` | `LNAV at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` |

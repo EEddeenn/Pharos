@@ -6,6 +6,7 @@ const coord = core.coord;
 const trajectory = pharos_traj.trajectory;
 const Trajectory = trajectory.Trajectory;
 const Diagnostics = pharos_traj.core.diagnostics.Diagnostics;
+const Escaped = pharos_traj.core.diagnostics.Escaped;
 const cli = pharos_traj.cli;
 const Console = cli.Console;
 const Number = cli.Number;
@@ -105,7 +106,7 @@ fn exportKml(arena: std.mem.Allocator, io: Io, args: args_mod.Export, console: C
     var text: Io.Writer.Allocating = .init(arena);
     pharos_traj.kml.write(&text.writer, traj) catch return error.OutOfMemory;
     if (!cli.writeFile(io, path, text.written(), console)) return 1;
-    console.info("KML written: {s}", .{path});
+    console.info("KML written: {f}", .{Escaped{ .text = path }});
     return 0;
 }
 
@@ -135,6 +136,6 @@ fn save(io: Io, arena: std.mem.Allocator, traj: Trajectory, path: []const u8, co
     };
     cli.reportTrajectory(console, &traj, path);
     if (!cli.writeFile(io, path, text.written(), console)) return 1;
-    console.info("Trajectory written: {s}", .{path});
+    console.info("Trajectory written: {f}", .{Escaped{ .text = path }});
     return 0;
 }

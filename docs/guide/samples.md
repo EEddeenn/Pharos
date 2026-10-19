@@ -276,7 +276,7 @@ bytes. `--noise off` writes zeros in place of the noise.
 The samples are byte-identical at every worker count, and so are the
 AGC's adjustments and their epochs. `Options:` prints the count in
 force. A thread the system cannot start stops the run at its creation
-(`ThreadSpawnFailed`).
+(`Cannot create the run: a worker thread could not be started`).
 
 ## Limits and messages
 
@@ -323,29 +323,29 @@ while packing; the run consumes the resolved choices in the bundle.
 | `--seek needs --gain: the adaptive AGC depends on every epoch before the target` | `--seek` without `--gain` |
 | `--seek <n> is refused: the seek starts the run over, which would drop the commands it has applied` | a seek that starts over once a command has applied; `pharos-run` applies none ([seeking](c-api/run.md#seeking)) |
 | `<path>: <message>` | an invalid bundle's diagnostic ([the bundle](scenarios.md#the-bundle)) |
-| `Cannot create the run: <error> (<reason>)` | the run cannot start; no sidecar or summary follows |
-| `Epoch <n> of <m> could not be generated: <error> (<reason>)` | an epoch fails; in generation, the epochs before it are on the file |
+| `Cannot create the run: <reason>` | the run cannot start; no sidecar or summary follows |
+| `Epoch <n> of <m> could not be generated: <reason>` | an epoch fails; in generation, the epochs before it are on the file |
 | `Cannot write <path>: <error>` | the sample file cannot be created, written or flushed; the `.tag` or `scenario.txt` cannot be written; the dump directory or a dump file cannot be created: the run stops |
 | `Cannot write <path>: <error>` | `rows.txt`, `plan.txt` or `params.txt` cannot be written or flushed: printed after the summary; generation runs to its end |
 
-| `<error>` | `<reason>` |
+| Failure | `<reason>` |
 |---|---|
-| `MissingEarthOrientation`, `MissingTimeOffset`, `MissingUtcParameters` | the family's need ([message sets](navigation-data.md#message-sets)) |
-| `MessageSet` | `the bundle's supplied message content cannot be encoded into the message sets of the listed signals` |
-| `ThreadSpawnFailed` | `a worker thread could not be started` |
-| `OutOfMemory` | `out of memory` |
-| `Internal` | `a failure no input explains` |
+| the navigation data lack what a message family needs | the family's need ([message sets](navigation-data.md#message-sets)) |
+| the message content does not fit | `the bundle's supplied message content cannot be encoded into the message sets of the listed signals` |
+| a thread does not start | `a worker thread could not be started` |
+| memory runs out | `out of memory` |
+| an internal failure | `a failure no input explains` |
 
 | Argument message | When |
 |---|---|
 | `<bundle.phb> is required` | no bundle on the command line |
 | `<option> requires a path` | `-o` or `--dump` at the end, or before an argument that begins with `-` |
 | `<option> requires a value` | `--workers`, `--seed`, `--noise`, `--gain` or `--seek` at the end |
-| `--workers expects 0..4294967295, got <x>` | a worker count other than decimal digits, or outside the range |
-| `--seed expects 0..18446744073709551615, got <x>` | a seed other than decimal digits, such as `-1` or `0x10`, or outside the range |
+| `--workers must be from 0 to 4294967295, got <x>` | a worker count other than decimal digits, or outside the range |
+| `--seed must be from 0 to 18446744073709551615, got <x>` | a seed other than decimal digits, such as `-1` or `0x10`, or outside the range |
 | `--noise expects counter or off, got <x>` | a bad noise mode |
-| `--gain expects -60..60 dB, got <x>` | a gain that is no decimal number or lies outside the range |
-| `--seek expects 0..18446744073709551615, got <x>` | an epoch other than decimal digits, or outside the range |
+| `--gain must be from -60 to 60 dB, got <x>` | a gain that is no decimal number or lies outside the range |
+| `--seek must be from 0 to 18446744073709551615, got <x>` | an epoch other than decimal digits, or outside the range |
 
 The exit status is 0 on success, a dry run included. It is 1 for an
 argument, read, validation or initialisation failure, for an output

@@ -22,7 +22,6 @@ flowchart LR
 |---|---|
 | `pharos-traj static --ecef` | `pharos_traj_static` places a receiver by latitude, longitude and altitude |
 | `--name` of `pharos-traj static` | `pharos_traj_static` leaves the trajectory unnamed |
-| the time of the first velocity step, which `pharos-traj check` prints | `pharos_traj_info` holds their count |
 | `pharos-run --dump` | no stage dumps |
 
 | Header | Library | ABI version | Page |
@@ -71,10 +70,10 @@ take that source and each retain it. The host may call
 the last owner releases the source's storage. Each child has its own
 mutable state ([observation API](obs.md)).
 
-`pharos_traj_build(json, len, out)` accepts one trajectory plan JSON.
-A failed solve can retain a candidate with its solve and rule reports;
-inspection and KML remain available, while `.pht` serialization requires
-verification ([trajectory API](traj.md)).
+`pharos_traj_build(json, len, out)` builds one trajectory plan. A path
+that leaves the receiver's domain or breaks a limit of its plan stays
+with its object: inspection and KML remain available, while its `.pht`
+text is refused ([trajectory API](traj.md)).
 
 ## Statuses
 
@@ -114,6 +113,7 @@ its fields; fields declared `uint32_t` retain that explicit width.
 | `OK` | leaves the buffer empty |
 | a NULL pointer argument | `E_ARG` without a message |
 | a bad argument to a getter on a const object | `E_ARG` without a message; the getter writes and clears nothing |
+| `pharos_traj_info_get` | no such getter: it keeps what it finds in its object, and clears the object's error first, as the calls that hand out a text do |
 
 The thread-local functions are `pharos_traj_last_error`,
 `pharos_pack_last_error`, `pharos_run_last_error` and
@@ -140,7 +140,7 @@ exposes its product's compiler-derived layouts ([layout](webassembly.md#layouts)
 | copy-out `len` | may be NULL |
 | retained-view outputs | the output record or pointer and count slots are required unless that function explicitly permits NULL |
 | pointers a library hands out | valid until the object is destroyed, unless a shorter lifetime is listed below |
-| trajectory inspection JSON | valid until the next inspection on that trajectory, or its destruction |
+| trajectory inspection JSON | valid until the next inspection on that trajectory that passes its argument checks, or its destruction |
 | the applied commands of a block | valid until the next pull |
 | observation or position batch bytes | borrowed from the output; valid until its next operation or destruction |
 | the satellites and signals of a truth epoch | borrowed from the truth; valid until its next operation or destruction |

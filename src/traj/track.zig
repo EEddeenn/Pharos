@@ -82,8 +82,28 @@ pub fn normal(point: Ecef) Ecef {
     return (Ecef{ .x = point.x * metric[0], .y = point.y * metric[1], .z = point.z * metric[2] }).unit();
 }
 
+/// The rate of the foot's ground length by the path's parameter, and that rate's own, from a point and its first and
+/// second rates: over the ellipsoid, whose principal directions are north and east (curvatures 1/M and 1/N), the
+/// foot moves by the path's tangent part over 1 + h/M north and 1 + h/N east, at the height h. The second leaves out
+/// how the frame turns: it tells where the speed falls and where it rises.
+pub fn footSpeed(point: Ecef, rate: Ecef, second: Ecef) [2]f64 {
+    const lla = shared.core.coord.ecefToLla(point);
+    const sine = @sin(lla.lat_rad);
+    const cosine = @cos(lla.lat_rad);
+    const e2 = constants.wgs_e1_sqr;
+    const w = 1 - e2 * sine * sine;
+    const n = constants.wgs_axis_a / @sqrt(w);
+    const m = n * (1 - e2) / w;
+    const east: Ecef = .{ .x = -@sin(lla.lon_rad), .y = @cos(lla.lon_rad), .z = 0 };
+    const north: Ecef = .{ .x = -sine * @cos(lla.lon_rad), .y = -sine * @sin(lla.lon_rad), .z = cosine };
+    const ahead = [2]f64{ rate.dot(north) / (1 + lla.height_m / m), rate.dot(east) / (1 + lla.height_m / n) };
+    const change = [2]f64{ second.dot(north) / (1 + lla.height_m / m), second.dot(east) / (1 + lla.height_m / n) };
+    const speed = std.math.hypot(ahead[0], ahead[1]);
+    return .{ speed, (ahead[0] * change[0] + ahead[1] * change[1]) / speed };
+}
+
 /// F'' at a node.
-pub fn curve(node: Node, curvature: f64) Ecef {
+fn curve(node: Node, curvature: f64) Ecef {
     const scaled: Ecef = .{ .x = node.point.x * metric[0], .y = node.point.y * metric[1], .z = node.point.z * metric[2] };
     const n = scaled.unit();
     const t = node.tangent;

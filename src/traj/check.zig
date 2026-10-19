@@ -11,7 +11,7 @@ const core = shared.core;
 const Ecef = core.coord.Ecef;
 const trajectory = shared.trajectory;
 const Knot = trajectory.Knot;
-const hermite = trajectory.hermite.Scalar;
+const Scalar = trajectory.hermite.Scalar;
 const model = @import("plan.zig").model;
 const frame = @import("frame.zig");
 const path = @import("path.zig");
@@ -23,11 +23,6 @@ pub const Stretch = struct {
     from: f64,
     to: f64,
     segment: usize,
-
-    /// Its times: the segment is the finding's.
-    pub fn jsonStringify(self: Stretch, jw: anytype) !void {
-        try jw.write(.{ .from = self.from, .to = self.to });
-    }
 };
 
 /// Where a quantity passes its limit's bounds farthest, or comes nearest them: its value, signed, and when.
@@ -43,6 +38,8 @@ pub const Check = struct {
 /// A piece is read at this many parts, each halved at most `most_halvings` times while it bends.
 const parts_per_piece = 16;
 const most_halvings = 6;
+/// The exact extremes, and the parts of a piece beyond a level, are found to this many halvings of it.
+const finest_halvings = 40;
 /// How finely the extremes and the stretches are found, in tolerances.
 const resolution = 0.1;
 /// Bounds of the motion's frame over a piece: the least radius its normal turns by, and of the geoid over EGM96 its
@@ -125,17 +122,20 @@ fn binomial(n: usize, k: usize) f64 {
     return out;
 }
 
+/// A polynomial's greatest value on [0, 1], and where it has it.
+const Peak = struct { value: f64, u: f64 };
+
 /// The greatest value of a polynomial on [0, 1], to a billionth of it, and where; of -p, the least.
-fn greatest(p: Bernstein) struct { value: f64, u: f64 } {
-    var best: struct { value: f64, u: f64 } = if (p.c[0] >= p.c[p.degree]) .{ .value = p.c[0], .u = 0 } else .{ .value = p.c[p.degree], .u = 1 };
+fn greatest(p: Bernstein) Peak {
+    var best: Peak = if (p.c[0] >= p.c[p.degree]) .{ .value = p.c[0], .u = 0 } else .{ .value = p.c[p.degree], .u = 1 };
     const Part = struct { p: Bernstein, low: f64, high: f64 };
-    var stack: [2 * most_depth]Part = undefined;
+    var stack: [2 * (finest_halvings + 1)]Part = undefined;
     var count: usize = 1;
     stack[0] = .{ .p = p, .low = 0, .high = 1 };
     while (count > 0) {
         count -= 1;
         const part = stack[count];
-        if (part.p.high() <= best.value + 1e-9 * @abs(best.value) or part.high - part.low < 0x1p-40) continue;
+        if (part.p.high() <= best.value + 1e-9 * @abs(best.value) or part.high - part.low < 1.0 / @as(f64, 1 << finest_halvings)) continue;
         const two = part.p.halves();
         const mid = (part.low + part.high) / 2;
         if (two[0].c[p.degree] > best.value) best = .{ .value = two[0].c[p.degree], .u = mid };
@@ -143,10 +143,8 @@ fn greatest(p: Bernstein) struct { value: f64, u: f64 } {
         stack[count + 1] = .{ .p = two[0], .low = part.low, .high = mid };
         count += 2;
     }
-    return .{ .value = best.value, .u = best.u };
+    return best;
 }
-
-const most_depth = 41;
 
 fn negated(p: Bernstein) Bernstein {
     var out = p;
@@ -159,18 +157,10 @@ const Piece = struct {
     k0: Knot,
     k1: Knot,
     segment: usize,
-    coefficients: [3]hermite.Quintic,
+    coefficients: [3]Scalar.Quintic,
 
     fn of(k0: Knot, k1: Knot, segment: usize) Piece {
-        var out: Piece = .{ .k0 = k0, .k1 = k1, .segment = segment, .coefficients = undefined };
-        const p0 = k0.pos.toArray();
-        const v0 = k0.vel.toArray();
-        const a0 = k0.acc.toArray();
-        const p1 = k1.pos.toArray();
-        const v1 = k1.vel.toArray();
-        const a1 = k1.acc.toArray();
-        for (&out.coefficients, 0..) |*c, axis| c.* = hermite.quintic(p0[axis], v0[axis], a0[axis], p1[axis], v1[axis], a1[axis], out.duration());
-        return out;
+        return .{ .k0 = k0, .k1 = k1, .segment = segment, .coefficients = trajectory.coefficients(k0, k1) };
     }
 
     fn duration(self: *const Piece) f64 {
@@ -185,7 +175,7 @@ const Piece = struct {
     fn state(self: *const Piece, u: f64) trajectory.State {
         var out: [4][3]f64 = undefined;
         for (self.coefficients, 0..) |c, axis| {
-            const m = hermite.motion(c, self.duration(), u);
+            const m = Scalar.motion(c, self.duration(), u);
             out[0][axis] = m.position;
             out[1][axis] = m.velocity;
             out[2][axis] = m.acceleration;
@@ -364,11 +354,11 @@ const Walk = struct {
         }
     }
 
-    /// The parts of [low, high] where p passes a level, to 40 halvings of the piece: a part that halving no longer
-    /// tells is counted in whole.
+    /// The parts of [low, high] where p passes a level, to `finest_halvings` halvings of the piece: a part that
+    /// halving no longer tells is counted in whole.
     fn beyond(self: *Walk, arena: std.mem.Allocator, piece: *const Piece, p: Bernstein, level: f64, low: f64, high: f64, depth: usize) Error!void {
         if (p.high() <= level) return;
-        if (p.low() > level or depth == 40) return add(arena, &self.broken, .{ .from = piece.time(low), .to = piece.time(high), .segment = piece.segment });
+        if (p.low() > level or depth == finest_halvings) return add(arena, &self.broken, .{ .from = piece.time(low), .to = piece.time(high), .segment = piece.segment });
         const two = p.halves();
         const mid = (low + high) / 2;
         try self.beyond(arena, piece, two[0], level, low, mid, depth + 1);
@@ -438,13 +428,13 @@ fn reach(allowed: Allowed, norm: Bernstein) f64 {
 
 /// Each limit of a plan held against its stored path, the checks in `arena`; `first_knots` each segment's first
 /// knot.
-pub fn run(gpa: std.mem.Allocator, arena: std.mem.Allocator, knots: []const Knot, first_knots: []const usize, plan: *const model.Plan) Error![]const Check {
-    const segments = try gpa.alloc(usize, knots.len - 1);
-    defer gpa.free(segments);
+pub fn run(allocator: std.mem.Allocator, arena: std.mem.Allocator, knots: []const Knot, first_knots: []const usize, plan: *const model.Plan) Error![]const Check {
+    const segments = try allocator.alloc(usize, knots.len - 1);
+    defer allocator.free(segments);
     for (segments, 0..) |*s, k| s.* = std.sort.partitionPoint(usize, first_knots, k, atOrBefore) - 1;
-    const covered = try gpa.alloc(bool, first_knots.len);
-    defer gpa.free(covered);
-    var scratch = std.heap.ArenaAllocator.init(gpa);
+    const covered = try allocator.alloc(bool, first_knots.len);
+    defer allocator.free(covered);
+    var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     const out = try arena.alloc(Check, plan.limits.len);
     for (plan.limits, out) |limit, *check| {
@@ -502,13 +492,13 @@ fn evaluate(arena: std.mem.Allocator, scratch: std.mem.Allocator, knots: []const
 /// its least and greatest altitude above EGM96 (a PHT holds no reference of its own).
 pub const Extremes = struct { speed_mps: f64, acceleration_mps2: f64, jerk_mps3: f64, min_altitude_m: f64, max_altitude_m: f64 };
 
-pub fn extremes(gpa: std.mem.Allocator, knots: []const Knot) Error!Extremes {
-    const segments = try gpa.alloc(usize, knots.len - 1);
-    defer gpa.free(segments);
+pub fn extremes(allocator: std.mem.Allocator, knots: []const Knot) Error!Extremes {
+    const segments = try allocator.alloc(usize, knots.len - 1);
+    defer allocator.free(segments);
     @memset(segments, 0);
     var pieces: std.ArrayList(usize) = .empty;
-    defer pieces.deinit(gpa);
-    for (0..knots.len - 1) |k| if (knots[k + 1].t > knots[k].t) try pieces.append(gpa, k);
+    defer pieces.deinit(allocator);
+    for (0..knots.len - 1) |k| if (knots[k + 1].t > knots[k].t) try pieces.append(allocator, k);
     // A path of one instant has no piece: its extremes are its knots'.
     if (pieces.items.len == 0) {
         var instant: Extremes = .{ .speed_mps = 0, .acceleration_mps2 = 0, .jerk_mps3 = 0, .min_altitude_m = std.math.inf(f64), .max_altitude_m = -std.math.inf(f64) };
@@ -530,7 +520,7 @@ pub fn extremes(gpa: std.mem.Allocator, knots: []const Knot) Error!Extremes {
         .{ .quantity = .altitude, .max = null, .min = 0, .into = &out.min_altitude_m },
         .{ .quantity = .altitude, .max = 0, .min = null, .into = &out.max_altitude_m },
     };
-    var scratch = std.heap.ArenaAllocator.init(gpa);
+    var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     for (asked) |a| {
         _ = scratch.reset(.retain_capacity);
