@@ -10,9 +10,14 @@ pub fn forGroupDelays(g: *const records.GroupDelays, source: records.NavSource, 
         .e1 => g.get(clock),
         .e5a => second(g, clock, .bgd_e1e5a, signals.e5a.ionoFactor(null)),
         .e5b => second(g, clock, .bgd_e1e5b, signals.e5b.ionoFactor(null)),
-        .e6 => 0,
+        // E6 is taken at E1/E5a's: under the E1/E5b clock of I/NAV, the two clocks differ by the two BGDs.
+        .e6 => if (clock == .bgd_e1e5a) 0 else difference(g.get(.bgd_e1e5b), g.get(.bgd_e1e5a)),
         else => null,
     };
+}
+
+fn difference(a: ?f64, b: ?f64) ?f64 {
+    return (a orelse return null) - (b orelse return null);
 }
 
 fn second(g: *const records.GroupDelays, clock: Term, own: Term, gamma: f64) ?f64 {
