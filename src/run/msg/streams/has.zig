@@ -27,9 +27,9 @@ const system_table = [_]System{
     .{ .gnss = .galileo, .system = .gal, .cells = &has.galileo_cells },
 };
 
-const carriers = 36;
+const carriers = types.System.gal.capacity();
 const max_systems = system_table.len;
-const max_sats = 72;
+const max_sats = types.System.gps.capacity() + types.System.gal.capacity();
 const history_per_kind = 4;
 const max_signals: usize = @max(has.gps_cells.len, has.galileo_cells.len);
 const max_cells = max_systems * has.sat_mask_bits * max_signals;
@@ -65,7 +65,6 @@ const Snapshot = struct {
 
 const Scratch = struct {
     snapshot: Snapshot,
-    samples: [max_sats]corrections.Correction,
     orbit: [max_sats]has.Orbit,
     clocks: [max_sats]has.Clock,
     code: [max_cells]?f64,
@@ -89,6 +88,7 @@ pub const Stream = struct {
     last_iods: [max_systems][has.sat_mask_bits]?u16 = @splat(@splat(null)),
     phase: [max_systems][has.sat_mask_bits][has.sig_mask_bits]?PhaseState = @splat(@splat(@splat(null))),
     cadence: common.Cadence,
+    started: bool = false,
     scratch: Scratch = undefined,
 
     pub fn init(self: *Stream, b: *const bundle.Bundle, allocation: *const gnss.allocation.Allocation, config: bundle.scenario.Has) void {
@@ -113,12 +113,10 @@ pub const Stream = struct {
         self.init(self.source.b, self.served.allocation, config);
     }
 
-    pub fn advanceTo(self: *Stream, second: i64) void {
-        var walk = self.cadence.upTo(second);
-        while (walk.next()) |s| {
-            const first = self.cadence.isFirst();
-            const slow_due = first or common.due(s, self.config.orbit_interval_s);
-            const fast_due = first or common.due(s, self.config.clock_interval_s);
+    pub fn advanceTo(self: *Stream, t: GpsTime) void {
+        while (self.cadence.next(t)) |s| {
+            const slow_due = !self.started or common.due(s, self.config.orbit_interval_s);
+            const fast_due = !self.started or common.due(s, self.config.clock_interval_s);
             if (slow_due or fast_due) self.generate(s, slow_due, fast_due);
         }
     }
@@ -126,26 +124,26 @@ pub const Stream = struct {
     fn snapshot(self: *Stream, t: GpsTime) *const Snapshot {
         const snap = &self.scratch.snapshot;
         snap.* = .{};
-        const samples = &self.scratch.samples;
         for (self.systems) |sys| {
             var mask: has.SystemMask = .{ .gnss = sys.gnss, .sats = @splat(false), .sigs = @splat(false), .cells = null, .nav_message = 0 };
             for (sys.cells) |c| if (self.served.lists(c.signal)) {
                 mask.sigs[c.index] = true;
             };
-            const n = self.source.collect(sys.system, t, .dot_product, samples);
             var cells: usize = 0;
             var every = true;
-            for (samples[0..n]) |sample| {
+            var sats = sys.system.satellites();
+            while (sats.next()) |sat| {
+                if (!self.served.transmitsAny(has.Cell, sys.cells, sat)) continue;
+                const sample = self.source.correctionOf(sat, t, .dot_product) orelse continue;
                 const source = sample.record.record.source();
                 if (source != .lnav and source != .inav) continue;
-                if (!self.served.transmitsAny(has.Cell, sys.cells, sample.sat)) continue;
-                const prn = sample.sat.prn();
+                const prn = sat.prn();
                 snap.corr[snap.count] = sample;
                 snap.count += 1;
                 mask.sats[prn - 1] = true;
                 snap.iods[snap.n_systems][prn - 1] = sample.record.record.iode;
                 for (sys.cells) |c| if (mask.sigs[c.index]) {
-                    const on = self.served.transmits(sample.sat, c.signal);
+                    const on = self.served.transmits(sat, c.signal);
                     snap.cells[snap.n_systems][cells] = on;
                     cells += 1;
                     every = every and on;
@@ -177,8 +175,8 @@ pub const Stream = struct {
         const toh: u12 = @intCast(@mod(s, core.time.s_per_hour));
         var redefined = false;
         if (slow_due or changed) define: {
-            const mask_id = self.mask_id +% @intFromBool(!self.cadence.isFirst() and mask_changed);
-            const iod_set_id = self.iod_set_id +% @intFromBool(!self.cadence.isFirst() and changed);
+            const mask_id = self.mask_id +% @intFromBool(self.started and mask_changed);
+            const iod_set_id = self.iod_set_id +% @intFromBool(self.started and changed);
             if (changed) if (self.definitions[mask_id][iod_set_id]) |until| {
                 if (s < until + definition_hold_s) break :define;
             };
@@ -341,7 +339,7 @@ pub const Stream = struct {
         has.encodePages(pages[0..k], &record.pages);
         self.mid_until[mid] = record.until_s + mid_reuse_guard_s;
         self.next_mid = mid +% 1;
-        self.cadence.generated += 1;
+        self.started = true;
         return true;
     }
 

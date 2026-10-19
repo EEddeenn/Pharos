@@ -39,8 +39,10 @@ const Entry = struct {
     orbit_epoch: ?i64 = null,
 
     fn follow(self: *Entry, record: Kepler) void {
-        if (self.record) |previous| if (std.meta.eql(previous, record)) return;
-        if (self.record != null) self.iod_corr +%= 1;
+        if (self.record) |previous| {
+            if (std.meta.eql(previous, record)) return;
+            self.iod_corr +%= 1;
+        }
         self.record = record;
         self.broadcast = switch (self.corrected) {
             .bds => if (gnss.bds.bcnav.broadcast(record, .bcnav1)) |b| .{ .parameters = b.parameters, .iodn = @intCast(b.iodc & 0x3ff) } else null,
@@ -106,10 +108,9 @@ pub const Stream = struct {
         self.init(self.source.b, self.served.allocation, config);
     }
 
-    pub fn advanceTo(self: *Stream, second: i64) void {
-        var walk = self.cadence.upTo(second);
-        while (walk.next()) |s| {
-            const first = self.cadence.isFirst();
+    pub fn advanceTo(self: *Stream, end: GpsTime) void {
+        while (self.cadence.next(end)) |s| {
+            const first = s == self.cadence.first;
             const t = self.cadence.timeOf(s);
             if (first or (s - self.cycle_epoch >= self.config.orbit_interval_s and self.orbit_next == self.n_entries)) {
                 self.startCycle(s, t);
@@ -120,7 +121,6 @@ pub const Stream = struct {
             }
             const message = self.nextMessage(s, t);
             self.ring.put(s, .{ .message = message, .available = self.n_entries > 0 });
-            self.cadence.generated += 1;
         }
     }
 
@@ -219,14 +219,9 @@ pub const Stream = struct {
         var n: usize = 0;
         const end = @min(self.orbit_next + ppp.orbit_entries, self.n_entries);
         for (self.entries[self.orbit_next..end]) |*e| {
-            const c = self.correction(e, t) orelse {
-                e.orbit_epoch = null;
-                continue;
-            };
-            const orbit = orbitCorrection(c.value) orelse {
-                e.orbit_epoch = null;
-                continue;
-            };
+            e.orbit_epoch = null;
+            const c = self.correction(e, t) orelse continue;
+            const orbit = orbitCorrection(c.value) orelse continue;
             batch[n] = .{ .slot = e.slot, .iodn = c.iodn, .iod_corr = e.iod_corr, .correction = orbit, .ura = ura };
             e.orbit_epoch = s;
             n += 1;
@@ -250,37 +245,14 @@ pub const Stream = struct {
         }
         self.n_clock = 0;
         self.clock_next = 0;
-        const full = self.n_entries / ppp.clock_entries;
-        const rest = self.n_entries % ppp.clock_entries;
-        for (0..full) |k| {
-            const start = k * ppp.clock_entries;
-            const page_clocks = clocks[start..][0..ppp.clock_entries];
-            self.clock_msgs[self.n_clock] = .{
-                .message = ppp.encode(.{ .clock = .{
-                    .common = commonOf(s),
-                    .iodp = self.iodp,
-                    .subtype = @intCast(k),
-                    .entries = page_clocks,
-                } }) catch unreachable,
-                .valid_until = self.clockDeadline(s, start, page_clocks),
-            };
-            self.n_clock += 1;
-        }
-        if (rest > 0) {
-            const start = full * ppp.clock_entries;
-            const page_clocks = clocks[start..][0..rest];
-            self.clock_msgs[self.n_clock] = .{
-                .message = ppp.encode(.{ .combination_mask = .{
-                    .clock = .{
-                        .common = commonOf(s),
-                        .iodp = self.iodp,
-                        .slot_s = @intCast(start + 1),
-                        .entries = page_clocks,
-                    },
-                    .orbit = null,
-                } }) catch unreachable,
-                .valid_until = self.clockDeadline(s, start, page_clocks),
-            };
+        var start: usize = 0;
+        while (start < self.n_entries) : (start += ppp.clock_entries) {
+            const page = clocks[start..@min(start + ppp.clock_entries, self.n_entries)];
+            const content: ppp.Content = if (page.len == ppp.clock_entries)
+                .{ .clock = .{ .common = commonOf(s), .iodp = self.iodp, .subtype = @intCast(start / ppp.clock_entries), .entries = page[0..ppp.clock_entries] } }
+            else
+                .{ .combination_mask = .{ .clock = .{ .common = commonOf(s), .iodp = self.iodp, .slot_s = @intCast(start + 1), .entries = page }, .orbit = null } };
+            self.clock_msgs[self.n_clock] = .{ .message = ppp.encode(content) catch unreachable, .valid_until = self.clockDeadline(s, start, page) };
             self.n_clock += 1;
         }
     }

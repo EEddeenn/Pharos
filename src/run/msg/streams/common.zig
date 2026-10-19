@@ -49,18 +49,6 @@ pub const Source = struct {
         _ = slot.advanceTo(self.b, sat, t);
         return slot;
     }
-
-    pub fn collect(self: *Source, system: types.System, t: GpsTime, relativity: corrections.Relativity, out: []corrections.Correction) usize {
-        var n: usize = 0;
-        var sats = system.satellites();
-        while (n < out.len) {
-            const sat = sats.next() orelse break;
-            const corr = self.correctionOf(sat, t, relativity) orelse continue;
-            out[n] = corr;
-            n += 1;
-        }
-        return n;
-    }
 };
 
 pub const Served = struct {
@@ -96,38 +84,19 @@ pub fn due(second: i64, interval_s: u32) bool {
 
 pub const Cadence = struct {
     offset_ms: i64,
+    first: i64,
     served_through: i64,
-    generated: u32 = 0,
 
     pub fn init(offset_ms: i64, start: GpsTime) Cadence {
-        var c: Cadence = .{ .offset_ms = offset_ms, .served_through = 0 };
-        c.served_through = c.secondOf(start) - 1;
-        return c;
+        const first = @divFloor(start.ms - offset_ms, 1000);
+        return .{ .offset_ms = offset_ms, .first = first, .served_through = first - 1 };
     }
 
-    pub fn secondOf(self: Cadence, t: GpsTime) i64 {
-        return @divFloor(t.ms - self.offset_ms, 1000);
+    pub fn next(self: *Cadence, t: GpsTime) ?i64 {
+        if (self.served_through >= @divFloor(t.ms - self.offset_ms, 1000)) return null;
+        self.served_through += 1;
+        return self.served_through;
     }
-
-    pub fn isFirst(self: Cadence) bool {
-        return self.generated == 0;
-    }
-
-    pub fn upTo(self: *Cadence, upto: i64) Walk {
-        return .{ .cadence = self, .upto = upto };
-    }
-
-    const Walk = struct {
-        cadence: *Cadence,
-        upto: i64,
-
-        pub fn next(self: Walk) ?i64 {
-            const s = self.cadence.served_through + 1;
-            if (s > self.upto) return null;
-            self.cadence.served_through = s;
-            return s;
-        }
-    };
 
     pub fn timeOf(self: Cadence, second: i64) GpsTime {
         return .{ .ms = second * 1000 + self.offset_ms };

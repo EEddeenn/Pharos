@@ -64,13 +64,14 @@ pub const Streams = struct {
         if (self.dc) |s| s.reset();
     }
 
-    const lookahead_s = 2;
+    const lookahead_ms = 2000;
 
     pub fn advanceTo(self: *Streams, end: GpsTime) void {
-        if (self.has) |s| s.advanceTo(s.cadence.secondOf(end) + lookahead_s);
-        if (self.ppp_b2b) |s| s.advanceTo(s.cadence.secondOf(end) + lookahead_s);
-        if (self.d2) |s| s.advanceTo(s.cadence.secondOf(end) + lookahead_s);
-        if (self.dc) |s| s.advanceTo(end.addMs(lookahead_s * 1000));
+        const t = end.addMs(lookahead_ms);
+        if (self.has) |s| s.advanceTo(t);
+        if (self.ppp_b2b) |s| s.advanceTo(t);
+        if (self.d2) |s| s.advanceTo(t);
+        if (self.dc) |s| s.advanceTo(t);
     }
 
     pub fn sources(self: *const Streams) set.Sources {

@@ -14,10 +14,7 @@ const samples_len = 8;
 
 const Fit = struct { correction: dc.Correction, binding: *const bundle.plan.Binding };
 
-const Entry = struct {
-    t_od: GpsTime,
-    fits: [32]?Fit = @splat(null),
-};
+const Entry = [32]?Fit;
 
 const Sample = struct { state: dc.fit.Sample, record: Reference };
 
@@ -75,7 +72,7 @@ pub const Stream = struct {
         const b = self.source.b;
         const start = if (epoch.lessThan(b.plan.start)) b.plan.start else self.sampleTime(epoch);
         const end = self.sampleTime(epoch.addMs(dc.epoch_ms));
-        var out: Entry = .{ .t_od = epoch };
+        var out: Entry = @splat(null);
         for (&self.samples, 0..) |*ring, i| {
             const sat = types.SatId.at(.gps, i);
             const binding = b.plan.bindingAt(sat, start) orelse continue;
@@ -93,7 +90,7 @@ pub const Stream = struct {
             const record = gnss.gps.lnav.described(head.record);
             const corr = dc.fit.correction(&record, epoch, states[0..n]) orelse continue;
             if (!dc.representable(corr)) continue;
-            out.fits[i] = .{ .correction = corr, .binding = binding };
+            out[i] = .{ .correction = corr, .binding = binding };
         }
         return out;
     }
@@ -102,10 +99,9 @@ pub const Stream = struct {
         const plan = &self.source.b.plan;
         const epoch = if (t_od.lessThan(self.first)) self.first else t_od;
         const entry = self.ring.get(epochIndex(epoch)) orelse return null;
-        if (!entry.t_od.eql(epoch)) return null;
         const at = self.source.notBefore(t);
-        var out: dc.Batch = .{ .t_od = entry.t_od };
-        for (&out.corrections, entry.fits, 0..) |*c, fit, i| {
+        var out: dc.Batch = .{ .t_od = epoch };
+        for (&out.corrections, entry, 0..) |*c, fit, i| {
             const f = fit orelse continue;
             const now = plan.bindingAt(types.SatId.at(.gps, i), at) orelse continue;
             if (now == f.binding) c.* = f.correction;
