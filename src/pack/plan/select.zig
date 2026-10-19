@@ -82,7 +82,8 @@ pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, signals: std.
             if (carries(signals, source.family()) != enabled) continue;
             const index = candidates.get(source).record(set) orelse continue;
             if (signals.count() != 0) {
-                const candidate = resolve.binding(set, .{ .kepler = index }, t, leap);
+                // A row's status reads the health and the allocation alone, so the delays' donors are not looked for.
+                const candidate: bundle.plan.Binding = .{ .reference = .{ .kepler = index }, .attributes = resolve.attributesAt(set, &set.kepler[index], t, leap), .air = &.{} };
                 var it = signals.iterator();
                 const alive = while (it.next()) |signal| {
                     if (air(set, &candidate, signals, signal).status == .on_air) break true;

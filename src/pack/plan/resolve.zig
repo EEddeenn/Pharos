@@ -33,10 +33,17 @@ pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundl
         }
         if (best) |donor| out.group_delay.put(term, donor.group_delay.get(term).?);
     }
+    out.attributes = attributesAt(set, e, t, leap);
+    return out;
+}
+
+pub fn attributesAt(set: *const NavSet, e: *const records.KeplerEphemeris, t: GpsTime, leap: Leap) gnss.reference.Attributes {
+    var out: gnss.reference.Attributes = .{};
+    const end: GpsTime = .{ .ms = bundle.plan.nextLegBoundary(e.sat.system, t, leap).ms };
     for (std.meta.tags(records.NavSource)) |source| {
         if (source.system() != e.sat.system) continue;
         if (source == e.source()) {
-            out.attributes.put(e.extra);
+            out.put(e.extra);
             continue;
         }
         var latest: ?*const records.KeplerEphemeris = null;
@@ -48,10 +55,10 @@ pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundl
             }
             latest = donor;
         }
-        if (latest) |donor| out.attributes.put(attributes(e, donor));
+        if (latest) |donor| out.put(attributes(e, donor));
     }
-    if (out.attributes.inav) |*inav| {
-        if (out.attributes.fnav) |fnav| inav.e5a = fnav.declaration();
+    if (out.inav) |*inav| {
+        if (out.fnav) |fnav| inav.e5a = fnav.declaration();
     }
     return out;
 }
