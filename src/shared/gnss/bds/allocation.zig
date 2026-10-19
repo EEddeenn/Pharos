@@ -41,10 +41,10 @@ const moves = [_]Move{
     .{ .from = 47, .to = 11, .day = 19, .hour = 23 },
     .{ .from = 44, .to = 31, .day = 20, .hour = 4 },
     .{ .from = 43, .to = 38, .day = 20, .hour = 8 },
-    .{ .from = 62, .to = 1, .day = 20, .hour = 12 },
+    .{ .from = 59, .to = 1, .day = 20, .hour = 12 },
     .{ .from = 46, .to = 40, .day = 20, .hour = 23 },
     .{ .from = 48, .to = 12, .day = 21, .hour = 4 },
-    .{ .from = 59, .to = 4, .day = 21, .hour = 8 },
+    .{ .from = 62, .to = 4, .day = 21, .hour = 8 },
 };
 
 const reallocation_year = 2026;
