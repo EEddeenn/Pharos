@@ -18,7 +18,8 @@ const max_sats = 63 + 37 + 37;
 const ring_len = 64;
 const max_clock = (max_sats + ppp.clock_entries - 1) / ppp.clock_entries;
 const max_modes = @max(ppp.bds_modes.len, ppp.gps_modes.len, ppp.galileo_modes.len);
-const ura: ppp.Ura = .{ .class = 0, .value = 0 };
+// URAI 001100, a URA of 5.0 mm at most: 000000 would declare every correction unreliable (PPP-B2b ICD 6.2.3).
+const ura: ppp.Ura = .{ .class = 1, .value = 4 };
 const Corrected = enum { bds, gps, gal };
 const System = struct { system: types.System, slot_base: u9, family: types.NavFamily, modes: []const ppp.Mode };
 const systems: std.EnumArray(Corrected, System) = .init(.{
