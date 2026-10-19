@@ -65,7 +65,8 @@ fn resolveIonosphere(request: *const Request, navigation: core.iono.Broadcast) E
                     .source = .navigation,
                 },
                 .bds => .{
-                    .model = if (sets.bdgim != null)
+                    // The model the listed signals carry, BDGIM in B-CNAV1 to 3 and the BDS Klobuchar in D1/D2; the other one where the data lacks it.
+                    .model = if (sets.bdgim != null and (carriesBdgim(request) or sets.bds_klobuchar == null))
                         .bdgim
                     else if (sets.bds_klobuchar != null)
                         .bds_klobuchar
@@ -97,4 +98,8 @@ fn resolveIonosphere(request: *const Request, navigation: core.iono.Broadcast) E
             .navigation,
     });
     return resolved;
+}
+
+fn carriesBdgim(request: *const Request) bool {
+    return request.carries(.bcnav1) or request.carries(.bcnav2) or request.carries(.bcnav3);
 }

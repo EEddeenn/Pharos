@@ -97,7 +97,7 @@ pub const Resolved = struct {
                 const fits = switch (system) {
                     .gps, .glo => selected == .klobuchar,
                     .gal => selected == .nequick,
-                    .bds => if (self.broadcast.bdgim != null) selected == .bdgim else selected == .bds_klobuchar,
+                    .bds => selected == .bdgim or selected == .bds_klobuchar,
                 };
                 if (!fits) return false;
             }
