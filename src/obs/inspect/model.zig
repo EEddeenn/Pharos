@@ -321,7 +321,7 @@ fn navigation(record: shared.track.selection.Record, signal: types.Signal) Navig
             .availability = .available,
             .family = .gnav,
             .glonass = .of(g),
-            .health = .{ .status = gnss.health.flagged(g.health), .serves_signal = record.serves(signal), .family = .gnav },
+            .health = .{ .status = gnss.health.flagged(!g.health), .serves_signal = record.serves(signal), .family = .gnav },
             .accuracy = if (g.ft) |ft| .{ .family = .gnav, .ft_index = ft } else .{ .family = .gnav, .availability = .unavailable, .reason = .accuracy_not_stated },
         },
     };
