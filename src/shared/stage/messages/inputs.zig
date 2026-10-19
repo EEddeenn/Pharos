@@ -21,7 +21,7 @@ pub fn recordOf(b: *const Bundle, payload: *const Payload, family: NavFamily, sa
     return switch (family) {
         inline .lnav, .inav => |own| if (reference.record.source() == @field(gnss.records.NavSource, @tagName(own))) reference else null,
         .cnav, .cnav2, .fnav, .d1d2, .bcnav1, .bcnav2, .bcnav3 => reference,
-        .cnav_has, .gnav => null,
+        .cnav_has, .ppp_b2b, .gnav => null,
     };
 }
 
@@ -109,10 +109,6 @@ pub fn bcnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadc
     };
     records(b, payload, family, t, &in.eph);
     return in;
-}
-
-pub fn bcnav3(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, service: ?bds.bcnav3.FrameSource, t: GpsTime) bds.bcnav3.Set.Inputs {
-    return .{ .shared = bcnav(b, payload, broadcast, .bcnav3, t), .ppp_b2b = service };
 }
 
 pub fn gnav(b: *const Bundle, t: GpsTime) glonass.gnav.Set.Inputs {

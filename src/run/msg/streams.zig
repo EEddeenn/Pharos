@@ -77,7 +77,7 @@ pub const Streams = struct {
     pub fn sources(self: *const Streams) set.Sources {
         return .{
             .has = if (self.has) |s| gnss.galileo.cnav.PageSource.of(has.Stream, s) else null,
-            .ppp_b2b = if (self.ppp_b2b) |s| gnss.bds.bcnav3.FrameSource.of(ppp_b2b.Stream, s) else null,
+            .ppp_b2b = if (self.ppp_b2b) |s| gnss.bds.ppp_b2b.FrameSource.of(ppp_b2b.Stream, s) else null,
             .d2 = if (self.d2) |s| gnss.bds.d1d2.augmentation.Source.of(d2.Stream, s) else null,
             .dc = if (self.dc) |s| gnss.gps.dc.Source.of(dc.Stream, s) else null,
         };

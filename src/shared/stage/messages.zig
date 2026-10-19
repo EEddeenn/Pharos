@@ -16,6 +16,7 @@ const d1d2 = gnss.bds.d1d2;
 const bcnav1 = gnss.bds.bcnav1;
 const bcnav2 = gnss.bds.bcnav2;
 const bcnav3 = gnss.bds.bcnav3;
+const ppp_b2b = gnss.bds.ppp_b2b;
 const gnav = gnss.glonass.gnav;
 const spec = gnss.spec;
 const Signal = core.types.Signal;
@@ -34,6 +35,7 @@ fn coderOf(comptime family: NavFamily) type {
         .bcnav1 => bcnav1,
         .bcnav2 => bcnav2,
         .bcnav3 => bcnav3,
+        .ppp_b2b => ppp_b2b,
         .gnav => gnav,
     };
 }
@@ -114,6 +116,7 @@ pub const MessageSet = union(NavFamily) {
     bcnav1: Family(.bcnav1),
     bcnav2: Family(.bcnav2),
     bcnav3: Family(.bcnav3),
+    ppp_b2b: Family(.ppp_b2b),
     gnav: Family(.gnav),
 
     pub fn hasFrames(self: MessageSet, prn: u8) bool {
@@ -150,15 +153,18 @@ pub const MessageSet = union(NavFamily) {
 };
 
 comptime {
-    @setEvalBranchQuota(10_000);
+    @setEvalBranchQuota(100_000);
     for (std.enums.values(Signal)) |signal| {
         const s = spec.get(signal);
-        const family = s.family;
-        if (family.system() != signal.system()) @compileError("the family of " ++ @tagName(signal) ++ " belongs to another system");
-        const frame_ms = switch (family) {
-            inline else => |f| @FieldType(MessageSet, @tagName(f)).frameMs(signal),
-        };
-        if (s.frame.frame_length_ms != frame_ms) @compileError("the frame length of " ++ @tagName(signal) ++ " is not its coder's");
+        var sats = signal.system().satellites();
+        while (sats.next()) |sat| {
+            const family = gnss.payload.familyFor(sat, signal);
+            if (family.system() != signal.system()) @compileError("the family of " ++ @tagName(signal) ++ " belongs to another system");
+            const frame_ms = switch (family) {
+                inline else => |f| @FieldType(MessageSet, @tagName(f)).frameMs(signal),
+            };
+            if (s.frame.frame_length_ms != frame_ms) @compileError("the frame length of " ++ @tagName(signal) ++ " is not its coder's");
+        }
         if (s.geo_frame) |geo| if (geo.frame_length_ms != d1d2.d2_frame_ms) @compileError("the GEO frame length of " ++ @tagName(signal) ++ " is not the D2 subframe");
     }
 }
@@ -239,7 +245,7 @@ pub const Messages = struct {
     }
 };
 
-pub const Sources = struct { has: ?cnav_has.PageSource = null, ppp_b2b: ?bcnav3.FrameSource = null, d2: ?d1d2.augmentation.Source = null, dc: ?gnss.gps.dc.Source = null };
+pub const Sources = struct { has: ?cnav_has.PageSource = null, ppp_b2b: ?ppp_b2b.FrameSource = null, d2: ?d1d2.augmentation.Source = null, dc: ?gnss.gps.dc.Source = null };
 
 pub fn build(comptime family: NavFamily, out: *Set(family), b: *const bundle.Bundle, payload: *const gnss.payload.Payload, broadcast: *const Broadcast, messages: Messages, sources: Sources, t: GpsTime) field.Error!void {
     return out.build(switch (family) {
@@ -250,8 +256,8 @@ pub fn build(comptime family: NavFamily, out: *Set(family), b: *const bundle.Bun
         .fnav => inputs.fnav(b, payload, broadcast, t),
         .cnav_has => .{ .pages = sources.has },
         .d1d2 => inputs.d1d2(b, payload, broadcast, sources.d2, t),
-        .bcnav1, .bcnav2 => inputs.bcnav(b, payload, broadcast, family, t),
-        .bcnav3 => inputs.bcnav3(b, payload, broadcast, sources.ppp_b2b, t),
+        .bcnav1, .bcnav2, .bcnav3 => inputs.bcnav(b, payload, broadcast, family, t),
+        .ppp_b2b => .{ .frames = sources.ppp_b2b },
         .gnav => inputs.gnav(b, t),
     });
 }

@@ -6,7 +6,7 @@ const ephemeris = @import("../ephemeris_fields.zig");
 const almanac = @import("../almanac_fields.zig");
 const time_parameters = @import("../time_parameters.zig");
 const iono = @import("../iono_fields.zig");
-const coding = @import("coding.zig");
+const b2b = @import("../b2b.zig");
 
 const Sv = bcnav.Sv;
 
@@ -46,8 +46,8 @@ const tgd = [_]S{.{ .name = "tgd_b2bi", .width = 12, .repr = .twos, .scale_log2 
 
 const accuracy = bcnav.sisai_oc ++ bcnav.sisai_oe ++ [_]S{.{ .name = "hs", .width = 2, .renamed = true, .src = .{ .field = "hs_b2b" } }};
 
-pub fn encode(in: *const Input, kind: Type, ctx: Ctx) field.Error!coding.Message {
-    var out: coding.Message = .{};
+pub fn encode(in: *const Input, kind: Type, ctx: Ctx) field.Error!b2b.Message {
+    var out: b2b.Message = .{};
     var w = out.writer();
     switch (kind) {
         .ephemeris => {
@@ -74,7 +74,7 @@ pub fn encode(in: *const Input, kind: Type, ctx: Ctx) field.Error!coding.Message
             try field.encode(field.NoSource, &reserved40, &field.no_source, ctx, &w);
         },
     }
-    w.writeBits(24, codec.crc24q.ofBits(&out.words, coding.content_bits));
+    w.writeBits(24, codec.crc24q.ofBits(&out.words, b2b.content_bits));
     return out;
 }
 
@@ -83,5 +83,5 @@ comptime {
     const n10 = width(field.NoSource, &header10) + width(ephemeris.Source, ephemeris.eph1[1..]) + width(ephemeris.Source, &ephemeris.eph2) + width(Sv, &integrity);
     const n30 = width(field.NoSource, &header30) + width(ephemeris.Source, &ephemeris.clock) + width(Sv, &tgd) + width(iono.Coefficients, &iono.bdgim) + width(time_parameters.Utc, &time_parameters.utc) + width(time_parameters.Eop, &time_parameters.eop) + width(Sv, &accuracy);
     const n40 = width(field.NoSource, &header40) + width(time_parameters.Bgto, &time_parameters.bgto) + width(almanac.Packet, &almanac.midi) + width(almanac.Reference, &almanac.reference) + 5 * width(almanac.Packet, &almanac.reduced) + width(field.NoSource, &reserved40);
-    for (.{ n10, n30, n40 }) |n| std.debug.assert(n == coding.content_bits);
+    for (.{ n10, n30, n40 }) |n| std.debug.assert(n == b2b.content_bits);
 }

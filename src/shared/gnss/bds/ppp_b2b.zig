@@ -3,10 +3,14 @@ const types = @import("../../core.zig").types;
 const BitWriter = @import("../../codec.zig").bitwriter.BitWriter;
 const scaling = @import("../../codec.zig").scaling;
 const crc24q = @import("../../codec.zig").crc24q;
-const coding = @import("bcnav3/coding.zig");
+const frame = @import("../../codec.zig").frame;
+const b2b = @import("b2b.zig");
 
-pub const Message = coding.Message;
-pub const content_bits = coding.content_bits;
+pub const Message = b2b.Message;
+pub const content_bits = b2b.content_bits;
+pub const frame_ms = 1000;
+pub const bits_per_frame = b2b.bits_per_frame;
+pub const Frame = b2b.Frame;
 
 const Type = enum(u6) {
     mask = 1,
@@ -305,4 +309,31 @@ fn writeContent(w: *BitWriter, content: Content) void {
         },
         .null_message => {},
     }
+}
+
+pub fn encodeFrame(m: *const Message, prn: u8, available: bool) Frame {
+    var out = b2b.encodeFrame(m, prn);
+    out.set(22, @intFromBool(!available));
+    return out;
+}
+
+pub const FrameSource = frame.Source(bits_per_frame);
+
+pub const Set = struct {
+    frames: ?FrameSource = null,
+
+    pub const Inputs = struct { frames: ?FrameSource = null };
+
+    pub fn build(set: *Set, in: Inputs) void {
+        set.* = .{ .frames = in.frames };
+    }
+
+    pub fn hasRecord(_: *const Set, _: u8) bool {
+        return true;
+    }
+};
+
+pub fn buildFrame(set: *const Set, prn: u8, index: i64) ?Frame {
+    if (set.frames) |source| if (source.frame(prn, index)) |f| return f;
+    return encodeFrame(&null_message, prn, false);
 }

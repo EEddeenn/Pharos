@@ -172,7 +172,6 @@ pub fn warnUnfit(s: *const model.Scenario, set: *const NavSet, p: *const Plan, d
     for (p.timelines) |timeline| {
         for ([_]records.NavSource{ .cnav, .cnav2, .bcnav1, .bcnav2, .bcnav3 }) |source| {
             if (!s.carries(source.family()) or !payload.carries(timeline.sat, source.family())) continue;
-            if (source == .bcnav3 and gnss.payload.pppB2b(timeline.sat, payload.of(timeline.sat))) continue;
             for (timeline.legs) |*leg| {
                 const binding = if (leg.binding) |*binding| binding else continue;
                 const reference = binding.kepler(set) orelse continue;

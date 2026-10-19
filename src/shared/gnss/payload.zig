@@ -12,14 +12,16 @@ const NavFamily = types.NavFamily;
 /// One satellite's payload: the family that carries each signal it transmits, null for the others.
 pub const Carried = std.EnumArray(Signal, ?NavFamily);
 
-pub fn familyAt(sat: SatId, signal: Signal, t: GpsTime) ?NavFamily {
-    if (!allocation.transmits(sat, signal, t)) return null;
+/// The family that carries a signal on a satellite transmitting it: the signal's own, but PPP-B2b on the B2b of a BDS
+/// GEO satellite.
+pub fn familyFor(sat: SatId, signal: Signal) NavFamily {
+    if (signal == .b2b and bds_records.isGeo(sat.prn())) return .ppp_b2b;
     return spec.get(signal).family;
 }
 
-/// PPP-B2b is the B2b message of the BDS GEO satellites: a GEO satellite carries it where it transmits B2b.
-pub fn pppB2b(sat: SatId, carried: *const Carried) bool {
-    return carried.get(.b2b) != null and bds_records.isGeo(sat.prn());
+pub fn familyAt(sat: SatId, signal: Signal, t: GpsTime) ?NavFamily {
+    if (!allocation.transmits(sat, signal, t)) return null;
+    return familyFor(sat, signal);
 }
 
 /// What each satellite transmits, frozen at the run start as the allocation is: the one answer to which family carries

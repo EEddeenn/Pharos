@@ -293,9 +293,10 @@ pub const NavFamily = enum {
     bcnav1,
     bcnav2,
     bcnav3,
+    ppp_b2b,
     gnav,
 
-    pub const words: std.EnumArray(NavFamily, []const u8) = .init(.{ .lnav = "LNAV", .cnav = "CNAV", .cnav2 = "CNAV-2", .inav = "I/NAV", .fnav = "F/NAV", .cnav_has = "C/NAV", .d1d2 = "D1/D2", .bcnav1 = "B-CNAV1", .bcnav2 = "B-CNAV2", .bcnav3 = "B-CNAV3", .gnav = "GNAV" });
+    pub const words: std.EnumArray(NavFamily, []const u8) = .init(.{ .lnav = "LNAV", .cnav = "CNAV", .cnav2 = "CNAV-2", .inav = "I/NAV", .fnav = "F/NAV", .cnav_has = "C/NAV", .d1d2 = "D1/D2", .bcnav1 = "B-CNAV1", .bcnav2 = "B-CNAV2", .bcnav3 = "B-CNAV3", .ppp_b2b = "PPP-B2b", .gnav = "GNAV" });
 
     pub fn name(self: NavFamily) []const u8 {
         return words.get(self);
@@ -305,7 +306,7 @@ pub const NavFamily = enum {
         return switch (self) {
             .lnav, .cnav, .cnav2 => .gps,
             .inav, .fnav, .cnav_has => .gal,
-            .d1d2, .bcnav1, .bcnav2, .bcnav3 => .bds,
+            .d1d2, .bcnav1, .bcnav2, .bcnav3, .ppp_b2b => .bds,
             .gnav => .glo,
         };
     }

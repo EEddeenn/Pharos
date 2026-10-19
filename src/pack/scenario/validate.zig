@@ -221,7 +221,7 @@ fn pppCarriersMasked(s: *const Request) bool {
     const payload = gnss.payload.at(s.start);
     var sats = core.types.System.bds.satellites();
     while (sats.next()) |sat| {
-        if (gnss.payload.pppB2b(sat, payload.of(sat)) and !masked.contains(sat)) return false;
+        if (payload.carries(sat, .ppp_b2b) and !masked.contains(sat)) return false;
     }
     return true;
 }

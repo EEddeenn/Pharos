@@ -1,35 +1,25 @@
 const time = @import("../../core.zig").time;
 const field = @import("../../codec.zig").field;
 const bcnav = @import("bcnav.zig");
-const records = @import("records.zig");
-const ppp_b2b = @import("ppp_b2b.zig");
 const content = @import("bcnav3/content.zig");
-const coding = @import("bcnav3/coding.zig");
+const b2b = @import("b2b.zig");
 
 const Error = field.Error;
 pub const frame_ms = 1000;
 const messages_per_week = 604_800;
-pub const bits_per_frame = coding.bits_per_frame;
-pub const Frame = coding.Frame;
-const Message = coding.Message;
-pub const FrameSource = coding.FrameSource;
-const encodeFrame = coding.encodeFrame;
-pub const encodePppFrame = coding.encodePppFrame;
+pub const bits_per_frame = b2b.bits_per_frame;
+pub const Frame = b2b.Frame;
+const Message = b2b.Message;
 const Type = content.Type;
 const order = [3]Type{ .ephemeris, .clock, .almanac };
 
 pub const Set = struct {
     data: bcnav.Data,
-    ppp_b2b: ?FrameSource = null,
 
-    pub const Inputs = struct {
-        shared: bcnav.Inputs,
-        ppp_b2b: ?FrameSource = null,
-    };
+    pub const Inputs = bcnav.Inputs;
 
     pub fn build(set: *Set, in: Inputs) Error!void {
-        set.* = .{ .data = undefined, .ppp_b2b = in.ppp_b2b };
-        set.data.build(.bcnav3, in.shared);
+        set.data.build(.bcnav3, in);
         try set.validate();
     }
 
@@ -38,7 +28,7 @@ pub const Set = struct {
         var first: ?u8 = null;
         for (&data.sv, 1..) |*entry, number| {
             const prn: u8 = @intCast(number);
-            if (entry.* == null or records.isGeo(prn)) continue;
+            if (entry.* == null) continue;
             if (first == null) first = prn;
             if (data.eop != null and data.utc != null) _ = try messageBits(self, prn, .{ .kind = .clock, .sow = 0, .wn = 0, .prns = @splat(0) });
         }
@@ -47,7 +37,7 @@ pub const Set = struct {
     }
 
     pub fn hasRecord(self: *const Set, prn: u8) bool {
-        return records.isGeo(prn) or (self.data.hasRecord(prn) and self.data.eop != null and self.data.utc != null);
+        return self.data.hasRecord(prn) and self.data.eop != null and self.data.utc != null;
     }
 };
 
@@ -69,8 +59,8 @@ fn slot(index: i64) Slot {
     };
 }
 
-pub fn setCycle(prn: u8, index: i64) i64 {
-    return if (records.isGeo(prn)) index else @divFloor(index, order.len);
+pub fn setCycle(_: u8, index: i64) i64 {
+    return @divFloor(index, order.len);
 }
 
 fn almanacPrns(sow: u20) [6]u7 {
@@ -103,10 +93,6 @@ pub fn requireData(set: *const Set, prn: u8) error{ MissingEarthOrientation, Mis
 
 pub fn buildFrame(set: *const Set, prn: u8, index: i64) ?Frame {
     if (!set.hasRecord(prn)) return null;
-    if (records.isGeo(prn)) {
-        if (set.ppp_b2b) |source| if (source.frame(prn, index)) |f| return f;
-        return encodePppFrame(&ppp_b2b.null_message, prn, false);
-    }
     const m = messageBits(set, prn, slot(index)) catch unreachable;
-    return encodeFrame(&m, prn);
+    return b2b.encodeFrame(&m, prn);
 }

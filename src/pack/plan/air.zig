@@ -16,7 +16,7 @@ pub fn air(set: *const NavSet, binding: *const Binding, carried: *const gnss.pay
             const health = reference.attributesFor(family orelse gnss.spec.get(signal).family).signalStatus(signal);
             const status: gnss.air.Status = if (!health.flies()) .dead else if (family == null) .not_allocated else .on_air;
             // The B2b that carries PPP-B2b has no group delay of its own: it flies at B3I's, the BDS clock reference.
-            if (signal == .b2b and gnss.payload.pppB2b(reference.record.sat, carried)) return .{ .status = status, .health = health, .delay_s = .initFill(0), .origin = .convention };
+            if (family == .ppp_b2b) return .{ .status = status, .health = health, .delay_s = .initFill(0), .origin = .convention };
             const data = reference.delay(signal, .data);
             return .{
                 .status = status,

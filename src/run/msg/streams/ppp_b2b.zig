@@ -6,7 +6,6 @@ const common = @import("common.zig");
 const types = core.types;
 const GpsTime = core.time.GpsTime;
 const ppp = gnss.bds.ppp_b2b;
-const bcnav3 = gnss.bds.bcnav3;
 const Kepler = gnss.reference.Kepler;
 const corrections = @import("corrections.zig");
 const inputs = @import("shared").stage.messages.inputs;
@@ -266,8 +265,8 @@ pub const Stream = struct {
         return until;
     }
 
-    pub fn frame(self: *const Stream, prn: u8, s: i64) ?bcnav3.Frame {
+    pub fn frame(self: *const Stream, prn: u8, s: i64) ?ppp.Frame {
         const slot = self.ring.get(s) orelse return null;
-        return bcnav3.encodePppFrame(&slot.message, prn, slot.available);
+        return ppp.encodeFrame(&slot.message, prn, slot.available);
     }
 };
