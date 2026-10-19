@@ -102,7 +102,7 @@ pub const Stage = struct {
     }
 
     fn reselectAt(self: *Stage, epoch: Epoch, ring: *events.Ring) void {
-        const switched_sats = self.observation.advance(epoch);
+        const switched_sats = self.observation.begin(epoch);
         for (types.System.all) |system| {
             const switched = switched_sats.get(system);
             var sats = system.satellites();

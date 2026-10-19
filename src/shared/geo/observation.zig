@@ -129,6 +129,14 @@ pub const Observation = struct {
     }
 
     pub fn advance(self: *Observation, epoch: Epoch) std.EnumArray(types.System, types.SatSet) {
+        const switched = self.begin(epoch);
+        for (0..self.entries.len) |i| self.correct(i);
+        return switched;
+    }
+
+    // The window's step and the second's ends; correct then makes each track's corrections, in any order and on any
+    // thread.
+    pub fn begin(self: *Observation, epoch: Epoch) std.EnumArray(types.System, types.SatSet) {
         const switched = self.window.advance(epoch);
         const t = core.time.atEpoch(self.window.b.scenario.start, self.window.base());
         switch (self.window.move) {
@@ -144,23 +152,31 @@ pub const Observation = struct {
         }
         for (self.window.tracks, self.entries) |*tr, *entry| {
             entry.geometry = tr.ready();
-            const ready = entry.geometry orelse continue;
-            if (tr.move == .begun) entry.delays = tr.ephemeris.delaySnapshot();
-            switch (tr.move) {
-                .kept => {},
-                .shifted => {
-                    entry.corrections[0] = entry.corrections[1];
-                    entry.corrections[1] = corrections(tr, &ready.knots[1], self.window.ends[1], &self.ends[1]);
-                },
-                .begun => {
-                    entry.corrections = .{
-                        corrections(tr, &ready.knots[0], self.window.ends[0], &self.ends[0]),
-                        corrections(tr, &ready.knots[1], self.window.ends[1], &self.ends[1]),
-                    };
-                },
-            }
+            if (entry.geometry != null and tr.move == .begun) entry.delays = tr.ephemeris.delaySnapshot();
         }
         return switched;
+    }
+
+    pub fn moved(self: *const Observation) bool {
+        for (self.window.tracks, self.entries) |*tr, *entry| if (entry.geometry != null and tr.move != .kept) return true;
+        return false;
+    }
+
+    pub fn correct(self: *Observation, i: usize) void {
+        const tr = &self.window.tracks[i];
+        const entry = &self.entries[i];
+        const ready = entry.geometry orelse return;
+        switch (tr.move) {
+            .kept => {},
+            .shifted => {
+                entry.corrections[0] = entry.corrections[1];
+                entry.corrections[1] = corrections(tr, &ready.knots[1], self.window.ends[1], &self.ends[1]);
+            },
+            .begun => entry.corrections = .{
+                corrections(tr, &ready.knots[0], self.window.ends[0], &self.ends[0]),
+                corrections(tr, &ready.knots[1], self.window.ends[1], &self.ends[1]),
+            },
+        }
     }
 
     fn prepare(self: *Observation, t: GpsTime, rx: receiver.Frame, out: *Endpoint) void {

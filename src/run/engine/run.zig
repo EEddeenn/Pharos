@@ -77,7 +77,7 @@ pub const Block = struct {
 };
 
 pub const Run = struct {
-    pub const Job = struct { epochs: u32 = 0, first: Epoch = .zero, gain: f32 = 1, out: []u8 = &.{}, rows: geometry.Segment = .{ .first = .zero, .count = 0 } };
+    pub const Job = struct { epochs: u32 = 0, first: Epoch = .zero, gain: f32 = 1, out: []u8 = &.{}, rows: geometry.Segment = .{ .first = .zero, .count = 0 }, tracks: u32 = 0 };
 
     gpa: std.mem.Allocator,
     threaded: Io.Threaded,
@@ -315,7 +315,7 @@ pub const Run = struct {
     }
 
     fn runJob(self: *Run, job: Job) void {
-        const count = job.epochs * (1 + self.sub_tiles) + job.rows.count;
+        const count = job.epochs * (1 + self.sub_tiles) + job.rows.count + job.tracks;
         for (self.ready[0..job.epochs]) |*r| r.store(false, .monotonic);
         if (self.pool) |p| p.run(job, count) else {
             var i: u32 = 0;
@@ -335,6 +335,8 @@ pub const Run = struct {
         };
         var job = window;
         while (self.geometry.nextSegment(&self.events)) |segment| {
+            // The tracks that moved are corrected, all of them, before any row of the segment is made.
+            if (self.geometry.observation.moved()) self.runJob(.{ .tracks = @intCast(self.geometry.observation.entries.len) });
             // A row or two alone are not worth waking the workers for.
             if (job.epochs == 0 and segment.count <= 2) {
                 for (0..segment.count) |k| self.geometry.produceRows(segment.first.plus(k));
@@ -358,6 +360,7 @@ pub const Run = struct {
     }
 
     pub fn runTask(self: *Run, worker_id: usize, job: Job, index: u32) void {
+        if (job.tracks != 0) return self.geometry.observation.correct(index);
         if (index < job.epochs) {
             self.channels.deriveEpoch(index, &self.power);
             return self.ready[index].store(true, .release);
