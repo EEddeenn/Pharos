@@ -336,11 +336,12 @@ pub const Run = struct {
         if (!every) for (self.channels.table.channels.items) |c| {
             self.geometry.needed[c.track] = true;
         };
+        // A block split only where a second ends keeps its geometry; one a track refreshes inside is read throughout.
+        if (self.passesThrough(first, count) and !self.geometry.refreshInside(first, count)) self.geometry.endsOnly();
         var job = window;
         while (self.geometry.nextSegment(&self.events)) |segment| {
             // The tracks that moved are corrected, all of them, before any row of the segment is made.
             if (self.geometry.observation.moved()) self.runJob(.{ .tracks = @intCast(self.geometry.observation.entries.len) });
-            if (segment.count == count + 1 and self.passesThrough(first, count)) self.geometry.endsOnly();
             // A row or two alone are not worth waking the workers for.
             if (job.epochs == 0 and segment.count <= 2) {
                 for (0..segment.count) |k| self.geometry.produceRows(segment.first.plus(k));

@@ -128,6 +128,15 @@ pub const Stage = struct {
         return false;
     }
 
+    // Whether a track refreshes after the block's first row and by its last: its geometry may change inside the block.
+    pub fn refreshInside(self: *const Stage, first: Epoch, count: u32) bool {
+        const last = core.time.atEpoch(self.start, first.plus(count));
+        for (self.observation.window.tracks) |*track| {
+            if (!last.lessThan(track.nextInstant(self.b))) return true;
+        }
+        return false;
+    }
+
     pub fn nextSegment(self: *Stage, ring: *events.Ring) ?Segment {
         const buffer = &self.buffers[self.writing];
         const last = buffer.first.plus(buffer.count);
