@@ -47,7 +47,7 @@ pub const Set = struct {
     }
 
     pub fn hasRecord(self: *const Set, prn: u8) bool {
-        return self.data.hasRecord(prn) and (allocation.carriesPppB2b(prn) or (self.data.eop != null and self.data.utc != null));
+        return allocation.carriesPppB2b(prn) or (self.data.hasRecord(prn) and self.data.eop != null and self.data.utc != null);
     }
 };
 
