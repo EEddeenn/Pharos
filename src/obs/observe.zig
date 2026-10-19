@@ -105,25 +105,23 @@ pub const Evaluator = struct {
             if (ready.geometry.columnsAt(t).el_rad < mask_rad) continue;
             if (pending) |first| {
                 const pair = geo.observation.evalPair(.{ first.ready, ready }, .{ rx, before, after }, t);
-                self.satellites[count] = self.project(first.index, first.ready, pair[0], power, &used);
-                self.satellites[count + 1] = self.project(index, ready, pair[1], power, &used);
-                count += 2;
+                self.project(first.index, first.ready, pair[0], power, &count, &used);
+                self.project(index, ready, pair[1], power, &count, &used);
                 pending = null;
             } else {
                 pending = .{ .index = index, .ready = ready };
             }
         }
         if (pending) |last| {
-            self.satellites[count] = self.project(last.index, last.ready, .{
+            self.project(last.index, last.ready, .{
                 .center = geo.observation.evalSat(last.ready, rx, t),
                 .doppler = .of(last.ready, before, after, t),
-            }, power, &used);
-            count += 1;
+            }, power, &count, &used);
         }
         return .{ .t = t, .sats = self.satellites[0..count] };
     }
 
-    fn project(self: *Evaluator, index: usize, ready: geo.observation.Ready, sample: geo.observation.Sample, power: *const Power, used: *usize) Satellite {
+    fn project(self: *Evaluator, index: usize, ready: geo.observation.Ready, sample: geo.observation.Sample, power: *const Power, count: *usize, used: *usize) void {
         const sat = sample.center;
         const sat_id = self.geometry.frame().tracks[index].sat;
         const span = self.spans[index];
@@ -146,6 +144,8 @@ pub const Evaluator = struct {
             };
             used.* += 1;
         }
-        return .{ .sat = sat_id, .signals = self.values[first..used.*] };
+        if (used.* == first) return;
+        self.satellites[count.*] = .{ .sat = sat_id, .signals = self.values[first..used.*] };
+        count.* += 1;
     }
 };
