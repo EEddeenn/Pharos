@@ -25,6 +25,8 @@ pub const half_week_s = 302_400;
 
 const delay_limit_s = 0x1p-23;
 const d1d2_tgd_limit_s = 512e-10;
+// GNAV's Delta tau_n has four magnitude bits of 2^-30 s: a value fits while it rounds to 15 units at most.
+const delta_tau_n_limit_s = 15.5 * 0x1p-30;
 
 fn epochStepMs(source: records.NavSource) u32 {
     return switch (source) {
@@ -43,6 +45,7 @@ fn onGrid(t: time.GpsTime, scale: time.WeekScale, step_ms: u32) bool {
 fn delayLimit(term: records.GroupDelayTerm) f64 {
     return switch (term) {
         .tgd_b1i, .tgd_b2i => d1d2_tgd_limit_s,
+        .delta_tau_n => delta_tau_n_limit_s,
         else => delay_limit_s,
     };
 }

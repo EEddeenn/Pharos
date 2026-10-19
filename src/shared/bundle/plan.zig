@@ -121,6 +121,9 @@ fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet,
             .glonass => |k| {
                 if (sat.system != .glo or k >= set.glonass.len) return "a leg's record is not a GLONASS record of the pool";
                 if (!std.meta.eql(set.glonass[k].sat, sat)) return "a leg's GLONASS record belongs to another satellite";
+                if (set.glonass[k].delta_tau_n) |own| {
+                    if (binding.group_delay.get(.delta_tau_n) != own) return "a leg replaces a group delay declared by its reference";
+                }
             },
         }
     }
