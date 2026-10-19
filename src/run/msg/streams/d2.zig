@@ -47,8 +47,7 @@ pub const Stream = struct {
         const published = if (augmentation.PreparedPublication.at(self.publications, t)) |p| &p.content else null;
         var corrections: [d1d2.integrity.max_packets]?f64 = @splat(null);
         if (published) |p| if (p.integrity) |list| {
-            const start = self.b.plan.start;
-            const at = if (t.lessThan(start)) start else t;
+            const at = self.source.notBefore(t);
             const rx = geo.receiver.at(&self.b.trajectory, at.secondsSince(self.b.scenario.start));
             for (list.svid[0..list.count], corrections[0..list.count]) |svid, *c| {
                 c.* = self.equivalentClock(types.SatId.at(.bds, svid - 1), at, rx.pos);
@@ -69,9 +68,7 @@ pub const Stream = struct {
     }
 
     fn equivalentClock(self: *Stream, sat: types.SatId, t: GpsTime, rx: core.coord.Ecef) ?f64 {
-        const start = self.b.plan.start;
-        const cycle = d1d2.cycleStart(t);
-        const flight = inputs.d1d2Reference(self.b, self.allocation, sat, if (cycle.lessThan(start)) start else cycle) orelse return null;
+        const flight = inputs.d1d2Reference(self.b, self.allocation, sat, self.source.notBefore(d1d2.cycleStart(t))) orelse return null;
         const c = self.source.correctionAgainst(sat, flight.record, &flight.prepared.decoded, t, .icd_periodic) orelse return null;
         const m = c.equivalentClock(rx);
         return if (std.math.isFinite(m)) m else null;

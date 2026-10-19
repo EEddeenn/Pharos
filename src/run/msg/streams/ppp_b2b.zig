@@ -129,8 +129,7 @@ pub const Stream = struct {
     }
 
     fn correction(self: *Stream, e: *Entry, t: GpsTime) ?CorrectedState {
-        const b = self.source.b;
-        const record = inputs.recordOf(b, self.served.allocation, systems.get(e.corrected).family, e.sat, if (t.lessThan(b.plan.start)) b.plan.start else t) orelse return null;
+        const record = inputs.recordOf(self.source.b, self.served.allocation, systems.get(e.corrected).family, e.sat, self.source.notBefore(t)) orelse return null;
         e.follow(record);
         const reference = if (e.broadcast) |*r| r else return null;
         const value = self.source.correctionAgainst(e.sat, record, &reference.parameters, t, .icd_periodic) orelse return null;

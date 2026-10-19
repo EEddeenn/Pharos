@@ -103,7 +103,7 @@ pub const Stream = struct {
         const epoch = if (t_od.lessThan(self.first)) self.first else t_od;
         const entry = self.ring.get(epochIndex(epoch)) orelse return null;
         if (!entry.t_od.eql(epoch)) return null;
-        const at = if (t.lessThan(plan.start)) plan.start else t;
+        const at = self.source.notBefore(t);
         var out: dc.Batch = .{ .t_od = entry.t_od };
         for (&out.corrections, entry.fits, 0..) |*c, fit, i| {
             const f = fit orelse continue;

@@ -29,12 +29,19 @@ pub const Source = struct {
     scale: types.System,
     satellites: [256]track.provider.Track = @splat(.{}),
 
+    // A frame the run starts inside of is made from the state at the start: nothing is known before it.
+    pub fn notBefore(self: *const Source, t: GpsTime) GpsTime {
+        return if (t.lessThan(self.b.plan.start)) self.b.plan.start else t;
+    }
+
     pub fn correctionOf(self: *Source, sat: types.SatId, t: GpsTime, relativity: corrections.Relativity) ?corrections.Correction {
-        return corrections.compute(self.trackAt(sat, t), t, relativity, self.b.plan.scaleOffset(self.scale, t));
+        const at = self.notBefore(t);
+        return corrections.compute(self.trackAt(sat, at), at, relativity, self.b.plan.scaleOffset(self.scale, at));
     }
 
     pub fn correctionAgainst(self: *Source, sat: types.SatId, record: gnss.reference.Kepler, reference: *const gnss.kepler_parameters.Parameters, t: GpsTime, relativity: corrections.Relativity) ?corrections.Correction {
-        return corrections.against(self.trackAt(sat, t), record, reference, t, relativity, self.b.plan.scaleOffset(self.scale, t));
+        const at = self.notBefore(t);
+        return corrections.against(self.trackAt(sat, at), record, reference, at, relativity, self.b.plan.scaleOffset(self.scale, at));
     }
 
     fn trackAt(self: *Source, sat: types.SatId, t: GpsTime) *track.provider.Track {
