@@ -55,7 +55,7 @@ pub const Set = struct {
         if (data.utc == null) return;
         for (&data.sv) |*entry| {
             const sv = if (entry.*) |*sv| sv else continue;
-            if (sv.misfit != null) continue;
+            if (sv.value() == null) continue;
             if (!field.fits(klobuchar_fields.Coefficients, &klobuchar_fields.coefficients, &data.klobuchar)) return error.FieldOverflow;
             return;
         }
@@ -66,7 +66,7 @@ pub const Set = struct {
         return &publication.content;
     }
 
-    pub fn isfAt(self: *const Set, sv: *const cnvx.Sv, t: GpsTime) ?bool {
+    pub fn isfAt(self: *const Set, sv: *const cnvx.Content, t: GpsTime) ?bool {
         const content = self.contentAt(t);
         return cnvx.cnav2Isf(sv, if (content) |c| c.sources.integrity else null);
     }
@@ -81,11 +81,11 @@ const sf3_data_bits = 250;
 const reduced_packets = 6;
 const reduced_packets_end = 233;
 
-pub fn subframe2Bits(sv: *const cnvx.Sv, itow: u8, isf: ?bool) Error!Sf2 {
+pub fn subframe2Bits(sv: *const cnvx.Content, itow: u8, isf: ?bool) Error!Sf2 {
     var out: Sf2 = .{};
     var w = out.writer();
     if (isf) |status| {
-        try field.encode(Parameters, &tables.sf2, &sv.parameters, tables.Ctx2{ .itow = itow, .isf = status }, &w);
+        try field.encode(Parameters, &tables.sf2, sv.value().?, tables.Ctx2{ .itow = itow, .isf = status }, &w);
     } else {
         w.writeAlternating(sf2_data_bits);
     }
@@ -100,11 +100,12 @@ pub fn subframe3Bits(set: *const Set, prn: u8, page: Page) Error!Sf3 {
     switch (page) {
         .utc => {
             const sv = &data.sv[prn - 1].?;
-            const utc = if (sv.misfit == null) data.utc else null;
+            const parameters = sv.value();
+            const utc = if (parameters != null) data.utc else null;
             if (utc) |*block| {
                 try field.encode(time_parameters.Utc, &tables.sf3_page1_head, block, tables.Ctx3{ .prn = prn }, &w);
                 try field.encode(klobuchar_fields.Coefficients, &klobuchar_fields.coefficients, &data.klobuchar, .{}, &w);
-                try field.encode(Parameters, &tables.sf3_page1_tail, &sv.parameters, .{}, &w);
+                try field.encode(Parameters, &tables.sf3_page1_tail, parameters.?, .{}, &w);
             } else w.writeAlternating(sf3_data_bits);
         },
         .eop => |ordinal| {

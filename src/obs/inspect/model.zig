@@ -233,10 +233,10 @@ pub const Navigation = struct {
 pub const Needs = struct { model: bool, navigation: bool };
 pub const Result = struct { model: ?Model = null, navigation: ?Navigation = null };
 
-pub fn project(b: *const bundle.Bundle, ephemeris: *const provider.Track, state: ?provider.State, sat: types.SatId, signal: types.Signal, carrier: ?types.NavFamily, t: GpsTime, needs: Needs) Result {
+pub fn project(b: *const bundle.Bundle, ephemeris: *const provider.Track, state: ?provider.State, sat: types.SatId, signal: types.Signal, t: GpsTime, needs: Needs) Result {
     return .{
         .model = if (needs.model) modelValue(b, ephemeris, state, sat, signal, t) else null,
-        .navigation = if (needs.navigation) if (ephemeris.current) |current| navigation(current, signal, carrier) else .{ .availability = .unavailable, .reason = .no_available_record } else null,
+        .navigation = if (needs.navigation) if (ephemeris.current) |current| navigation(&b.navigation, current, signal) else .{ .availability = .unavailable, .reason = .no_available_record } else null,
     };
 }
 
@@ -308,13 +308,13 @@ fn ionosphere(configuration: bundle.ionosphere.Configuration, system: types.Syst
     return out;
 }
 
-fn navigation(current: shared.track.selection.Selection, signal: types.Signal, carrier: ?types.NavFamily) Navigation {
+fn navigation(set: *const bundle.navigation.NavSet, current: shared.track.selection.Selection, signal: types.Signal) Navigation {
     const row = current.air[gnss.spec.slot(signal)];
     // The record's own reasons alone: the allocation is the channel's `broadcasts`.
     const serves = row.status == .on_air or row.status == .not_allocated;
     return switch (current.record) {
         .kepler => |reference| blk: {
-            const declared = reference.declaration(signal, carrier);
+            const declared = if (row.declared) |k| gnss.reference.attributesOf(reference.record, &set.kepler[k]) else null;
             break :blk .{
                 .availability = .available,
                 .family = reference.record.source().family(),

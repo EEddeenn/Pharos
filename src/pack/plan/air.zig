@@ -4,37 +4,41 @@ const gnss = shared.gnss;
 const bundle = shared.bundle;
 const types = shared.core.types;
 const NavSet = bundle.navigation.NavSet;
-const Binding = bundle.plan.Binding;
+const Resolved = @import("resolve.zig").Resolved;
 const Row = gnss.air.Row;
 
-pub fn air(set: *const NavSet, binding: *const Binding, carried: *const gnss.payload.Carried, signal: types.Signal) Row {
+pub fn air(set: *const NavSet, resolved: *const Resolved, carried: *const gnss.payload.Carried, signal: types.Signal) Row {
     const family = carried.get(signal);
-    switch (binding.reference) {
+    switch (resolved.reference) {
         .kepler => {
-            const reference = binding.kepler(set).?;
-            const declared = if (reference.declaration(signal, family)) |extra| extra.signalStatus(signal) else .unstated;
+            const reference = resolved.kepler(set).?;
+            const source = reference.declaration(signal, family);
+            const declared = if (source) |s| reference.attribute(s).?.signalStatus(signal) else .unstated;
             const health: gnss.health.Status = switch (signal) {
                 .b1c, .b2a, .b2b => if (wholeSatelliteUnhealthy(reference)) .degraded else declared,
                 else => declared,
             };
             const status: gnss.air.Status = if (!health.flies()) .dead else if (family == null) .not_allocated else .on_air;
+            const record = if (source) |s| resolved.attributes.from.get(s).? else null;
             // The B2b that carries PPP-B2b has no group delay of its own: it flies at B3I's, the BDS clock reference.
-            if (family == .ppp_b2b) return .{ .status = status, .health = health, .delay_s = .initFill(0), .origin = .convention };
+            if (family == .ppp_b2b) return .{ .status = status, .health = health, .delay_s = .initFill(0), .origin = .convention, .declared = record };
             const data = reference.delay(signal, .data);
             return .{
                 .status = status,
                 .health = health,
                 .delay_s = .init(.{ .data = data orelse 0, .pilot = reference.delay(signal, .pilot) orelse 0 }),
                 .origin = origin(signal, data),
+                .declared = record,
             };
         },
         .glonass => |i| {
-            const delay = gnss.delay.forGlonass(&binding.group_delay, signal);
+            const delay = gnss.delay.forGlonass(&resolved.group_delay, signal);
             return .{
                 .status = if (family == null) .not_allocated else .on_air,
                 .health = gnss.health.flagged(!set.glonass[i].health),
                 .delay_s = .initFill(delay orelse 0),
                 .origin = origin(signal, delay),
+                .declared = null,
             };
         },
     }
@@ -53,10 +57,10 @@ fn origin(signal: types.Signal, delay: ?f64) gnss.air.Origin {
     return if (gnss.delay.convention(signal)) .convention else .broadcast;
 }
 
-pub fn rows(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, binding: *const Binding, carried: *const gnss.payload.Carried) std.mem.Allocator.Error![]const Row {
+pub fn rows(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, resolved: *const Resolved, carried: *const gnss.payload.Carried) std.mem.Allocator.Error![]const Row {
     const out = try arena.alloc(Row, gnss.spec.signalCount(sat.system));
     for (std.meta.tags(types.Signal)) |signal| {
-        if (signal.system() == sat.system) out[gnss.spec.slot(signal)] = air(set, binding, carried, signal);
+        if (signal.system() == sat.system) out[gnss.spec.slot(signal)] = air(set, resolved, carried, signal);
     }
     return out;
 }

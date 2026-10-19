@@ -19,12 +19,13 @@ const bias_validity: has.Validity = .s300;
 const System = struct {
     gnss: has.Gnss,
     system: types.System,
+    family: types.NavFamily,
     cells: []const has.Cell,
 };
 
 const system_table = [_]System{
-    .{ .gnss = .gps, .system = .gps, .cells = &has.gps_cells },
-    .{ .gnss = .galileo, .system = .gal, .cells = &has.galileo_cells },
+    .{ .gnss = .gps, .system = .gps, .family = .lnav, .cells = &has.gps_cells },
+    .{ .gnss = .galileo, .system = .gal, .family = .inav, .cells = &has.galileo_cells },
 };
 
 const carriers = types.System.gal.capacity();
@@ -57,6 +58,7 @@ const Record = struct {
 const Snapshot = struct {
     count: usize = 0,
     corr: [max_sats]corrections.Correction = undefined,
+    issues: [max_sats]u16 = undefined,
     masks: [max_systems]has.SystemMask = undefined,
     iods: [max_systems][has.sat_mask_bits]?u16 = @splat(@splat(null)),
     n_systems: usize = 0,
@@ -74,11 +76,10 @@ const Scratch = struct {
 };
 
 // The issue a correction refers to, as the satellite broadcasts it: LNAV's IODE, or I/NAV's IODnav of 10 bits.
-fn issueOf(c: corrections.Correction) u16 {
-    const record = c.record.record;
-    return switch (record.extra) {
+fn issueOf(eph: *const gnss.records.KeplerEphemeris) u16 {
+    return switch (eph.extra) {
         .inav => |x| x.iod_nav,
-        else => record.iode,
+        else => eph.iode,
     };
 }
 
@@ -144,14 +145,18 @@ pub const Stream = struct {
             var sats = sys.system.satellites();
             while (sats.next()) |sat| {
                 if (!self.served.transmitsAny(has.Cell, sys.cells, sat)) continue;
-                const sample = self.source.correctionOf(sat, t, .dot_product) orelse continue;
-                const source = sample.record.record.source();
-                if (source != .lnav and source != .inav) continue;
+                const content = self.source.contentAt(sat, sys.family, t) orelse continue;
+                const eph = switch (content.*) {
+                    inline .lnav, .inav => |*c| c.value(),
+                    else => unreachable,
+                } orelse continue;
+                const sample = self.source.correctionAgainst(sat, &eph.parameters(), t, .dot_product) orelse continue;
                 const prn = sat.prn();
                 snap.corr[snap.count] = sample;
+                snap.issues[snap.count] = issueOf(eph);
                 snap.count += 1;
                 mask.sats[prn - 1] = true;
-                snap.iods[snap.n_systems][prn - 1] = issueOf(sample);
+                snap.iods[snap.n_systems][prn - 1] = issueOf(eph);
                 for (sys.cells) |c| if (mask.sigs[c.index]) {
                     const on = self.served.transmits(sat, c.signal);
                     snap.cells[snap.n_systems][cells] = on;
@@ -204,9 +209,9 @@ pub const Stream = struct {
 
     fn slowMessage(self: *Stream, s: i64, toh: u12, mask: has.Mask, snap: *const Snapshot, mask_id: u5, iod_set_id: u5) bool {
         const orbit = &self.scratch.orbit;
-        for (snap.corr[0..snap.count], 0..) |c, i| {
+        for (snap.corr[0..snap.count], snap.issues[0..snap.count], 0..) |c, issue, i| {
             const ntw = c.ntw();
-            orbit[i] = .{ .iod = issueOf(c), .radial_m = ntw[0], .in_track_m = ntw[1], .cross_m = ntw[2] };
+            orbit[i] = .{ .iod = issue, .radial_m = ntw[0], .in_track_m = ntw[1], .cross_m = ntw[2] };
         }
         const message: has.Message = .{
             .toh = toh,

@@ -381,6 +381,12 @@ pub fn project(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *cons
     };
 }
 
+/// What a family carries for the satellite on the leg the view's sets were built on.
+fn contentOf(b: *const bundle.Bundle, sat: SatId, comptime family: NavFamily, boundary: GpsTime) ?*const @FieldType(gnss.content.Content, @tagName(family)) {
+    const content = b.plan.contentAt(sat, family, boundary) orelse return null;
+    return &@field(content, @tagName(family));
+}
+
 fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *const gnss.payload.Payload, prepared: messages.Messages, set: ?messages.MessageSet, boundary: GpsTime, until: GpsTime, query_time: GpsTime, sat: SatId, signal: Signal, family: NavFamily, sampled: bool) error{OutOfMemory}!Messages {
     var out: Messages = .{ .family = family };
     if (!sampled) {
@@ -401,10 +407,9 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
     switch (family) {
         inline else => |f| {
             const prepared_set = set orelse return out;
-            const values = @field(prepared_set, @tagName(f)).set;
             switch (f) {
                 .lnav => {
-                    const eph = values.eph[i] orelse return out;
+                    const eph = (contentOf(b, sat, f, boundary) orelse return out).value() orelse return out;
                     const x = eph.extra.lnav;
                     const declared = gnss.gps.messages.Publication.at(prepared.gps, query_time);
                     const integrity = if (declared) |p| p.content.integrity else null;
@@ -423,18 +428,17 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                         .iodcIndex = eph.iodc,
                         .tgdL1caS = eph.group_delay.get(.tgd_l1ca),
                     } };
-                    out.configurationIndex = @truncate(values.health.as_config[i]);
+                    out.configurationIndex = prepared.configuration[i];
                     if (out.publication.gps) |g| if (g.configuration) |codes| {
                         out.configurationIndex = codes[i];
                     };
                 },
                 .cnav, .cnav2 => {
-                    const sv = values.data.sv[i] orelse return out;
-                    if (sv.misfit != null) {
+                    const sv = contentOf(b, sat, f, boundary) orelse return out;
+                    const p = sv.value() orelse {
                         out.reason = .unrepresentable_parameters;
                         return out;
-                    }
-                    const p = sv.parameters;
+                    };
                     const declared = if (f == .cnav) blk: {
                         const publication = gnss.gps.messages.Publication.at(prepared.gps, query_time) orelse break :blk null;
                         break :blk &publication.content;
@@ -442,8 +446,9 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                         const publication = gnss.gps.cnav2.publications.PreparedPublication.at(prepared.cnav2, query_time) orelse break :blk null;
                         break :blk &publication.content.sources;
                     };
-                    const flags = if (f == .cnav) gnss.gps.cnvx.cnavFlags(&sv, if (declared) |c| c.integrity else null, sat.prn()) else null;
-                    const isf = if (f == .cnav2) values.isfAt(&sv, query_time) else if (flags) |v| v.integrity_status else null;
+                    const integrity = if (declared) |c| c.integrity else null;
+                    const flags = if (f == .cnav) gnss.gps.cnvx.cnavFlags(sv, integrity, sat.prn()) else null;
+                    const isf = if (f == .cnav2) gnss.gps.cnvx.cnav2Isf(sv, integrity) else if (flags) |v| v.integrity_status else null;
                     out.toe = .of(p.eph.toe);
                     out.toc = .of(p.eph.toc);
                     out.orbit = .of(p.eph);
@@ -478,8 +483,8 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                     }
                 },
                 .inav, .fnav => {
-                    const sv = values.sv[i] orelse return out;
-                    const eph = sv.eph;
+                    const sv = (contentOf(b, sat, f, boundary) orelse return out).value() orelse return out;
+                    const eph = if (f == .inav) sv.* else sv.eph;
                     out.toe = .of(eph.toe);
                     out.toc = .of(eph.toc);
                     out.orbit = .of(eph.parameters());
@@ -508,7 +513,7 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                     }
                 },
                 .d1d2 => {
-                    const sv = values.sv[i] orelse return out;
+                    const sv = ((contentOf(b, sat, f, boundary) orelse return out).value() orelse return out).sv(.zero);
                     const x = sv.at(query_time).metadata;
                     out.toe = .of(sv.eph.toe);
                     out.toc = .of(sv.eph.toc);
@@ -524,7 +529,7 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                     } };
                 },
                 .bcnav1, .bcnav2, .bcnav3 => {
-                    const sv = values.data.sv[i] orelse return out;
+                    const sv = (contentOf(b, sat, f, boundary) orelse return out).value() orelse return out;
                     out.toe = .of(sv.ephemeris.eph.toe);
                     out.toc = .of(sv.ephemeris.eph.toc);
                     out.orbit = .of(sv.ephemeris.eph);
@@ -551,7 +556,7 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                     });
                 },
                 .gnav => {
-                    const eph = values.eph[i] orelse return out;
+                    const eph = (contentOf(b, sat, f, boundary) orelse return out).value() orelse return out;
                     out.toe = .of(eph.tb);
                     out.toc = out.toe;
                     out.glonassOrbit = .of(eph);
@@ -561,11 +566,11 @@ fn projectMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, payload: *
                         .ftIndex = eph.ft,
                         .enIndex = eph.en,
                         .pIndex = eph.p,
-                        .preparedP1Index = values.p1[i] orelse eph.p1,
+                        .preparedP1Index = eph.p1,
                         .p4 = eph.p4,
                         .mIndex = eph.m,
                         .frequencyChannel = eph.freq.k,
-                        .deltaTauNS = values.delta_tau_n[i],
+                        .deltaTauNS = eph.delta_tau_n,
                     } };
                 },
                 .cnav_has, .ppp_b2b => {

@@ -8,7 +8,7 @@ const GpsTime = core.time.GpsTime;
 const ClockPoly = core.clock.Poly;
 const Leap = core.civil.Leap;
 const records = gnss.records;
-const d1d2 = gnss.bds.d1d2;
+const Content = gnss.content.Content;
 
 pub const grid_ms: i64 = 60_000;
 
@@ -31,32 +31,30 @@ pub fn nextLegBoundary(system: types.System, t: GpsTime, leap: Leap) GpsTime {
 
 pub const Ref = union(enum) { kepler: u32, glonass: u32 };
 
+/// What a satellite flies on a leg: its reference record, the group delays the leg resolves, one row per signal of its
+/// system, and one content per family it needs, in the families' order.
 pub const Binding = struct {
     reference: Ref,
     group_delay: records.GroupDelays = .{},
-    attributes: gnss.reference.Attributes = .{},
-    glonass_p1: ?u2 = null,
     air: []const gnss.air.Row,
+    contents: []const Content = &.{},
 
     pub fn kepler(self: *const Binding, set: *const navigation.NavSet) ?gnss.reference.Kepler {
         return switch (self.reference) {
-            .kepler => |k| .{ .record = &set.kepler[k], .group_delay = &self.group_delay, .attributes = &self.attributes },
+            .kepler => |k| .{ .record = &set.kepler[k], .group_delay = &self.group_delay },
             .glonass => null,
         };
+    }
+
+    pub fn content(self: *const Binding, family: types.NavFamily) ?*const Content {
+        for (self.contents) |*c| if (std.meta.activeTag(c.*) == family) return c;
+        return null;
     }
 };
 
 pub const Leg = struct { from_ms: u64, binding: ?Binding };
 
 pub const Interval = struct { first: GpsTime, last: GpsTime };
-
-pub const D1d2Entry = struct {
-    sat: types.SatId,
-    from_ms: u64,
-    record: u32,
-    interval: d1d2.Interval,
-    result: d1d2.Preparation,
-};
 
 pub const Timeline = struct {
     sat: types.SatId,
@@ -91,7 +89,7 @@ pub fn slot(sat: types.SatId) usize {
     return first_slot.get(sat.system) + sat.index;
 }
 
-fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet, start: GpsTime, span_ms: u64, leap: Leap) ?[]const u8 {
+fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet, payload: *const gnss.payload.Payload, start: GpsTime, span_ms: u64, leap: Leap) ?[]const u8 {
     var last: ?u64 = null;
     for (legs) |leg| {
         if (leg.from_ms > span_ms) return "a leg starts past the plan's span";
@@ -103,15 +101,22 @@ fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet,
         const binding = leg.binding orelse continue;
         const ref = binding.reference;
         if (binding.air.len != gnss.spec.signalCount(sat.system)) return "a leg does not carry one answer per signal of its system";
+        for (binding.air) |row| if (row.declared) |k| {
+            if (ref != .kepler or k >= set.kepler.len or set.kepler[k].sat != sat) return "a signal's health is declared by no Keplerian record of its satellite";
+        };
         if (gnss.plausible.groupDelays(&binding.group_delay) != null) return "a leg's group delay is outside its ICD field";
-        for (std.enums.values(records.NavSource)) |source| {
-            if (binding.attributes.get(source) != null and source.system() != sat.system) return "a leg's message attributes belong to another source";
+        var previous: ?types.NavFamily = null;
+        for (binding.contents) |*content| {
+            const family = std.meta.activeTag(content.*);
+            if (previous) |p| if (@backingInt(family) <= @backingInt(p)) return "a leg's contents are not one per family, in the families' order";
+            previous = family;
+            if (!payload.carries(sat, family)) return "a leg carries a content of a family its satellite does not carry";
+            if (!content.valid(sat, leap)) return "a leg's content does not fit its family's messages";
         }
         switch (ref) {
             .kepler => |k| {
                 if (sat.system == .glo or k >= set.kepler.len) return "a leg's record is not a Keplerian record of the pool";
                 if (!std.meta.eql(set.kepler[k].sat, sat)) return "a leg's Keplerian record belongs to another satellite";
-                if (binding.glonass_p1 != null) return "a Keplerian leg carries a GLONASS P1 word";
                 for (std.enums.values(records.GroupDelayTerm)) |term| {
                     if (set.kepler[k].group_delay.get(term)) |value| {
                         if (binding.group_delay.get(term) != value) return "a leg replaces a group delay declared by its reference";
@@ -143,7 +148,6 @@ pub const Plan = struct {
     start: GpsTime,
     span_ms: u64,
     timelines: []const Timeline,
-    d1d2: []const D1d2Entry = &.{},
     almanacs: Almanacs,
     scales: std.EnumMap(types.System, ClockPoly),
     leap: Leap,
@@ -183,42 +187,16 @@ pub const Plan = struct {
         return false;
     }
 
-    pub fn validate(self: *const Plan, set: *const navigation.NavSet, config: *const scenario.Scenario) ?[]const u8 {
+    pub fn validate(self: *const Plan, set: *const navigation.NavSet) ?[]const u8 {
         if (self.timelines.len != satellite_count) return "the plan does not carry one timeline per satellite";
         if (self.scales.contains(.gps)) return "the plan declares a time scale for GPS";
         if (!self.leap.valid()) return "the leap schedule contradicts the built-in history, or its change exceeds one second or is not at UTC midnight";
 
+        const payload = gnss.payload.at(self.start);
         for (self.timelines, 0..) |timeline, i| {
             if (!timeline.sat.valid() or slot(timeline.sat) != i) return "the timelines are not in the canonical satellite order";
-            if (validLegs(timeline.legs, timeline.sat, set, self.start, self.span_ms, self.leap)) |why| return why;
+            if (validLegs(timeline.legs, timeline.sat, set, &payload, self.start, self.span_ms, self.leap)) |why| return why;
         }
-
-        var prepared_index: usize = 0;
-        if (config.samples != null and config.carries(.d1d2)) {
-            const payload = gnss.payload.at(self.start);
-            for (self.timelines) |timeline| {
-                if (!payload.carries(timeline.sat, .d1d2)) continue;
-                for (timeline.legs, 0..) |*leg, i| {
-                    const binding = if (leg.binding) |*b| b else continue;
-                    const reference = binding.kepler(set) orelse continue;
-                    const interval = self.legInterval(timeline.legs, i);
-                    if (prepared_index == self.d1d2.len) return "the plan omits a D1/D2 preparation";
-                    const entry = &self.d1d2[prepared_index];
-                    if (!std.meta.eql(entry.sat, timeline.sat) or
-                        entry.from_ms != leg.from_ms or
-                        entry.record != binding.reference.kepler)
-                    {
-                        return "the D1/D2 preparations are not in satellite and leg order";
-                    }
-                    if (!entry.interval.first.eql(interval.first) or !entry.interval.last.eql(interval.last)) {
-                        return "a D1/D2 preparation covers another service interval";
-                    }
-                    if (entry.result == .ready and !entry.result.ready.valid(reference)) return "a D1/D2 preparation has invalid broadcast parameters";
-                    prepared_index += 1;
-                }
-            }
-        }
-        if (prepared_index != self.d1d2.len) return "the plan carries an unused D1/D2 preparation";
 
         for (self.almanacs.gps) |a| if (a.sat.system != .gps or !a.sat.valid()) return "a GPS almanac names another system's satellite";
         for (self.almanacs.galileo) |a| if (a.sat.system != .gal or !a.sat.valid()) return "a Galileo almanac names another system's satellite";
@@ -229,34 +207,6 @@ pub const Plan = struct {
             if (a.na < 1 or a.na > core.civil.glonass_cycle_days or a.n4 < 1) return "a GLONASS almanac's day NA or interval N4 is outside its range";
         }
         return null;
-    }
-
-    pub fn d1d2Leg(self: *const Plan, sat: types.SatId, from_ms: u64) ?*const D1d2Entry {
-        var first: usize = 0;
-        var end = self.d1d2.len;
-        while (first < end) {
-            const middle = first + (end - first) / 2;
-            const entry = &self.d1d2[middle];
-            if (std.meta.eql(entry.sat, sat) and entry.from_ms == from_ms) return entry;
-            if (slot(entry.sat) < slot(sat) or (std.meta.eql(entry.sat, sat) and entry.from_ms < from_ms)) {
-                first = middle + 1;
-            } else {
-                end = middle;
-            }
-        }
-        return null;
-    }
-
-    pub fn d1d2At(self: *const Plan, sat: types.SatId, t: GpsTime) ?*const gnss.bds.d1d2.Prepared {
-        const leg = self.legAt(sat, t) orelse return null;
-        if (leg.binding == null) return null;
-        const entry = self.d1d2Leg(sat, leg.from_ms) orelse return null;
-        return if (entry.result == .ready) &entry.result.ready else null;
-    }
-
-    pub fn legInterval(self: *const Plan, legs: []const Leg, index: usize) Interval {
-        const until_ms = if (index + 1 < legs.len) legs[index + 1].from_ms else self.span_ms;
-        return .{ .first = self.start.addMs(@intCast(legs[index].from_ms)), .last = self.start.addMs(@intCast(until_ms)) };
     }
 
     fn legAt(self: *const Plan, sat: types.SatId, t: GpsTime) ?*const Leg {
@@ -279,5 +229,11 @@ pub const Plan = struct {
     pub fn recordAt(self: *const Plan, sat: types.SatId, t: GpsTime) ?Ref {
         const binding = self.bindingAt(sat, t) orelse return null;
         return binding.reference;
+    }
+
+    /// What a family carries for a satellite on the leg in force at `t`.
+    pub fn contentAt(self: *const Plan, sat: types.SatId, family: types.NavFamily, t: GpsTime) ?*const Content {
+        const binding = self.bindingAt(sat, t) orelse return null;
+        return binding.content(family);
     }
 };

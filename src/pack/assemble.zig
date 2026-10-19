@@ -71,7 +71,6 @@ pub fn assemble(arena: std.mem.Allocator, source: nav.files.Source, text: []cons
     try plan.reportCoverage(&flight, &s, run_ms, diags);
     plan.setGlonassFrequencies(&set);
     try plan.trim(arena, &set, &flight, product);
-    try plan.d1d2.prepare(arena, &s, &set, &flight);
     try plan.warnUnfit(&s, &set, &flight, diags);
 
     const b: bundle.Bundle = .{ .scenario = s, .navigation = set, .plan = flight, .trajectory = traj };
@@ -105,7 +104,7 @@ fn checkMessages(arena: std.mem.Allocator, b: *const bundle.Bundle, run_ms: u64,
             const storage = try arena.create(messages.Set(family));
             var t = s.start;
             while (t.lessThan(end)) {
-                messages.build(family, storage, b, &payload, &broadcast, prepared, .{}, t) catch |e| {
+                messages.build(family, storage, b, &broadcast, prepared, .{}, t) catch |e| {
                     try diags.err(.out_of_range, "ephemeris", "{s} at {d} s into the run: the navigation data cannot be encoded into its message set ({s})", .{ family.name(), into(s, t), encoding(e) });
                     return error.InvalidInput;
                 };

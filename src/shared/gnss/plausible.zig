@@ -7,7 +7,6 @@ const klobuchar_fields = @import("klobuchar_fields.zig");
 const nequick_fields = @import("galileo/iono_fields.zig");
 const bdgim_fields = @import("bds/iono_fields.zig");
 const records = @import("records.zig");
-const Kepler = @import("reference.zig").Kepler;
 const auxiliary = @import("auxiliary.zig");
 const kepler_orbit = @import("kepler.zig");
 const lnav = @import("gps/lnav.zig");
@@ -145,23 +144,6 @@ pub fn eop(e: *const auxiliary.Eop) ?[:0]const u8 {
     if (field.misfit(auxiliary.Eop, &bds_parameters.eop, e)) |name| return name;
     if (!transmissionNear(e.reference, e.transmitted)) return "t_tm";
     return null;
-}
-
-pub const Unfit = union(enum) { field: [:0]const u8, health: [:0]const u8 };
-
-pub fn converted(e: Kepler, family: records.NavSource) ?Unfit {
-    switch (family) {
-        .cnav, .cnav2 => {
-            const failure = cnvx.Sv.fromReference(e, family).misfit orelse return null;
-            return switch (failure) {
-                .field => |name| .{ .field = name },
-                .health => |signals| .{ .health = signals },
-            };
-        },
-        .bcnav1, .bcnav2, .bcnav3 => return if (bcnav.Source.fromReference(e, family).misfit()) |name| Unfit{ .field = name } else null,
-        .d1d2 => return if (d1d2.misfit(e.record)) |name| Unfit{ .field = name } else null,
-        .lnav, .inav, .fnav => return null,
-    }
 }
 
 pub fn klobuchar(m: iono.klobuchar.Model) ?[:0]const u8 {

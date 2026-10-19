@@ -1,4 +1,3 @@
-const std = @import("std");
 const core = @import("shared").core;
 const gnss = @import("shared").gnss;
 const bundle = @import("shared").bundle;
@@ -7,7 +6,6 @@ const common = @import("common.zig");
 const dc = gnss.gps.dc;
 const types = core.types;
 const GpsTime = core.time.GpsTime;
-const Reference = gnss.reference.Kepler;
 
 const ring_len = 16;
 const samples_len = 8;
@@ -16,7 +14,8 @@ const Fit = struct { correction: dc.Correction, binding: *const bundle.plan.Bind
 
 const Entry = [32]?Fit;
 
-const Sample = struct { state: dc.fit.Sample, record: Reference };
+/// A sample of the truth against the LNAV a satellite's leg carries.
+const Sample = struct { state: dc.fit.Sample, lnav: *const gnss.records.KeplerEphemeris };
 
 pub const Stream = struct {
     source: common.Source,
@@ -59,11 +58,11 @@ pub const Stream = struct {
             var sats = types.System.gps.satellites();
             while (sats.next()) |sat| {
                 const slot = &self.samples[sat.prn() - 1][sampleSlot(t)];
-                const c = self.source.correctionOf(sat, t, .icd_periodic) orelse {
-                    slot.* = null;
-                    continue;
-                };
-                slot.* = .{ .state = .{ .t = t, .pos = c.brdc_pos.add(c.delta_pos).toArray(), .clock_s = c.clock_delta_m / core.constants.light_speed }, .record = c.record };
+                slot.* = null;
+                const content = self.source.contentAt(sat, .lnav, t) orelse continue;
+                const lnav = content.lnav.value() orelse continue;
+                const c = self.source.correctionAgainst(sat, &lnav.parameters(), t, .icd_periodic) orelse continue;
+                slot.* = .{ .state = .{ .t = t, .pos = c.brdc_pos.add(c.delta_pos).toArray(), .clock_s = c.clock_delta_m / core.constants.light_speed }, .lnav = lnav };
             }
         }
     }
@@ -77,18 +76,17 @@ pub const Stream = struct {
             const sat = types.SatId.at(.gps, i);
             const binding = b.plan.bindingAt(sat, start) orelse continue;
             const head = ring[sampleSlot(start)] orelse continue;
-            if (!head.state.t.eql(start) or head.record.record.source() != .lnav) continue;
+            if (!head.state.t.eql(start)) continue;
             var states: [samples_len]dc.fit.Sample = undefined;
             var n: usize = 0;
             var times: track.provider.Cursor = .init(.gps, start, b.plan.leap);
             while (times.next(end)) |t| {
                 const s = ring[sampleSlot(t)] orelse break;
-                if (!s.state.t.eql(t) or !std.meta.eql(s.record, head.record)) break;
+                if (!s.state.t.eql(t) or s.lnav != head.lnav) break;
                 states[n] = s.state;
                 n += 1;
             }
-            const record = gnss.gps.lnav.described(head.record);
-            const corr = dc.fit.correction(&record, epoch, states[0..n]) orelse continue;
+            const corr = dc.fit.correction(head.lnav, epoch, states[0..n]) orelse continue;
             if (!dc.representable(corr)) continue;
             out[i] = .{ .correction = corr, .binding = binding };
         }

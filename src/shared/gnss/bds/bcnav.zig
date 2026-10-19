@@ -8,11 +8,14 @@ const ephemeris = @import("ephemeris_fields.zig");
 const almanac = @import("almanac_fields.zig");
 const iono = @import("iono_fields.zig");
 const time_parameters = @import("time_parameters.zig");
+const types = @import("../../core.zig").types;
 
 const Flags = bds_records.BcnavSignalFlags;
 
+pub const Content = @import("../content.zig").Carriage(Sv);
+
 pub const Inputs = struct {
-    eph: [63]?Kepler,
+    eph: [63]?*const Content,
     almanacs: []const records.KeplerAlmanac,
     bdgim: ?[9]f64,
     utc: ?auxiliary.UtcParams,
@@ -78,10 +81,15 @@ pub const Sv = struct {
     }
 };
 
-pub const Broadcast = ephemeris.Broadcast;
+/// A B-CNAV family's content for a leg: the reference as its messages carry it, or the field it does not fit.
+pub fn prepare(e: Kepler, source: records.NavSource) Content {
+    const sv = Sv.fromReference(e, source);
+    if (sv.ephemeris.misfit()) |name| return .{ .unfit = .{ .field = name } };
+    return .{ .carried = sv };
+}
 
-pub fn broadcast(e: Kepler, source: records.NavSource) ?Broadcast {
-    return ephemeris.Source.fromReference(e, source).decoded();
+pub fn valid(sv: *const Sv, sat: types.SatId) bool {
+    return sv.ephemeris.eph.sat == sat and sv.ephemeris.misfit() == null and sv.ephemeris.eph.misfit() == null;
 }
 
 const S = field.Field(Sv);
@@ -121,10 +129,8 @@ pub const Data = struct {
             .eop = time_parameters.eopFromRecord(in.eop),
             .offsets = @splat(null),
         };
-        for (in.eph, 0..) |entry, i| if (entry) |e| {
-            const sv = Sv.fromReference(e, source);
-            if (sv.ephemeris.misfit() != null) continue;
-            data.sv[i] = sv;
+        for (in.eph, &data.sv) |entry, *sv| if (entry) |c| if (c.value()) |carried| {
+            sv.* = carried.*;
         };
         var reference: ?time.GpsTime = null;
         for (in.almanacs) |a| {

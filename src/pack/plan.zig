@@ -1,5 +1,4 @@
 const std = @import("std");
-pub const d1d2 = @import("plan/d1d2.zig");
 const core = @import("shared").core;
 const gnss = @import("shared").gnss;
 const bundle = @import("shared").bundle;
@@ -14,11 +13,11 @@ const Product = bundle.precise.Product;
 const model = bundle.scenario;
 const Plan = bundle.plan.Plan;
 const Leg = bundle.plan.Leg;
-const Binding = bundle.plan.Binding;
 const Timeline = bundle.plan.Timeline;
 pub const select = @import("plan/select.zig");
 const resolve = @import("plan/resolve.zig");
 const air = @import("plan/air.zig");
+const contents = @import("plan/contents.zig");
 pub const almanacs = @import("plan/almanacs.zig");
 
 const Error = std.mem.Allocator.Error || error{LegBoundaryStalls};
@@ -42,22 +41,33 @@ fn sampleTimes(arena: std.mem.Allocator, start: GpsTime, span_ms: u64, system: t
     return out.items;
 }
 
-fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), times: []const GpsTime, leap: civil.Leap) std.mem.Allocator.Error![]const Leg {
+fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), families: std.EnumSet(types.NavFamily), times: []const GpsTime, span_ms: u64, leap: civil.Leap) std.mem.Allocator.Error![]const Leg {
     var out: std.ArrayList(Leg) = .empty;
-    var last: ?Binding = null;
+    var resolved: std.ArrayList(?resolve.Resolved) = .empty;
+    var last: ?resolve.Resolved = null;
     for (times, 0..) |t, i| {
-        const binding = if (select.reference(set, sat, t, carried, signals, leap)) |ref| resolve.binding(set, ref, t, leap) else null;
-        if (i == 0 or !sameBinding(binding, last)) {
-            var leg: Leg = .{ .from_ms = @intCast(t.ms - times[0].ms), .binding = binding };
-            if (leg.binding) |*b| b.air = try air.rows(arena, set, sat, b, carried);
-            try out.append(arena, leg);
+        const r = if (select.reference(set, sat, t, carried, signals, leap)) |chosen| resolve.binding(set, chosen, t, leap) else null;
+        if (i == 0 or !sameBinding(r, last)) {
+            try out.append(arena, .{ .from_ms = @intCast(t.ms - times[0].ms), .binding = null });
+            try resolved.append(arena, r);
         }
-        last = binding;
+        last = r;
+    }
+    for (out.items, resolved.items, 0..) |*leg, *entry, i| {
+        const r = if (entry.*) |*r| r else continue;
+        const until_ms = if (i + 1 < out.items.len) out.items[i + 1].from_ms else span_ms;
+        const interval: gnss.bds.d1d2.Interval = .{ .first = times[0].addMs(@intCast(leg.from_ms)), .last = times[0].addMs(@intCast(until_ms)) };
+        leg.binding = .{
+            .reference = r.reference,
+            .group_delay = r.group_delay,
+            .air = try air.rows(arena, set, sat, r, carried),
+            .contents = try contents.prepare(arena, set, r, families, interval),
+        };
     }
     return out.items;
 }
 
-fn sameBinding(a: ?Binding, b: ?Binding) bool {
+fn sameBinding(a: ?resolve.Resolved, b: ?resolve.Resolved) bool {
     const left = a orelse return b == null;
     const right = b orelse return false;
     if (!std.meta.eql(left.reference, right.reference) or left.glonass_p1 != right.glonass_p1) return false;
@@ -134,11 +144,13 @@ pub fn build(arena: std.mem.Allocator, s: *const model.Scenario, set: *const Nav
     const span_ms = run_ms + tail_ms;
     const timelines = try arena.alloc(Timeline, bundle.plan.satellite_count);
     const payload = gnss.payload.at(s.start);
+    const needed = contents.needed(s, set, &payload);
     for (types.System.all) |system| {
         const times = try sampleTimes(arena, s.start, span_ms, system, leap);
         var sats = system.satellites();
         while (sats.next()) |sat| {
-            timelines[bundle.plan.slot(sat)] = .{ .sat = sat, .legs = try legs(arena, set, sat, payload.of(sat), s.signals.intersectWith(payload.transmitted(sat)), times, leap) };
+            const signals = s.signals.intersectWith(payload.transmitted(sat));
+            timelines[bundle.plan.slot(sat)] = .{ .sat = sat, .legs = try legs(arena, set, sat, payload.of(sat), signals, contents.of(needed, &payload, sat), times, span_ms, leap) };
         }
     }
     return .{
@@ -168,29 +180,20 @@ fn scales(set: *const NavSet, start: GpsTime) std.EnumMap(types.System, core.clo
 
 pub fn warnUnfit(s: *const model.Scenario, set: *const NavSet, p: *const Plan, diags: *Diagnostics) std.mem.Allocator.Error!void {
     if (s.samples == null) return;
-    const payload = gnss.payload.at(s.start);
+    const listed = gnss.payload.at(s.start).families(s.signals);
     for (p.timelines) |timeline| {
-        for ([_]records.NavSource{ .cnav, .cnav2, .bcnav1, .bcnav2, .bcnav3 }) |source| {
-            if (!s.carries(source.family()) or !payload.carries(timeline.sat, source.family())) continue;
+        for (std.enums.values(types.NavFamily)) |family| {
+            if (!listed.contains(family)) continue;
             for (timeline.legs) |*leg| {
                 const binding = if (leg.binding) |*binding| binding else continue;
                 const reference = binding.kepler(set) orelse continue;
-                if (reference.record.source() == source) continue;
-                const unfit = gnss.plausible.converted(reference, source) orelse continue;
-                try warnRecord(reference.record, source, unfit, diags);
+                if (reference.record.source().family() == family) continue;
+                const unfit = (binding.content(family) orelse continue).unfit() orelse continue;
+                switch (unfit) {
+                    .field, .health => try warnRecord(reference.record, family, unfit, diags),
+                    .record, .fit => {},
+                }
             }
-        }
-        if (!s.carries(.d1d2) or !payload.carries(timeline.sat, .d1d2)) continue;
-        for (timeline.legs) |leg| {
-            const k = keplerOf(leg) orelse continue;
-            const e = &set.kepler[k];
-            if (e.source() == .d1d2) continue;
-            const prepared = p.d1d2Leg(timeline.sat, leg.from_ms) orelse continue;
-            const unfit: gnss.plausible.Unfit = switch (prepared.result) {
-                .unrepresentable => |failed| .{ .field = failed.name() },
-                else => continue,
-            };
-            try warnRecord(e, .d1d2, unfit, diags);
         }
     }
 }
@@ -262,21 +265,21 @@ const Satellites = struct {
     }
 };
 
-fn keplerOf(leg: bundle.plan.Leg) ?u32 {
-    const binding = leg.binding orelse return null;
-    return switch (binding.reference) {
-        .kepler => |i| i,
-        .glonass => null,
-    };
-}
-
-fn warnRecord(e: *const records.KeplerEphemeris, target: records.NavSource, unfit: gnss.plausible.Unfit, diags: *Diagnostics) std.mem.Allocator.Error!void {
+fn warnRecord(e: *const records.KeplerEphemeris, family: types.NavFamily, unfit: gnss.content.Unfit, diags: *Diagnostics) std.mem.Allocator.Error!void {
     const head = .{ e.sat, e.source().rinexName(e.sat), e.toc.printed(null) };
-    const tail = target.rinexName(e.sat);
+    const tail = sourceOf(family).rinexName(e.sat);
     switch (unfit) {
         .field => |name| try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: {s} outside its {s} field, sent there as unavailable while it is selected", head ++ .{ name, tail }),
         .health => |signals| try diags.warn(.unfit_record, "ephemeris", "{f} {s} record of {f}: it declares no {s} signal health for {s}, sent there as unavailable while it is selected", head ++ .{ signals, tail }),
+        .record, .fit => unreachable,
     }
+}
+
+fn sourceOf(family: types.NavFamily) records.NavSource {
+    return switch (family) {
+        inline .lnav, .cnav, .cnav2, .inav, .fnav, .d1d2, .bcnav1, .bcnav2, .bcnav3 => |f| @field(records.NavSource, @tagName(f)),
+        .cnav_has, .ppp_b2b, .gnav => unreachable,
+    };
 }
 
 pub fn reportCoverage(plan: *const Plan, s: *const model.Scenario, run_ms: u64, diags: *Diagnostics) std.mem.Allocator.Error!void {
@@ -307,6 +310,9 @@ fn markUsed(legs_of: []const Leg, used_kepler: []bool, used_glonass: []bool) voi
             .kepler => |k| used_kepler[k] = true,
             .glonass => |k| used_glonass[k] = true,
         }
+        for (binding.air) |row| if (row.declared) |k| {
+            used_kepler[k] = true;
+        };
     }
 }
 
@@ -314,10 +320,16 @@ fn remapped(arena: std.mem.Allocator, old: []const Leg, map_kepler: []const u32,
     const new = try arena.alloc(Leg, old.len);
     for (new, old) |*n, leg| {
         n.* = leg;
-        if (n.binding) |*binding| binding.reference = switch (binding.reference) {
+        const binding = if (n.binding) |*binding| binding else continue;
+        binding.reference = switch (binding.reference) {
             .kepler => |k| .{ .kepler = map_kepler[k] },
             .glonass => |k| .{ .glonass = map_glonass[k] },
         };
+        const rows = try arena.dupe(gnss.air.Row, binding.air);
+        for (rows) |*row| if (row.declared) |k| {
+            row.declared = map_kepler[k];
+        };
+        binding.air = rows;
     }
     return new;
 }

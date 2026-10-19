@@ -11,7 +11,6 @@ pub const Relativity = enum { icd_periodic, dot_product };
 
 pub const Correction = struct {
     sat: types.SatId,
-    record: gnss.reference.Kepler,
     delays: provider.Delays,
     brdc_pos: Ecef,
     brdc_vel: Ecef,
@@ -38,25 +37,10 @@ pub const Correction = struct {
     }
 };
 
-pub fn compute(track: *provider.Track, t: GpsTime, relativity: Relativity, scale_s: f64) ?Correction {
+/// The correction of a satellite's broadcast orbit and clock, `reference` as its corrected family carries them, to the
+/// truth it flies.
+pub fn against(track: *provider.Track, reference: *const Parameters, t: GpsTime, relativity: Relativity, scale_s: f64) ?Correction {
     const sel = track.current orelse return null;
-    return switch (sel.record) {
-        .kepler => |k| correct(track, sel.sat, k, &k.record.parameters(), t, relativity, scale_s),
-        .glonass => null,
-    };
-}
-
-pub fn against(track: *provider.Track, record: gnss.reference.Kepler, reference: *const Parameters, t: GpsTime, relativity: Relativity, scale_s: f64) ?Correction {
-    const sel = track.current orelse return null;
-    if (sel.record == .glonass) return null;
-    return correct(track, sel.sat, record, reference, t, relativity, scale_s);
-}
-
-fn correct(track: *provider.Track, sat: types.SatId, record: gnss.reference.Kepler, reference: *const Parameters, t: GpsTime, relativity: Relativity, scale_s: f64) ?Correction {
-    if (record.record.source() == .lnav) {
-        const described = gnss.gps.lnav.described(record);
-        if (!gnss.gps.lnav.delayFits(&described)) return null;
-    }
     const delays = track.delaysAt(t);
     const brdc_orbit = gnss.kepler.Orbit.fromParameters(reference);
     const brdc = brdc_orbit.state(t);
@@ -68,8 +52,7 @@ fn correct(track: *provider.Track, sat: types.SatId, record: gnss.reference.Kepl
     const truth = track.stateAt(t);
     const truth_clock = truth.clock_bias_s - scale_s + delays.shift() + truth.rel_s;
     return .{
-        .sat = sat,
-        .record = record,
+        .sat = sel.sat,
         .delays = delays,
         .brdc_pos = brdc.pos,
         .brdc_vel = brdc.vel,

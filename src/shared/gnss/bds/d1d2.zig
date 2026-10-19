@@ -35,7 +35,7 @@ pub const bits_per_frame = word.frame_bits;
 pub const Frame = word.Frame;
 const Info = word.Info;
 const Error = field.Error;
-const Content = schedule.Content;
+const Scheduled = schedule.Content;
 const Navigation = schedule.Navigation;
 
 pub const Carrier = enum {
@@ -65,55 +65,36 @@ const d2Content = schedule.d2Content;
 
 pub const Interval = fit.Interval;
 pub const Flight = struct { record: Kepler, interval: Interval };
-pub const FieldFailure = tables.FieldFailure;
 
 pub const Prepared = struct {
     parameters: Parameters,
     metadata: sources.Metadata,
     decoded: Parameters,
 
-    fn sv(self: *const Prepared, k: iono.klobuchar.Model) sources.Sv {
+    pub fn sv(self: *const Prepared, k: iono.klobuchar.Model) sources.Sv {
         return .{ .eph = self.parameters, .metadata = self.metadata, .klobuchar = .of(k) };
     }
 
-    pub fn valid(self: *const Prepared, planned: Kepler) bool {
-        const source = planned.record;
-        if (!std.meta.eql(self.parameters.sat, source.sat)) return false;
-        if (self.parameters.misfit() != null) return false;
+    pub fn valid(self: *const Prepared, sat: types.SatId) bool {
+        if (self.parameters.sat != sat or self.parameters.misfit() != null) return false;
         if (self.parameters.a_dot != 0 or self.parameters.delta_n_dot != 0) return false;
-        if (!self.parameters.toe.eql(tables.floorTo8s(source.toe)) or
-            !self.parameters.toc.eql(tables.floorTo8s(source.toc))) return false;
-
-        const original = source.parameters();
-        if (fit.carried(&original)) {
-            if (!std.meta.eql(self.parameters, original)) return false;
-        } else {
-            const clock = source.clock();
-            if (self.parameters.af0 != clock.bias(self.parameters.toc) or
-                self.parameters.af1 != clock.drift(self.parameters.toc) or
-                self.parameters.af2 != source.af2) return false;
-        }
-
-        if (!std.meta.eql(self.metadata, sources.metadata(planned, &self.parameters))) return false;
         const value = self.sv(.zero);
-        const decoded = tables.decoded(&value) orelse return false;
-        return std.meta.eql(self.decoded, decoded);
+        if (tables.failure(&value) != null) return false;
+        return std.meta.eql(self.decoded, tables.decoded(&value).?);
     }
 };
 
-pub const Preparation = union(enum) {
-    fit_failed,
-    unrepresentable: FieldFailure,
-    ready: Prepared,
-};
+pub const Content = @import("../content.zig").Carriage(Prepared);
 
-pub fn prepare(flight: Flight) Preparation {
+/// D1/D2's content for a leg: the reference as D1 or D2 carries it, fitted over the leg where it has rates or epochs
+/// off the 8 s grid, or why it cannot be.
+pub fn prepare(flight: Flight) Content {
     const source = flight.record.record.parameters();
-    const parameters = if (fit.carried(&source)) source else fit.fitted(&source, flight.interval) orelse return .fit_failed;
+    const parameters = if (fit.carried(&source)) source else fit.fitted(&source, flight.interval) orelse return .{ .unfit = .fit };
     const metadata = sources.metadata(flight.record, &parameters);
     const sv: sources.Sv = .{ .eph = parameters, .metadata = metadata, .klobuchar = .of(.zero) };
-    if (tables.failure(&sv)) |failed| return .{ .unrepresentable = failed };
-    return .{ .ready = .{ .parameters = parameters, .metadata = metadata, .decoded = tables.decoded(&sv).? } };
+    if (tables.failure(&sv)) |failed| return .{ .unfit = .{ .field = failed.name() } };
+    return .{ .carried = .{ .parameters = parameters, .metadata = metadata, .decoded = tables.decoded(&sv).? } };
 }
 
 pub const Set = struct {
@@ -128,7 +109,7 @@ pub const Set = struct {
     epoch: GpsTime,
 
     pub const Inputs = struct {
-        eph: [63]?*const Prepared,
+        eph: [63]?*const Content,
         almanacs: []const Alm,
         klobuchar: iono.klobuchar.Model,
         utc: ?auxiliary.UtcParams,
@@ -150,8 +131,8 @@ pub const Set = struct {
             .epoch = in.t,
         };
 
-        for (in.eph, 0..) |entry, i| if (entry) |prepared| {
-            set.sv[i] = prepared.sv(in.klobuchar);
+        for (in.eph, &set.sv) |entry, *sv| if (entry) |c| if (c.value()) |prepared| {
+            sv.* = prepared.sv(in.klobuchar);
         };
 
         var reference: ?Alm = null;
@@ -249,7 +230,7 @@ pub fn cycleStart(t: GpsTime) GpsTime {
     return GpsTime.fromBaseMs(.bds, @divFloor(t.baseMs(.bds, .table), schedule.cycle_ms) * schedule.cycle_ms, .table);
 }
 
-const Slot = struct { subframe: u3, sow: u20, content: Content };
+const Slot = struct { subframe: u3, sow: u20, content: Scheduled };
 
 fn slot(prn: u8, index: i64) Slot {
     if (isGeo(prn)) {

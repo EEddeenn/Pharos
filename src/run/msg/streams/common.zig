@@ -34,14 +34,14 @@ pub const Source = struct {
         return if (t.lessThan(self.b.plan.start)) self.b.plan.start else t;
     }
 
-    pub fn correctionOf(self: *Source, sat: types.SatId, t: GpsTime, relativity: corrections.Relativity) ?corrections.Correction {
-        const at = self.notBefore(t);
-        return corrections.compute(self.trackAt(sat, at), at, relativity, self.b.plan.scaleOffset(self.scale, at));
+    /// What a satellite's corrected family carries on the leg in force at `t`.
+    pub fn contentAt(self: *const Source, sat: types.SatId, family: types.NavFamily, t: GpsTime) ?*const gnss.content.Content {
+        return self.b.plan.contentAt(sat, family, self.notBefore(t));
     }
 
-    pub fn correctionAgainst(self: *Source, sat: types.SatId, record: gnss.reference.Kepler, reference: *const gnss.kepler_parameters.Parameters, t: GpsTime, relativity: corrections.Relativity) ?corrections.Correction {
+    pub fn correctionAgainst(self: *Source, sat: types.SatId, reference: *const gnss.kepler_parameters.Parameters, t: GpsTime, relativity: corrections.Relativity) ?corrections.Correction {
         const at = self.notBefore(t);
-        return corrections.against(self.trackAt(sat, at), record, reference, at, relativity, self.b.plan.scaleOffset(self.scale, at));
+        return corrections.against(self.trackAt(sat, at), reference, at, relativity, self.b.plan.scaleOffset(self.scale, at));
     }
 
     fn trackAt(self: *Source, sat: types.SatId, t: GpsTime) *track.provider.Track {

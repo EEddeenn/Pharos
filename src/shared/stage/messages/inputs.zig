@@ -1,6 +1,5 @@
 const core = @import("../../core.zig");
 const gnss = @import("../../gnss.zig");
-const track = @import("../../track.zig");
 const bundle = @import("../../bundle.zig");
 const gps = gnss.gps;
 const galileo = gnss.galileo;
@@ -8,28 +7,20 @@ const bds = gnss.bds;
 const glonass = gnss.glonass;
 
 const Bundle = bundle.Bundle;
-const Kepler = gnss.reference.Kepler;
 const NavFamily = core.types.NavFamily;
 const SatId = core.types.SatId;
 const GpsTime = core.time.GpsTime;
 const Broadcast = @import("../ionosphere.zig").Broadcast;
-const Payload = gnss.payload.Payload;
 
-pub fn recordOf(b: *const Bundle, payload: *const Payload, family: NavFamily, sat: SatId, t: GpsTime) ?Kepler {
-    if (!payload.carries(sat, family)) return null;
-    const reference = track.selection.keplerAt(b, sat, t) orelse return null;
-    return switch (family) {
-        inline .lnav, .inav => |own| if (reference.record.source() == @field(gnss.records.NavSource, @tagName(own))) reference else null,
-        .cnav, .cnav2, .fnav, .d1d2, .bcnav1, .bcnav2, .bcnav3 => reference,
-        .cnav_has, .ppp_b2b, .gnav => null,
-    };
+/// Each satellite's content of a family on the leg in force at `t`.
+fn contents(b: *const Bundle, comptime family: NavFamily, t: GpsTime, out: []?*const @FieldType(gnss.content.Content, @tagName(family))) void {
+    for (out, 0..) |*slot, i| {
+        const content = b.plan.contentAt(SatId.at(family.system(), i), family, t) orelse continue;
+        slot.* = &@field(content, @tagName(family));
+    }
 }
 
-fn records(b: *const Bundle, payload: *const Payload, family: NavFamily, t: GpsTime, out: []?Kepler) void {
-    for (out, 0..) |*slot, i| slot.* = recordOf(b, payload, family, SatId.at(family.system(), i), t);
-}
-
-pub fn lnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, publications: []const gps.messages.Publication, configuration: [63]u3, t: GpsTime) gps.lnav.Set.Inputs {
+pub fn lnav(b: *const Bundle, broadcast: *const Broadcast, publications: []const gps.messages.Publication, configuration: [63]u3, t: GpsTime) gps.lnav.Set.Inputs {
     const set = &b.navigation;
     var in: gps.lnav.Set.Inputs = .{
         .eph = @splat(null),
@@ -39,11 +30,11 @@ pub fn lnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadca
         .publications = publications,
         .configuration = configuration,
     };
-    records(b, payload, .lnav, t, &in.eph);
+    contents(b, .lnav, t, &in.eph);
     return in;
 }
 
-fn cnvx(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, source: gnss.records.NavSource, t: GpsTime) gps.cnvx.Inputs {
+fn cnvx(b: *const Bundle, broadcast: *const Broadcast, comptime family: NavFamily, t: GpsTime) gps.cnvx.Inputs {
     const set = &b.navigation;
     var in: gps.cnvx.Inputs = .{
         .eph = @splat(null),
@@ -57,26 +48,19 @@ fn cnvx(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, 
         },
         .t = t,
     };
-    records(b, payload, source.family(), t, &in.eph);
+    contents(b, family, t, &in.eph);
     return in;
 }
 
-pub fn cnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, publications: []const gps.messages.Publication, corrections: ?gps.dc.Source, t: GpsTime) gps.cnav.Set.Inputs {
-    return .{ .shared = cnvx(b, payload, broadcast, .cnav, t), .publications = publications, .dc = corrections };
+pub fn cnav(b: *const Bundle, broadcast: *const Broadcast, publications: []const gps.messages.Publication, corrections: ?gps.dc.Source, t: GpsTime) gps.cnav.Set.Inputs {
+    return .{ .shared = cnvx(b, broadcast, .cnav, t), .publications = publications, .dc = corrections };
 }
 
-pub fn cnav2(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, publications: []const gps.cnav2.publications.PreparedPublication, configuration: ?*const gps.cnav2.publications.Payload, corrections: ?gps.dc.Source, t: GpsTime) gps.cnav2.Set.Inputs {
-    return .{ .shared = cnvx(b, payload, broadcast, .cnav2, t), .publications = publications, .configuration = configuration, .dc = corrections };
+pub fn cnav2(b: *const Bundle, broadcast: *const Broadcast, publications: []const gps.cnav2.publications.PreparedPublication, configuration: ?*const gps.cnav2.publications.Payload, corrections: ?gps.dc.Source, t: GpsTime) gps.cnav2.Set.Inputs {
+    return .{ .shared = cnvx(b, broadcast, .cnav2, t), .publications = publications, .configuration = configuration, .dc = corrections };
 }
 
-pub const D1d2Reference = struct { record: Kepler, prepared: *const bds.d1d2.Prepared };
-
-pub fn d1d2Reference(b: *const Bundle, payload: *const Payload, sat: SatId, t: GpsTime) ?D1d2Reference {
-    const record = recordOf(b, payload, .d1d2, sat, t) orelse return null;
-    return .{ .record = record, .prepared = b.plan.d1d2At(sat, t) orelse return null };
-}
-
-pub fn d1d2(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, service: ?bds.d1d2.augmentation.Source, t: GpsTime) bds.d1d2.Set.Inputs {
+pub fn d1d2(b: *const Bundle, broadcast: *const Broadcast, service: ?bds.d1d2.augmentation.Source, t: GpsTime) bds.d1d2.Set.Inputs {
     const set = &b.navigation;
     var in: bds.d1d2.Set.Inputs = .{
         .eph = @splat(null),
@@ -87,13 +71,11 @@ pub fn d1d2(b: *const Bundle, payload: *const Payload, broadcast: *const Broadca
         .service = service,
         .t = t,
     };
-    for (&in.eph, 0..) |*slot, i| {
-        slot.* = if (d1d2Reference(b, payload, SatId.at(.bds, i), t)) |reference| reference.prepared else null;
-    }
+    contents(b, .d1d2, t, &in.eph);
     return in;
 }
 
-pub fn bcnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, comptime family: NavFamily, t: GpsTime) bds.bcnav.Inputs {
+pub fn bcnav(b: *const Bundle, broadcast: *const Broadcast, comptime family: NavFamily, t: GpsTime) bds.bcnav.Inputs {
     comptime {
         if (family != .bcnav1 and family != .bcnav2 and family != .bcnav3) @compileError("B-CNAV inputs require a B-CNAV message family");
     }
@@ -107,7 +89,7 @@ pub fn bcnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadc
         .offsets = .{ set.timeOffset(.bdgp, .bds, t), set.timeOffset(.bdga, .bds, t), set.timeOffset(.bdgl, .bds, t) },
         .t = t,
     };
-    records(b, payload, family, t, &in.eph);
+    contents(b, family, t, &in.eph);
     return in;
 }
 
@@ -122,17 +104,11 @@ pub fn gnav(b: *const Bundle, t: GpsTime) glonass.gnav.Set.Inputs {
         .t = t,
         .leap = b.plan.leap,
     };
-    for (&in.eph, &in.p1, &in.delta_tau_n, 0..) |*entry, *p1, *delta_tau_n, i| {
-        const sat = SatId.at(.glo, i);
-        entry.* = track.selection.glonassAt(b, sat, t);
-        const binding = b.plan.bindingAt(sat, t) orelse continue;
-        p1.* = binding.glonass_p1;
-        delta_tau_n.* = binding.group_delay.get(.delta_tau_n);
-    }
+    contents(b, .gnav, t, &in.eph);
     return in;
 }
 
-pub fn inav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, publications: []const galileo.inav.ism.PreparedPublication, t: GpsTime) galileo.inav.Set.Inputs {
+pub fn inav(b: *const Bundle, broadcast: *const Broadcast, publications: []const galileo.inav.ism.PreparedPublication, t: GpsTime) galileo.inav.Set.Inputs {
     const set = &b.navigation;
     var in: galileo.inav.Set.Inputs = .{
         .eph = @splat(null),
@@ -143,11 +119,11 @@ pub fn inav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadca
         .publications = publications,
         .t = t,
     };
-    records(b, payload, .inav, t, &in.eph);
+    contents(b, .inav, t, &in.eph);
     return in;
 }
 
-pub fn fnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadcast, t: GpsTime) galileo.fnav.Set.Inputs {
+pub fn fnav(b: *const Bundle, broadcast: *const Broadcast, t: GpsTime) galileo.fnav.Set.Inputs {
     const set = &b.navigation;
     var in: galileo.fnav.Set.Inputs = .{
         .eph = @splat(null),
@@ -157,6 +133,6 @@ pub fn fnav(b: *const Bundle, payload: *const Payload, broadcast: *const Broadca
         .ggto = set.timeOffset(.gagp, .gal, t),
         .t = t,
     };
-    records(b, payload, .fnav, t, &in.eph);
+    contents(b, .fnav, t, &in.eph);
     return in;
 }

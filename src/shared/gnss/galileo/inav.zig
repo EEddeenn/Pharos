@@ -13,6 +13,9 @@ const page = @import("inav/page.zig");
 const schedule = @import("inav/schedule.zig");
 const fec2 = @import("inav/fec2.zig");
 const reduced = @import("inav/reduced.zig");
+const ephemeris = @import("ephemeris_fields.zig");
+const kepler = @import("../kepler.zig");
+const types = @import("../../core.zig").types;
 pub const ism = @import("inav/ism.zig");
 
 const Eph = records.KeplerEphemeris;
@@ -38,7 +41,7 @@ pub const Set = struct {
     publications: []const ism.PreparedPublication = &.{},
 
     pub const Inputs = struct {
-        eph: [36]?reference.Kepler,
+        eph: [36]?*const Content,
         almanacs: []const Alm,
         nequick: ?iono_fields.Coefficients,
         utc: ?auxiliary.UtcParams,
@@ -58,9 +61,8 @@ pub const Set = struct {
         set.groups = almanac_fields.almanacGroups(in.almanacs, time_parameters.ggtoBlock(in.ggto, in.t), in.t);
 
         for (in.eph, &set.sv) |entry, *sv| {
-            const e = entry orelse continue;
-            const eph = described(e);
-            sv.* = .{ .eph = eph, .parity = try parityOf(&eph) };
+            const eph = (entry orelse continue).value() orelse continue;
+            sv.* = .{ .eph = eph.*, .parity = try parityOf(eph) };
         }
         try set.validate();
     }
@@ -114,8 +116,16 @@ pub const Set = struct {
     }
 };
 
-pub fn described(e: reference.Kepler) Eph {
-    return projection.forSource(e, .inav);
+pub const Content = @import("../content.zig").Carriage(Eph);
+
+/// I/NAV's content for a leg: its own record, with the leg's BGDs. I/NAV carries no other family's record.
+pub fn prepare(e: reference.Kepler) Content {
+    if (e.record.source() != .inav) return .{ .unfit = .record };
+    return .{ .carried = projection.forSource(e, .inav) };
+}
+
+pub fn valid(e: *const Eph, sat: types.SatId) bool {
+    return e.sat == sat and e.extra == .inav and ephemeris.misfit(e) == null and kepler.misfit(e) == null;
 }
 
 fn parityOf(eph: *const Eph) Error![fec2.parity_len]u8 {

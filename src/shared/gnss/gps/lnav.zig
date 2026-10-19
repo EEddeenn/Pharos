@@ -1,5 +1,6 @@
 const time = @import("../../core.zig").time;
 const iono = @import("../../core.zig").iono;
+const SatId = @import("../../core.zig").types.SatId;
 const records = @import("../records.zig");
 const nav_reference = @import("../reference.zig");
 const auxiliary = @import("../auxiliary.zig");
@@ -13,6 +14,7 @@ const messages = @import("messages.zig");
 const text = @import("text.zig");
 const word = @import("lnav/word.zig");
 const almanac_reference = @import("../almanac_reference.zig");
+const kepler = @import("../kepler.zig");
 
 const Eph = records.KeplerEphemeris;
 const Alm = records.KeplerAlmanac;
@@ -56,7 +58,7 @@ pub const Set = struct {
     publications: []const messages.Publication = &.{},
 
     pub const Inputs = struct {
-        eph: [32]?nav_reference.Kepler,
+        eph: [32]?*const Content,
         almanacs: []const Alm,
         klobuchar: iono.klobuchar.Model,
         utc: ?auxiliary.UtcParams,
@@ -66,9 +68,8 @@ pub const Set = struct {
 
     pub fn build(set: *Set, in: Inputs) void {
         set.* = .{ .eph = @splat(null), .alm = @splat(null), .page18 = null, .health = undefined, .publications = in.publications };
-        for (in.eph, &set.eph) |entry, *eph| if (entry) |e| {
-            const projected = described(e);
-            if (delayFits(&projected)) eph.* = projected;
+        for (in.eph, &set.eph) |entry, *eph| if (entry) |c| if (c.value()) |e| {
+            eph.* = e.*;
         };
         var toa: ?time.GpsTime = null;
         for (in.almanacs) |a| {
@@ -179,16 +180,22 @@ pub const Set = struct {
     }
 };
 
-pub fn described(e: nav_reference.Kepler) Eph {
+pub const Content = @import("../content.zig").Carriage(Eph);
+
+/// LNAV's content for a leg: its own record as LNAV describes it, with the leg's T_GD. LNAV carries no other family's
+/// record.
+pub fn prepare(e: nav_reference.Kepler) Content {
+    if (e.record.source() != .lnav) return .{ .unfit = .record };
     var out = e.record.*;
     out.extra = e.attribute(.lnav) orelse unreachable;
     out.group_delay = .{};
     if (e.delay(.l1ca, .data)) |tgd| out.group_delay.put(.tgd_l1ca, tgd);
-    return out;
+    if (!field.fits(Eph, &.{field.rowOf(Eph, &tables.sf1, "tgd")}, &out)) return .{ .unfit = .{ .field = "tgd" } };
+    return .{ .carried = out };
 }
 
-pub fn delayFits(e: *const Eph) bool {
-    return field.fits(Eph, &.{field.rowOf(Eph, &tables.sf1, "tgd")}, e);
+pub fn valid(e: *const Eph, sat: SatId) bool {
+    return e.sat == sat and e.extra == .lnav and misfit(e) == null and kepler.misfit(e) == null;
 }
 
 pub fn buildFrame(set: *const Set, prn: u8, index: i64) ?Frame {

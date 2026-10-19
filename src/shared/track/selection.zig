@@ -95,16 +95,3 @@ pub fn resolve(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime, span: Span
 fn onScale(record_clock: clock.Poly, scale: ?clock.Poly) clock.Poly {
     return if (scale) |s| record_clock.plus(s) else record_clock;
 }
-
-pub fn keplerAt(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime) ?gnss.reference.Kepler {
-    const binding = b.plan.bindingAt(sat, t) orelse return null;
-    return binding.kepler(&b.navigation);
-}
-
-pub fn glonassAt(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime) ?*const records.GlonassEphemeris {
-    const ref = b.plan.recordAt(sat, t) orelse return null;
-    return switch (ref) {
-        .glonass => |i| &b.navigation.glonass[i],
-        .kepler => null,
-    };
-}

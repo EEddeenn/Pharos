@@ -247,7 +247,7 @@ pub const Truth = struct {
                 break :fallback &local;
             };
             const state = if (query.includes(.model) and provider.current != null) provider.stateAt(t) else null;
-            const projected = inspect_values.model.project(self.b, provider, state, query.sat, query.signal, carrier, t, .{ .model = query.includes(.model), .navigation = query.includes(.navigation) });
+            const projected = inspect_values.model.project(self.b, provider, state, query.sat, query.signal, t, .{ .model = query.includes(.model), .navigation = query.includes(.navigation) });
             result.model = projected.model;
             result.navigation = projected.navigation;
         }

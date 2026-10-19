@@ -74,23 +74,23 @@ fn valueOrder(a: anytype, b: @TypeOf(a)) std.math.Order {
     return .eq;
 }
 
-pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), leap: civil.Leap) ?Ref {
-    if (sat.system == .glo) return .{ .glonass = glonassFlight(set, sat, t, leap) orelse return null };
+/// The reference chosen for a satellite at a time, with the families' attributes the alive test resolved for it.
+pub const Chosen = struct { reference: Ref, attributes: ?gnss.reference.Attributes = null };
+
+pub fn reference(set: *const NavSet, sat: types.SatId, t: GpsTime, carried: *const gnss.payload.Carried, signals: std.EnumSet(types.Signal), leap: civil.Leap) ?Chosen {
+    if (sat.system == .glo) return .{ .reference = .{ .glonass = glonassFlight(set, sat, t, leap) orelse return null } };
     const candidates = sourcesAt(set, sat, t, leap);
     for ([_]bool{ true, false }) |enabled| {
         for (std.enums.values(records.NavSource)) |source| {
             if (carries(carried, signals, source.family()) != enabled) continue;
             const index = candidates.get(source).record(set) orelse continue;
-            if (signals.count() != 0) {
-                // A row's status reads the health and the allocation alone, so the delays' donors are not looked for.
-                const candidate: bundle.plan.Binding = .{ .reference = .{ .kepler = index }, .attributes = resolve.attributesAt(set, &set.kepler[index], t, leap), .air = &.{} };
-                var it = signals.iterator();
-                const alive = while (it.next()) |signal| {
-                    if (air(set, &candidate, carried, signal).status == .on_air) break true;
-                } else false;
-                if (!alive) continue;
+            if (signals.count() == 0) return .{ .reference = .{ .kepler = index } };
+            // A row's status reads the health and the allocation alone, so the delays' donors are not looked for.
+            const candidate: resolve.Resolved = .{ .reference = .{ .kepler = index }, .attributes = resolve.attributesAt(set, index, t, leap) };
+            var it = signals.iterator();
+            while (it.next()) |signal| {
+                if (air(set, &candidate, carried, signal).status == .on_air) return .{ .reference = candidate.reference, .attributes = candidate.attributes };
             }
-            return .{ .kepler = index };
         }
     }
     return null;

@@ -14,12 +14,15 @@ const ephemeris = @import("ephemeris_fields.zig");
 const time_parameters = @import("time_parameters.zig");
 const messages = @import("messages.zig");
 const almanac_reference = @import("../almanac_reference.zig");
+const SatId = @import("../../core.zig").types.SatId;
 
 const Eph = records.KeplerEphemeris;
 const Alm = records.KeplerAlmanac;
 
+pub const Content = @import("../content.zig").Carriage(ephemeris.Parameters);
+
 pub const Inputs = struct {
-    eph: [32]?reference.Kepler,
+    eph: [32]?*const Content,
     almanacs: []const Alm,
     klobuchar: iono.klobuchar.Model,
     utc: ?auxiliary.UtcParams,
@@ -30,71 +33,76 @@ pub const Inputs = struct {
 
 const cnav_lead_s = gps_records.CnavExtra.transmission_lead_s;
 
-pub const Unfit = union(enum) { field: [:0]const u8, health: [:0]const u8 };
+const Failure = union(enum) { field: [:0]const u8, health: [:0]const u8 };
 
-pub const Sv = struct {
-    parameters: ephemeris.Parameters,
-    misfit: ?Unfit,
+/// CNAV's or CNAV-2's content for a leg: the reference as the family's messages carry it, or why they cannot, in which
+/// case the family sends its unavailable form.
+pub fn prepare(e: reference.Kepler, source: records.NavSource) Content {
+    const sv = described(e, source);
+    return switch (failureOf(&sv, e.attribute(source) orelse e.record.extra, source) orelse return .{ .carried = sv }) {
+        .field => |name| .{ .unfit = .{ .field = name } },
+        .health => |signals| .{ .unfit = .{ .health = signals } },
+    };
+}
 
-    fn fromRecord(e: *const Eph, source: records.NavSource) Sv {
-        return fromReference(.raw(e), source);
+pub fn valid(sv: *const ephemeris.Parameters, sat: SatId) bool {
+    return sv.eph.sat == sat and ephemeris.misfit(sv) == null;
+}
+
+fn described(e: reference.Kepler, source: records.NavSource) ephemeris.Parameters {
+    const extra = e.attribute(source) orelse e.record.extra;
+    const alignment = e.record.parameters().alignedToEpochStep();
+    const aligned = alignment.parameters;
+    const parameters = if (source == .cnav2) aligned.withClockEpoch(aligned.toe) else aligned;
+    const start = if (e.record.top != null) aligned.toe.addSeconds(-cnav_lead_s) else aligned.toe.addSeconds(-kepler.window_s);
+    const predicted = if (e.record.top) |top| (if (alignment.rebased) aligned.toe else top) else start;
+    const t_gd = e.group_delay.get(.tgd_l1ca);
+    var sv: ephemeris.Parameters = .{
+        .eph = parameters,
+        .wn = @intCast(@mod(start.week(), time.week_modulus_13)),
+        .top_s = predicted.msOfWeek() / 1000,
+        .tgd = t_gd orelse 0,
+        .isc_l1ca = iscOf(e, t_gd, .l1ca, .data),
+        .isc_l2c = iscOf(e, t_gd, .l2c, .data),
+        .isc_l5i5 = iscOf(e, t_gd, .l5, .data),
+        .isc_l5q5 = iscOf(e, t_gd, .l5, .pilot),
+        .isc_l1cd = iscOf(e, t_gd, .l1c, .data),
+        .isc_l1cp = iscOf(e, t_gd, .l1c, .pilot),
+        .wn_op = @intCast(@mod(predicted.week(), time.week_modulus_8)),
+    };
+    switch (extra) {
+        .lnav => |x| {
+            sv.ura = accuracy.ofLnav(x.ura_index);
+            if (source == .cnav2) {
+                sv.l1_health = x.l1cHealth() orelse false;
+            } else if (x.carrierHealth()) |bits| {
+                sv.l1_health = bits & 0b100 != 0;
+                sv.l2_health = bits & 0b010 != 0;
+                sv.l5_health = bits & 0b001 != 0;
+            }
+        },
+        .cnav => |x| {
+            sv.ura = x.ura;
+            sv.l1_health = x.l1_health;
+            sv.l2_health = x.l2_health;
+            sv.l5_health = x.l5_health;
+            sv.flags = x.flags;
+        },
+        .cnav2 => |x| {
+            sv.ura = x.ura;
+            sv.l1_health = x.l1_health;
+            sv.integrity_status = x.integrity_status;
+        },
+        else => {},
     }
+    return sv;
+}
 
-    pub fn fromReference(e: reference.Kepler, source: records.NavSource) Sv {
-        const extra = e.attribute(source) orelse e.record.extra;
-        const alignment = e.record.parameters().alignedToEpochStep();
-        const aligned = alignment.parameters;
-        const parameters = if (source == .cnav2) aligned.withClockEpoch(aligned.toe) else aligned;
-        const start = if (e.record.top != null) aligned.toe.addSeconds(-cnav_lead_s) else aligned.toe.addSeconds(-kepler.window_s);
-        const predicted = if (e.record.top) |top| (if (alignment.rebased) aligned.toe else top) else start;
-        const t_gd = e.group_delay.get(.tgd_l1ca);
-        var sv: ephemeris.Parameters = .{
-            .eph = parameters,
-            .wn = @intCast(@mod(start.week(), time.week_modulus_13)),
-            .top_s = predicted.msOfWeek() / 1000,
-            .tgd = t_gd orelse 0,
-            .isc_l1ca = iscOf(e, t_gd, .l1ca, .data),
-            .isc_l2c = iscOf(e, t_gd, .l2c, .data),
-            .isc_l5i5 = iscOf(e, t_gd, .l5, .data),
-            .isc_l5q5 = iscOf(e, t_gd, .l5, .pilot),
-            .isc_l1cd = iscOf(e, t_gd, .l1c, .data),
-            .isc_l1cp = iscOf(e, t_gd, .l1c, .pilot),
-            .wn_op = @intCast(@mod(predicted.week(), time.week_modulus_8)),
-        };
-        switch (extra) {
-            .lnav => |x| {
-                sv.ura = accuracy.ofLnav(x.ura_index);
-                if (source == .cnav2) {
-                    sv.l1_health = x.l1cHealth() orelse false;
-                } else if (x.carrierHealth()) |bits| {
-                    sv.l1_health = bits & 0b100 != 0;
-                    sv.l2_health = bits & 0b010 != 0;
-                    sv.l5_health = bits & 0b001 != 0;
-                }
-            },
-            .cnav => |x| {
-                sv.ura = x.ura;
-                sv.l1_health = x.l1_health;
-                sv.l2_health = x.l2_health;
-                sv.l5_health = x.l5_health;
-                sv.flags = x.flags;
-            },
-            .cnav2 => |x| {
-                sv.ura = x.ura;
-                sv.l1_health = x.l1_health;
-                sv.integrity_status = x.integrity_status;
-            },
-            else => {},
-        }
-        const failure: ?Unfit = if (ephemeris.misfit(&sv)) |name|
-            .{ .field = name }
-        else if (healthGapOf(extra, source)) |signals|
-            .{ .health = signals }
-        else
-            null;
-        return .{ .parameters = sv, .misfit = failure };
-    }
-};
+fn failureOf(sv: *const ephemeris.Parameters, extra: records.SourceExtra, source: records.NavSource) ?Failure {
+    if (ephemeris.misfit(sv)) |name| return .{ .field = name };
+    if (healthGapOf(extra, source)) |signals| return .{ .health = signals };
+    return null;
+}
 
 fn healthGapOf(extra: records.SourceExtra, source: records.NavSource) ?[:0]const u8 {
     return switch (source) {
@@ -112,16 +120,16 @@ fn healthGapOf(extra: records.SourceExtra, source: records.NavSource) ?[:0]const
     };
 }
 
-pub fn cnavFlags(sv: *const Sv, declared: ?messages.Integrity, prn: u8) ?gps_records.CnavFlags {
-    if (sv.misfit != null) return null;
-    if (sv.parameters.flags) |own| return own;
+pub fn cnavFlags(sv: *const Content, declared: ?messages.Integrity, prn: u8) ?gps_records.CnavFlags {
+    const parameters = sv.value() orelse return null;
+    if (parameters.flags) |own| return own;
     const d = declared orelse return null;
     return .{ .integrity_status = d.isf == 1, .l2c_phasing = false, .alert = d.alerts(prn) };
 }
 
-pub fn cnav2Isf(sv: *const Sv, declared: ?messages.Integrity) ?bool {
-    if (sv.misfit != null) return null;
-    if (sv.parameters.integrity_status) |own| return own;
+pub fn cnav2Isf(sv: *const Content, declared: ?messages.Integrity) ?bool {
+    const parameters = sv.value() orelse return null;
+    if (parameters.integrity_status) |own| return own;
     const d = declared orelse return null;
     return d.isf == 1;
 }
@@ -132,7 +140,8 @@ fn iscOf(e: reference.Kepler, t_gd: ?f64, signal: Signal, component: Component) 
 }
 
 pub fn misfit(e: *const Eph) ?[:0]const u8 {
-    const failure = Sv.fromRecord(e, e.source()).misfit orelse return null;
+    const sv = described(.raw(e), e.source());
+    const failure = failureOf(&sv, e.extra, e.source()) orelse return null;
     return switch (failure) {
         .field, .health => |name| name,
     };
@@ -149,7 +158,7 @@ const Ggtos = struct {
 };
 
 pub const Data = struct {
-    sv: [32]?Sv,
+    sv: [32]?Content,
     alm: [32]?Alm,
     almanac_reference: almanac_fields.Reference,
     klobuchar: klobuchar_fields.Coefficients,
@@ -175,8 +184,8 @@ pub const Data = struct {
             data.ggto.list[data.ggto.len] = block;
             data.ggto.len += 1;
         };
-        for (in.eph, 0..) |entry, i| if (entry) |e| {
-            data.sv[i] = Sv.fromReference(e, source);
+        for (in.eph, &data.sv) |entry, *sv| if (entry) |c| {
+            sv.* = c.*;
         };
         var toa: ?time.GpsTime = null;
         for (in.almanacs) |a| {

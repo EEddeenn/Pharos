@@ -8,6 +8,7 @@ const auxiliary = @import("../auxiliary.zig");
 const records = @import("records.zig");
 const tables = @import("gnav/tables.zig");
 const string = @import("gnav/string.zig");
+const orbit = @import("orbit.zig");
 
 pub const misfit = tables.misfit;
 pub const scaleMisfit = tables.scaleMisfit;
@@ -53,10 +54,22 @@ fn slot(index: i64) Slot {
 
 const slots = types.System.glo.capacity();
 
+pub const Content = @import("../content.zig").Carriage(Eph);
+
+/// GNAV's content for a leg: its record, with the leg's P1 and Delta tau_n.
+pub fn prepare(g: *const Eph, p1: u2, delta_tau_n: ?f64) Content {
+    var out = g.*;
+    out.p1 = p1;
+    out.delta_tau_n = delta_tau_n;
+    return .{ .carried = out };
+}
+
+pub fn valid(e: *const Eph, sat: types.SatId, leap: civil.Leap) bool {
+    return e.sat == sat and e.freq.valid() and misfit(e, leap) == null and orbit.misfit(e) == null;
+}
+
 pub const Set = struct {
     eph: [slots]?*const Eph,
-    p1: [slots]?u2,
-    delta_tau_n: [slots]?f64,
     first_string: [slots]i64,
     alm: [slots]?Alm,
     scale: ?tables.TimeScale,
@@ -64,9 +77,7 @@ pub const Set = struct {
     leap: civil.Leap,
 
     pub const Inputs = struct {
-        eph: [slots]?*const Eph,
-        p1: [slots]?u2 = @splat(null),
-        delta_tau_n: [slots]?f64 = @splat(null),
+        eph: [slots]?*const Content,
         almanacs: []const Alm,
         time_utc: ?auxiliary.TimeOffset,
         time_gps: ?auxiliary.TimeOffset,
@@ -77,17 +88,17 @@ pub const Set = struct {
 
     pub fn build(set: *Set, in: Inputs) Error!void {
         set.* = .{
-            .eph = in.eph,
-            .p1 = in.p1,
-            .delta_tau_n = in.delta_tau_n,
+            .eph = @splat(null),
             .first_string = @splat(0),
             .alm = @splat(null),
             .scale = null,
             .string14 = null,
             .leap = in.leap,
         };
-        for (in.eph, &set.first_string) |entry, *first| {
-            if (entry) |e| first.* = firstString(e, in.leap);
+        for (in.eph, &set.eph, &set.first_string) |entry, *eph, *first| {
+            const e = (entry orelse continue).value() orelse continue;
+            eph.* = e;
+            first.* = firstString(e, in.leap);
         }
 
         var day: ?Day = null;
@@ -148,7 +159,7 @@ pub const Set = struct {
             .tk_h = s.tk_h,
             .tk_m = s.tk_m,
             .tk_half = s.tk_half,
-            .p1 = if (index == self.first_string[prn - 1]) self.p1[prn - 1] orelse eph.p1 else 0,
+            .p1 = if (index == self.first_string[prn - 1]) eph.p1 else 0,
             .p3 = @intFromBool(s.frame_in_superframe < 4),
             .ln = @intFromBool(!eph.health),
             .tb = moscow.tb,
@@ -159,11 +170,7 @@ pub const Set = struct {
             1 => try field.encode(Eph, &tables.string1, eph, ctx, &w),
             2 => try field.encode(Eph, &tables.string2, eph, ctx, &w),
             3 => try field.encode(Eph, &tables.string3, eph, ctx, &w),
-            4 => {
-                var flown = eph.*;
-                flown.delta_tau_n = self.delta_tau_n[prn - 1];
-                try field.encode(Eph, &tables.string4, &flown, ctx, &w);
-            },
+            4 => try field.encode(Eph, &tables.string4, eph, ctx, &w),
             5 => try field.encode(tables.TimeScale, &tables.string5, &self.scale.?, ctx, &w),
             else => try self.encodeAlmanac(s, ctx, &w),
         }

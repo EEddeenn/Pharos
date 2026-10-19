@@ -16,7 +16,6 @@ const tables = @import("tables.zig");
 const schedule = @import("schedule.zig");
 
 const GpsTime = time.GpsTime;
-const Sv = cnvx.Sv;
 const Parameters = @import("../ephemeris_fields.zig").Parameters;
 const Carrier = schedule.Carrier;
 const Slot = schedule.Slot;
@@ -106,7 +105,7 @@ pub const Set = struct {
                 s = schedule.slot(index, carrier, available);
             }
         }
-        return self.messageBits(sv, prn, s, flags, content, if (corr) |*c| c else null) catch unreachable;
+        return self.messageBits(sv.value().?, prn, s, flags, content, if (corr) |*c| c else null) catch unreachable;
     }
 
     fn corrections(self: *const Set, prn: u8, s: Slot, carrier: Carrier, t: GpsTime, declared: messages.Differential) ?Corrections {
@@ -151,7 +150,7 @@ pub const Set = struct {
         }
     }
 
-    fn messageBits(self: *const Set, sv: *const Sv, prn: u8, s: Slot, flags: records.CnavFlags, content: ?*const messages.Sources, corr: ?*const Corrections) Error!Message {
+    fn messageBits(self: *const Set, sv: *const Parameters, prn: u8, s: Slot, flags: records.CnavFlags, content: ?*const messages.Sources, corr: ?*const Corrections) Error!Message {
         const data = &self.data;
         const ctx = tables.Ctx{
             .prn = @intCast(prn),
@@ -163,27 +162,27 @@ pub const Set = struct {
         var out: Message = .{};
         var w = out.writer();
         switch (s.kind) {
-            .ephemeris_1 => try field.encode(Parameters, &tables.msg10, &sv.parameters, ctx, &w),
-            .ephemeris_2 => try field.encode(Parameters, &tables.msg11, &sv.parameters, ctx, &w),
+            .ephemeris_1 => try field.encode(Parameters, &tables.msg10, sv, ctx, &w),
+            .ephemeris_2 => try field.encode(Parameters, &tables.msg11, sv, ctx, &w),
             .clock_iono => {
-                try field.encode(Parameters, &tables.msg30_head, &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.msg30_head, sv, ctx, &w);
                 try field.encode(klobuchar_fields.Coefficients, &klobuchar_fields.coefficients, &data.klobuchar, ctx, &w);
-                try field.encode(Parameters, &tables.msg30_tail, &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.msg30_tail, sv, ctx, &w);
             },
             .clock_utc => {
-                try field.encode(Parameters, &tables.clockMessage(.clock_utc), &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.clockMessage(.clock_utc), sv, ctx, &w);
                 try field.encode(time_parameters.Utc, &tables.msg33_tail, &data.utc.?, ctx, &w);
             },
             .clock_eop => {
-                try field.encode(Parameters, &tables.clockMessage(.clock_eop), &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.clockMessage(.clock_eop), sv, ctx, &w);
                 try field.encode(time_parameters.Eop, &tables.msg32_tail, &data.eop.?, ctx, &w);
             },
             .clock_ggto => {
-                try field.encode(Parameters, &tables.clockMessage(.clock_ggto), &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.clockMessage(.clock_ggto), sv, ctx, &w);
                 try field.encode(time_parameters.Ggto, &tables.msg35_tail, &data.ggto.at(s.ggto), ctx, &w);
             },
             .clock_reduced_almanac => {
-                try field.encode(Parameters, &tables.clockMessage(.clock_reduced_almanac), &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.clockMessage(.clock_reduced_almanac), sv, ctx, &w);
                 try field.encode(almanac_fields.Reference, &almanac_fields.reference, &data.almanac_reference, .{}, &w);
                 try reducedPackets(data, data.almanacPrns().group(4, s.almanac), 4, reduced31_end, &w);
                 try field.encode(field.NoSource, &tables.msg31_tail, &field.no_source, ctx, &w);
@@ -193,7 +192,7 @@ pub const Set = struct {
                 try reducedPackets(data, data.almanacPrns().group(tables.msg12_packets, s.almanac), tables.msg12_packets, content_bits, &w);
             },
             .clock_midi_almanac => {
-                try field.encode(Parameters, &tables.clockMessage(.clock_midi_almanac), &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.clockMessage(.clock_midi_almanac), sv, ctx, &w);
                 try field.encode(almanac_fields.Reference, &almanac_fields.reference, &data.almanac_reference, .{}, &w);
                 const target = data.almanacPrns().at(s.almanac);
                 const almanac = &data.alm[target - 1].?;
@@ -219,7 +218,7 @@ pub const Set = struct {
             .clock_differential_both => {
                 const c = corr.?;
                 const epoch: dc.Epoch = .{ .t_od = c.t_od };
-                try field.encode(Parameters, &tables.msg34_head, &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.msg34_head, sv, ctx, &w);
                 try field.encode(dc.Epoch, &dc.epoch, &epoch, .{}, &w);
                 w.writeBits(1, dc.data_type_lnav);
                 try field.encode(dc.Packet, &dc.cdc, &c.packets[0], .{}, &w);
@@ -234,7 +233,7 @@ pub const Set = struct {
             },
             .clock_text => {
                 const page = text.page(content.?.text.?, tables.msg36_characters, s.text);
-                try field.encode(Parameters, &tables.msg36_head, &sv.parameters, ctx, &w);
+                try field.encode(Parameters, &tables.msg36_head, sv, ctx, &w);
                 text.write(&w, &page.characters);
                 w.writeBits(4, page.number);
                 try field.encode(field.NoSource, &tables.msg36_tail, &field.no_source, ctx, &w);

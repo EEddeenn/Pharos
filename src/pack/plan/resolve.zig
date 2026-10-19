@@ -10,10 +10,26 @@ const Leap = core.civil.Leap;
 const NavSet = bundle.navigation.NavSet;
 const Ref = bundle.plan.Ref;
 
-pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundle.plan.Binding {
-    var out: bundle.plan.Binding = .{ .reference = reference, .air = &.{} };
-    const e = switch (reference) {
-        .kepler => |index| &set.kepler[index],
+/// What the packer resolves for a satellite at a time: the reference, its group delays and P1 word, and the families'
+/// attributes the rows and the contents are computed from. Of these the bundle keeps the reference and the group delays.
+pub const Resolved = struct {
+    reference: Ref,
+    group_delay: records.GroupDelays = .{},
+    attributes: gnss.reference.Attributes = .{},
+    glonass_p1: u2 = 0,
+
+    pub fn kepler(self: *const Resolved, set: *const NavSet) ?gnss.reference.Kepler {
+        return switch (self.reference) {
+            .kepler => |k| .{ .record = &set.kepler[k], .group_delay = &self.group_delay, .attributes = &self.attributes },
+            .glonass => null,
+        };
+    }
+};
+
+pub fn binding(set: *const NavSet, chosen: select.Chosen, t: GpsTime, leap: Leap) Resolved {
+    var out: Resolved = .{ .reference = chosen.reference };
+    const index = switch (chosen.reference) {
+        .kepler => |index| index,
         .glonass => |index| {
             const g = &set.glonass[index];
             out.glonass_p1 = select.glonassStep(set, g, leap);
@@ -21,6 +37,7 @@ pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundl
             return out;
         },
     };
+    const e = &set.kepler[index];
     out.group_delay = e.group_delay;
     const end: GpsTime = .{ .ms = bundle.plan.nextLegBoundary(e.sat.system, t, leap).ms };
     for (std.meta.tags(records.GroupDelayTerm)) |term| {
@@ -33,29 +50,31 @@ pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundl
         }
         if (best) |donor| out.group_delay.put(term, donor.group_delay.get(term).?);
     }
-    out.attributes = attributesAt(set, e, t, leap);
+    out.attributes = chosen.attributes orelse attributesAt(set, index, t, leap);
     return out;
 }
 
-pub fn attributesAt(set: *const NavSet, e: *const records.KeplerEphemeris, t: GpsTime, leap: Leap) gnss.reference.Attributes {
+pub fn attributesAt(set: *const NavSet, index: u32, t: GpsTime, leap: Leap) gnss.reference.Attributes {
+    const e = &set.kepler[index];
     var out: gnss.reference.Attributes = .{};
     const end: GpsTime = .{ .ms = bundle.plan.nextLegBoundary(e.sat.system, t, leap).ms };
     for (std.meta.tags(records.NavSource)) |source| {
         if (source.system() != e.sat.system) continue;
         if (source == e.source()) {
-            out.put(e.extra);
+            out.put(e.extra, index);
             continue;
         }
-        var latest: ?*const records.KeplerEphemeris = null;
-        for (set.kepler) |*donor| {
+        var latest: ?u32 = null;
+        for (set.kepler, 0..) |*donor, i| {
             if (donor.source() != source or !eligible(donor, e.sat, t, end)) continue;
-            if (latest) |previous| {
+            if (latest) |l| {
+                const previous = &set.kepler[l];
                 if (adopted(donor).lessThan(adopted(previous))) continue;
                 if (adopted(donor).eql(adopted(previous)) and !select.recordBefore(donor, previous)) continue;
             }
-            latest = donor;
+            latest = @intCast(i);
         }
-        if (latest) |donor| out.put(attributes(e, donor));
+        if (latest) |l| out.put(gnss.reference.attributesOf(e, &set.kepler[l]), l);
     }
     return out;
 }
@@ -92,77 +111,4 @@ fn nearer(a: *const records.KeplerEphemeris, b: *const records.KeplerEphemeris, 
     if (da != db) return da < db;
     if (!adopted(a).eql(adopted(b))) return adopted(b).lessThan(adopted(a));
     return select.recordBefore(a, b);
-}
-
-fn gpsUra(e: *const records.KeplerEphemeris) gnss.gps.accuracy.Ura {
-    return switch (e.extra) {
-        .lnav => |x| gnss.gps.accuracy.ofLnav(x.ura_index),
-        .cnav => |x| x.ura,
-        .cnav2 => |x| x.ura,
-        else => .{ .ed = 15, .ned0 = 15, .ned1 = 7, .ned2 = 7 },
-    };
-}
-
-fn galileoIssue(e: *const records.KeplerEphemeris) u10 {
-    return switch (e.extra) {
-        .inav => |x| x.iod_nav,
-        .fnav => |x| x.iod_nav,
-        else => @truncate(e.iode),
-    };
-}
-
-fn attributes(e: *const records.KeplerEphemeris, donor: *const records.KeplerEphemeris) records.SourceExtra {
-    const same = std.meta.eql(e.parameters(), donor.parameters());
-    var out = donor.extra;
-    switch (out) {
-        .lnav => |*x| {
-            x.ura_index = switch (e.extra) {
-                .lnav => |own| own.ura_index,
-                else => if (same) x.ura_index else 15,
-            };
-        },
-        .cnav => |*x| x.ura = gpsUra(e),
-        .cnav2 => |*x| x.ura = gpsUra(e),
-        inline .inav, .fnav => |*x| {
-            const issue = galileoIssue(e);
-            if (!e.toe.eql(donor.toe) or x.iod_nav != issue) x.sisa_index = gnss.galileo.records.sisa_napa;
-            x.iod_nav = issue;
-        },
-        .d1d2 => |*x| {
-            x.ura_index = switch (e.extra) {
-                .d1d2 => |own| own.ura_index,
-                else => if (same) x.ura_index else 15,
-            };
-            if (e.source() != .d1d2) {
-                x.aodc = 31;
-                x.aode = 31;
-            }
-        },
-        .bcnav1, .bcnav2, .bcnav3 => |*x| {
-            x.sat_type = switch (e.extra) {
-                .bcnav1, .bcnav2, .bcnav3 => |own| own.sat_type,
-                else => gnss.bds.records.satTypeOf(e.sat.prn(), e.sqrt_a),
-            };
-            switch (e.extra) {
-                .bcnav1, .bcnav2, .bcnav3 => |own| {
-                    x.sismai = own.sismai;
-                    x.sisai_oe = own.sisai_oe;
-                    x.sisai_ocb = own.sisai_ocb;
-                    x.sisai_oc1 = own.sisai_oc1;
-                    x.sisai_oc2 = own.sisai_oc2;
-                },
-                else => if (!same) {
-                    x.sismai = 15;
-                    x.sisai_oe = 31;
-                    x.sisai_ocb = 31;
-                    x.sisai_oc1 = 7;
-                    x.sisai_oc2 = 7;
-                    if (x.b1c) |*flags| flags.aif = true;
-                    if (x.b2a) |*flags| flags.aif = true;
-                    if (x.b2b) |*flags| flags.aif = true;
-                },
-            }
-        },
-    }
-    return out;
 }

@@ -1,5 +1,6 @@
 const time = @import("../../core.zig").time;
 const field = @import("../../codec.zig").field;
+const SatId = @import("../../core.zig").types.SatId;
 const records = @import("../records.zig");
 const reference = @import("../reference.zig");
 const projection = @import("projection.zig");
@@ -19,7 +20,7 @@ pub const bits_per_frame = page.symbols_per_page;
 const subframes_per_cycle = 24;
 const almanac_groups = subframes_per_cycle / 2;
 pub const Frame = page.Page;
-const Content = page.Content;
+const PageContent = page.Content;
 pub const Error = field.Error;
 
 const PageType = enum { clock, ephemeris_1, ephemeris_2, ephemeris_3, almanac_1, almanac_2 };
@@ -46,7 +47,9 @@ fn slot(index: i64) Slot {
     };
 }
 
-const Sv = struct { eph: Eph, clock_fits: bool };
+pub const Sv = struct { eph: Eph, clock_fits: bool };
+
+pub const Content = @import("../content.zig").Carriage(Sv);
 
 pub const Set = struct {
     sv: [36]?Sv,
@@ -56,7 +59,7 @@ pub const Set = struct {
     ggto: time_parameters.Ggto,
 
     pub const Inputs = struct {
-        eph: [36]?reference.Kepler,
+        eph: [36]?*const Content,
         almanacs: []const Alm,
         nequick: ?iono_fields.Coefficients,
         utc: ?auxiliary.UtcParams,
@@ -74,12 +77,7 @@ pub const Set = struct {
         };
 
         for (in.eph, &set.sv) |entry, *sv| {
-            const e = entry orelse continue;
-            const eph = described(e);
-            sv.* = .{
-                .eph = eph,
-                .clock_fits = clockAvailable(e) and field.fits(Eph, &tables.page1, &eph) and field.fits(Eph, &tables.page1_tail, &eph),
-            };
+            sv.* = ((entry orelse continue).value() orelse continue).*;
         }
         set.groups = almanac_fields.almanacGroups(in.almanacs, set.ggto, in.t);
         try set.validate();
@@ -91,8 +89,8 @@ pub const Set = struct {
         };
     }
 
-    fn pageBits(self: *const Set, sv: *const Sv, kind: PageType, group: u4, ctx: tables.Ctx) Error!Content {
-        var out: Content = .{};
+    fn pageBits(self: *const Set, sv: *const Sv, kind: PageType, group: u4, ctx: tables.Ctx) Error!PageContent {
+        var out: PageContent = .{};
         var w = out.writer();
         switch (kind) {
             .clock => if (sv.clock_fits) {
@@ -120,15 +118,27 @@ pub const Set = struct {
 
 const dummy_page_type = 63;
 
-const dummy_page: Content = blk: {
-    var content: Content = .{};
+const dummy_page: PageContent = blk: {
+    var content: PageContent = .{};
     var w = content.writer();
     w.writeBits(6, dummy_page_type);
     break :blk content;
 };
 
-fn described(e: reference.Kepler) Eph {
-    return projection.forSource(e, .fnav);
+/// F/NAV's content for a leg: the reference projected onto F/NAV's clock, and whether page 1 can carry that clock.
+pub fn prepare(e: reference.Kepler) Content {
+    const eph = projection.forSource(e, .fnav);
+    return .{ .carried = .{
+        .eph = eph,
+        .clock_fits = clockAvailable(e) and field.fits(Eph, &tables.page1, &eph) and field.fits(Eph, &tables.page1_tail, &eph),
+    } };
+}
+
+pub fn valid(sv: *const Sv, sat: SatId) bool {
+    if (sv.eph.sat != sat or sv.eph.extra != .fnav) return false;
+    if (sv.clock_fits and !(field.fits(Eph, &tables.page1, &sv.eph) and field.fits(Eph, &tables.page1_tail, &sv.eph))) return false;
+    inline for (.{ &tables.page2, &tables.page3, &tables.page4 }) |rows| if (!field.fits(Eph, rows, &sv.eph)) return false;
+    return true;
 }
 
 fn clockAvailable(e: reference.Kepler) bool {
@@ -139,7 +149,7 @@ fn almanacGroup(group: u4, prn: u8) u4 {
     return @intCast((@as(u32, group) + prn - 1) % almanac_groups);
 }
 
-fn buildContent(set: *const Set, prn: u8, index: i64) ?Content {
+fn buildContent(set: *const Set, prn: u8, index: i64) ?PageContent {
     const sv = if (set.sv[prn - 1]) |*entry| entry else return null;
     const s = slot(index);
     return set.pageBits(sv, s.page, almanacGroup(s.group, prn), .{ .wn = s.wn, .tow = s.tow }) catch unreachable;

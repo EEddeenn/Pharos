@@ -31,7 +31,7 @@ pub const Streams = struct {
         };
         if (messages.d2.len > 0) {
             const s = try gpa.create(d2.Stream);
-            s.init(b, payload, messages.d2, bds_model);
+            s.init(b, messages.d2, bds_model);
             out.d2 = s;
         }
         if (b.navigation.precise != null and declaresDifferential(scenario.messages.gps) and

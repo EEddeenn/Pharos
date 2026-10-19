@@ -6,9 +6,8 @@ const common = @import("common.zig");
 const types = core.types;
 const GpsTime = core.time.GpsTime;
 const ppp = gnss.bds.ppp_b2b;
-const Kepler = gnss.reference.Kepler;
+const Content = gnss.content.Content;
 const corrections = @import("corrections.zig");
-const inputs = @import("shared").stage.messages.inputs;
 
 const clock_validity_s = 12;
 const orbit_validity_s = 96;
@@ -33,27 +32,22 @@ const Entry = struct {
     slot: u9,
     sat: types.SatId,
     corrected: Corrected,
-    record: ?Kepler = null,
+    content: ?*const Content = null,
     broadcast: ?Reference = null,
     iod_corr: u3 = 0,
     orbit_epoch: ?i64 = null,
 
-    fn follow(self: *Entry, record: Kepler) void {
-        if (self.record) |previous| {
-            if (std.meta.eql(previous, record)) return;
+    fn follow(self: *Entry, content: *const Content) void {
+        if (self.content) |previous| {
+            if (previous == content) return;
             self.iod_corr +%= 1;
         }
-        self.record = record;
-        self.broadcast = switch (self.corrected) {
-            .bds => if (gnss.bds.bcnav.broadcast(record, .bcnav1)) |b| .{ .parameters = b.parameters, .iodn = @intCast(b.iodc & 0x3ff) } else null,
-            .gps => blk: {
-                const described = gnss.gps.lnav.described(record);
-                break :blk .{ .parameters = described.parameters(), .iodn = @intCast(described.iodc & 0x3ff) };
-            },
-            .gal => blk: {
-                const described = gnss.galileo.inav.described(record);
-                break :blk .{ .parameters = described.parameters(), .iodn = described.extra.inav.iod_nav };
-            },
+        self.content = content;
+        self.broadcast = switch (content.*) {
+            .bcnav1 => |*c| if (c.value()) |sv| if (sv.ephemeris.decoded()) |b| .{ .parameters = b.parameters, .iodn = @intCast(b.iodc & 0x3ff) } else null else null,
+            .lnav => |*c| if (c.value()) |eph| .{ .parameters = eph.parameters(), .iodn = @intCast(eph.iodc & 0x3ff) } else null,
+            .inav => |*c| if (c.value()) |eph| .{ .parameters = eph.parameters(), .iodn = eph.extra.inav.iod_nav } else null,
+            else => unreachable,
         };
         self.orbit_epoch = null;
     }
@@ -129,10 +123,12 @@ pub const Stream = struct {
     }
 
     fn correction(self: *Stream, e: *Entry, t: GpsTime) ?CorrectedState {
-        const record = inputs.recordOf(self.source.b, self.served.payload, systems.get(e.corrected).family, e.sat, self.source.notBefore(t)) orelse return null;
-        e.follow(record);
+        const content = self.source.contentAt(e.sat, systems.get(e.corrected).family, t) orelse return null;
+        // A family that carries its own records only has no reference to correct on a leg that flies another family's.
+        if (content.unfit()) |unfit| if (unfit == .record) return null;
+        e.follow(content);
         const reference = if (e.broadcast) |*r| r else return null;
-        const value = self.source.correctionAgainst(e.sat, record, &reference.parameters, t, .icd_periodic) orelse return null;
+        const value = self.source.correctionAgainst(e.sat, &reference.parameters, t, .icd_periodic) orelse return null;
         return .{ .value = value, .iodn = reference.iodn };
     }
 

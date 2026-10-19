@@ -130,7 +130,7 @@ pub const Sequence = struct {
     }
 
     fn buildSet(self: *const Sequence, comptime family: NavFamily, out: *messages.Set(family), t: GpsTime, sources: messages.Sources) error{MessageSet}!void {
-        messages.build(family, out, self.b, self.payload, &self.broadcast, self.prepared, sources, t) catch return error.MessageSet;
+        messages.build(family, out, self.b, &self.broadcast, self.prepared, sources, t) catch return error.MessageSet;
     }
 
     pub fn viewAt(self: *const Sequence, arena: std.mem.Allocator, family: NavFamily, t: GpsTime) error{ OutOfMemory, MessageSet }!?View {

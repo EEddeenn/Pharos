@@ -49,7 +49,7 @@ pub const Bundle = struct {
         if (self.scenario.duration_ms > self.trajectory.epochs()) return "the scenario's duration is longer than the trajectory";
         if (!self.plan.start.eql(self.scenario.start)) return "the plan does not start where the scenario does";
         if (self.plan.span_ms != self.epochs() + plan.grid_ms) return "the plan does not span the run and a minute";
-        if (self.plan.validate(&self.navigation, &self.scenario)) |why| return why;
+        if (self.plan.validate(&self.navigation)) |why| return why;
         return self.navigation.validate(self.plan.leap);
     }
 };

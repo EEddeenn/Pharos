@@ -247,16 +247,16 @@ pub const Messages = struct {
 
 pub const Sources = struct { has: ?cnav_has.PageSource = null, ppp_b2b: ?ppp_b2b.FrameSource = null, d2: ?d1d2.augmentation.Source = null, dc: ?gnss.gps.dc.Source = null };
 
-pub fn build(comptime family: NavFamily, out: *Set(family), b: *const bundle.Bundle, payload: *const gnss.payload.Payload, broadcast: *const Broadcast, messages: Messages, sources: Sources, t: GpsTime) field.Error!void {
+pub fn build(comptime family: NavFamily, out: *Set(family), b: *const bundle.Bundle, broadcast: *const Broadcast, messages: Messages, sources: Sources, t: GpsTime) field.Error!void {
     return out.build(switch (family) {
-        .lnav => inputs.lnav(b, payload, broadcast, messages.gps, messages.configuration, t),
-        .cnav => inputs.cnav(b, payload, broadcast, messages.gps, sources.dc, t),
-        .cnav2 => inputs.cnav2(b, payload, broadcast, messages.cnav2, messages.cnav2_configuration, sources.dc, t),
-        .inav => inputs.inav(b, payload, broadcast, messages.inav, t),
-        .fnav => inputs.fnav(b, payload, broadcast, t),
+        .lnav => inputs.lnav(b, broadcast, messages.gps, messages.configuration, t),
+        .cnav => inputs.cnav(b, broadcast, messages.gps, sources.dc, t),
+        .cnav2 => inputs.cnav2(b, broadcast, messages.cnav2, messages.cnav2_configuration, sources.dc, t),
+        .inav => inputs.inav(b, broadcast, messages.inav, t),
+        .fnav => inputs.fnav(b, broadcast, t),
         .cnav_has => .{ .pages = sources.has },
-        .d1d2 => inputs.d1d2(b, payload, broadcast, sources.d2, t),
-        .bcnav1, .bcnav2, .bcnav3 => inputs.bcnav(b, payload, broadcast, family, t),
+        .d1d2 => inputs.d1d2(b, broadcast, sources.d2, t),
+        .bcnav1, .bcnav2, .bcnav3 => inputs.bcnav(b, broadcast, family, t),
         .ppp_b2b => .{ .frames = sources.ppp_b2b },
         .gnav => inputs.gnav(b, t),
     });
