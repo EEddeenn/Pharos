@@ -36,6 +36,7 @@ pub const Binding = struct {
     group_delay: records.GroupDelays = .{},
     attributes: gnss.reference.Attributes = .{},
     glonass_p1: ?u2 = null,
+    air: []const gnss.air.Row,
 
     pub fn kepler(self: *const Binding, set: *const navigation.NavSet) ?gnss.reference.Kepler {
         return switch (self.reference) {
@@ -101,6 +102,7 @@ fn validLegs(legs: []const Leg, sat: types.SatId, set: *const navigation.NavSet,
         last = leg.from_ms;
         const binding = leg.binding orelse continue;
         const ref = binding.reference;
+        if (binding.air.len != gnss.spec.signalCount(sat.system)) return "a leg does not carry one answer per signal of its system";
         if (gnss.plausible.groupDelays(&binding.group_delay) != null) return "a leg's group delay is outside its ICD field";
         for (std.enums.values(records.NavSource)) |source| {
             if (binding.attributes.get(source) != null and source.system() != sat.system) return "a leg's message attributes belong to another source";

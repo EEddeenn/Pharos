@@ -202,7 +202,7 @@ pub const Stream = struct {
             const e = &self.entries[self.dcb_next];
             const c = self.correction(e, t) orelse continue;
             var k: usize = 0;
-            for (systems.get(e.corrected).modes) |m| if (self.served.transmits(e.sat, m.signal) and c.value.record.serves(m.signal)) {
+            for (systems.get(e.corrected).modes) |m| if (self.served.transmits(e.sat, m.signal) and c.value.delays.air[gnss.spec.slot(m.signal)].status == .on_air) {
                 const code = ppp.dcbCode(core.constants.light_speed * c.value.delays.term(m.signal, m.component)) orelse continue;
                 biases[page.count()][k] = .{ .mode = m.mode, .code = code };
                 k += 1;

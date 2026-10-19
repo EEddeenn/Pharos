@@ -261,7 +261,7 @@ pub const Stream = struct {
         for (mask.systems, 0..) |sys, k| {
             for (snap.corr[i .. i + sys.satCount()]) |c| {
                 for (self.systems[k].cells) |cell| if (sys.sigs[cell.index] and self.served.transmits(c.sat, cell.signal)) {
-                    if (!c.record.serves(cell.signal)) {
+                    if (c.delays.air[gnss.spec.slot(cell.signal)].status != .on_air) {
                         code[n] = null;
                         phase[n] = null;
                         n += 1;

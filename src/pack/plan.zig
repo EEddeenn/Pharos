@@ -18,6 +18,7 @@ const Binding = bundle.plan.Binding;
 const Timeline = bundle.plan.Timeline;
 pub const select = @import("plan/select.zig");
 const resolve = @import("plan/resolve.zig");
+const air = @import("plan/air.zig");
 pub const almanacs = @import("plan/almanacs.zig");
 
 const Error = std.mem.Allocator.Error || error{LegBoundaryStalls};
@@ -41,12 +42,16 @@ fn sampleTimes(arena: std.mem.Allocator, start: GpsTime, span_ms: u64, system: t
     return out.items;
 }
 
-fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, signals: std.EnumSet(types.Signal), times: []const GpsTime, leap: civil.Leap) std.mem.Allocator.Error![]const Leg {
+fn legs(arena: std.mem.Allocator, set: *const NavSet, sat: types.SatId, allocated: std.EnumSet(types.Signal), signals: std.EnumSet(types.Signal), times: []const GpsTime, leap: civil.Leap) std.mem.Allocator.Error![]const Leg {
     var out: std.ArrayList(Leg) = .empty;
     var last: ?Binding = null;
     for (times, 0..) |t, i| {
         const binding = if (select.reference(set, sat, t, signals, leap)) |ref| resolve.binding(set, ref, t, leap) else null;
-        if (i == 0 or !sameBinding(binding, last)) try out.append(arena, .{ .from_ms = @intCast(t.ms - times[0].ms), .binding = binding });
+        if (i == 0 or !sameBinding(binding, last)) {
+            var leg: Leg = .{ .from_ms = @intCast(t.ms - times[0].ms), .binding = binding };
+            if (leg.binding) |*b| b.air = try air.rows(arena, set, sat, b, allocated);
+            try out.append(arena, leg);
+        }
         last = binding;
     }
     return out.items;
@@ -131,8 +136,8 @@ pub fn build(arena: std.mem.Allocator, s: *const model.Scenario, set: *const Nav
         const times = try sampleTimes(arena, s.start, span_ms, system, leap);
         var sats = system.satellites();
         while (sats.next()) |sat| {
-            const signals = s.signals.intersectWith(allocation.signals[sat.key()]);
-            timelines[bundle.plan.slot(sat)] = .{ .sat = sat, .legs = try legs(arena, set, sat, signals, times, leap) };
+            const allocated = allocation.signals[sat.key()];
+            timelines[bundle.plan.slot(sat)] = .{ .sat = sat, .legs = try legs(arena, set, sat, allocated, s.signals.intersectWith(allocated), times, leap) };
         }
     }
     return .{
@@ -198,7 +203,7 @@ pub fn warnClockReference(set: *const NavSet, p: *const Plan, diags: *Diagnostic
             const binding = if (leg.binding) |*binding| binding else continue;
             const at = p.start.addMs(@intCast(leg.from_ms));
             if (!provider.productServes(product, timeline.sat, at, p.leap)) continue;
-            const missing = missingClockTerm(set, clock_ref, binding) orelse continue;
+            const missing = missingClockTerm(clock_ref, binding) orelse continue;
             try diags.warn(.no_record, "ephemeris", "{f}: a record it flies carries no {s} group delay, which the {s} clock of the precise product refers to: the satellite is dark while that record is selected", .{ timeline.sat, missing.name(), clock_ref.name() });
             break;
         }
@@ -225,15 +230,9 @@ const Satellites = struct {
     }
 };
 
-fn missingClockTerm(set: *const NavSet, clock_ref: gnss.delay.ClockRef, binding: *const Binding) ?types.Signal {
+fn missingClockTerm(clock_ref: gnss.delay.ClockRef, binding: *const Binding) ?types.Signal {
     const pair = clock_ref.pair();
-    return switch (binding.reference) {
-        .kepler => blk: {
-            const reference = binding.kepler(set).?;
-            break :blk clock_ref.missingTerm(reference.delay(pair[0], .data), reference.delay(pair[1], .data));
-        },
-        .glonass => |g| clock_ref.missingTerm(gnss.delay.forGlonass(&set.glonass[g], pair[0]), gnss.delay.forGlonass(&set.glonass[g], pair[1])),
-    };
+    return clock_ref.missingTerm(binding.air[gnss.spec.slot(pair[0])].given(), binding.air[gnss.spec.slot(pair[1])].given());
 }
 
 fn keplerOf(leg: bundle.plan.Leg) ?u32 {

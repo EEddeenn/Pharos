@@ -2,7 +2,6 @@ const std = @import("std");
 const core = @import("../core.zig");
 const gnss = @import("../gnss.zig");
 const bundle = @import("../bundle.zig");
-const selection = @import("../track.zig").selection;
 const messages = @import("messages.zig");
 const types = core.types;
 const Epoch = core.time.Epoch;
@@ -21,7 +20,7 @@ pub const State = enum(u32) {
     no_frames = 6,
 };
 
-pub const Sight = struct { record: selection.Record, el_rad: f64 };
+pub const Sight = struct { air: []const gnss.air.Row, freq: ?types.FreqId, el_rad: f64 };
 
 pub fn replanAt(epoch: Epoch, epochs: u64) Epoch {
     return .{ .ms = @min(epoch.ms / replan_epochs, (epochs - 1) / replan_epochs) * replan_epochs };
@@ -34,7 +33,7 @@ pub fn replanOnOrAfter(epoch: Epoch) Epoch {
 pub fn keep(key: types.ChannelKey, sight: ?Sight, mask_rad: f64, snapshot: messages.Snapshot) State {
     const seen = sight orelse return .no_record;
     const set = messages.forSignal(snapshot, key.signal) orelse return .no_frames;
-    if (!seen.record.serves(key.signal)) return .not_broadcast;
+    if (seen.air[gnss.spec.slot(key.signal)].status != .on_air) return .not_broadcast;
     if (seen.el_rad < mask_rad - hysteresis_rad) return .below_mask;
     if (!set.hasFrames(key.sat.prn())) return .no_frames;
     return .held;
@@ -47,9 +46,9 @@ pub const Rules = struct {
     pub fn admit(self: *const Rules, key: types.ChannelKey, sight: ?Sight, mask_rad: f64, snapshot: messages.Snapshot) messages.MissingData!State {
         if (!self.allocation.transmits(key.sat, key.signal)) return .not_broadcast;
         const seen = sight orelse return .no_record;
-        if (!seen.record.serves(key.signal)) return .not_broadcast;
+        if (seen.air[gnss.spec.slot(key.signal)].status != .on_air) return .not_broadcast;
         if (seen.el_rad < mask_rad) return .below_mask;
-        if (!self.samples.inBand(gnss.spec.get(key.signal).carrierHz(seen.record.freq()))) return .outside_band;
+        if (!self.samples.inBand(gnss.spec.get(key.signal).carrierHz(seen.freq))) return .outside_band;
         const set = messages.forSignal(snapshot, key.signal) orelse return .no_frames;
         try set.requireData(key.sat.prn());
         if (!set.hasFrames(key.sat.prn())) return .no_frames;

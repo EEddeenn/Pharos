@@ -216,7 +216,7 @@ pub const Stage = struct {
         // Re-plans open blocks, which no window crosses: only a window's first epoch re-plans.
         if (@mod(first.ms, stage.channels.replan_epochs) == 0) {
             const rows = self.window_rows[0..self.sats.len];
-            for (rows, self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .record = seen.delays.record, .el_rad = seen.epoch.el_rad } else null;
+            for (rows, self.sights) |row, *sight| sight.* = if (row.seen) |seen| .{ .air = seen.delays.air, .freq = seen.delays.freq, .el_rad = seen.epoch.el_rad } else null;
             try self.seq.replan(self.sights, first);
             const before = self.table.changes;
             try self.table.apply(first, self.seq.changes.items, rows, &self.tables, self.seq.snapshot(), ring);

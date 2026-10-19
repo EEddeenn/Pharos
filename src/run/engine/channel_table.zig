@@ -89,7 +89,7 @@ pub const ChannelTable = struct {
                 continue;
             }
             const row_spec = spec.get(change.signal);
-            const freq = row.seen.?.delays.record.freq();
+            const freq = row.seen.?.delays.freq;
             const carrier = row_spec.carrierHz(freq);
             const code = row_spec.code;
             try self.channels.append(self.gpa, .{

@@ -11,7 +11,7 @@ const NavSet = bundle.navigation.NavSet;
 const Ref = bundle.plan.Ref;
 
 pub fn binding(set: *const NavSet, reference: Ref, t: GpsTime, leap: Leap) bundle.plan.Binding {
-    var out: bundle.plan.Binding = .{ .reference = reference };
+    var out: bundle.plan.Binding = .{ .reference = reference, .air = &.{} };
     const e = switch (reference) {
         .kepler => |index| &set.kepler[index],
         .glonass => |index| {

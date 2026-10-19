@@ -61,12 +61,13 @@ const DelayTable = struct {
 };
 
 pub const Delays = struct {
-    record: selection.Record,
+    air: []const gnss.air.Row,
+    freq: ?types.FreqId,
     shift_s: f64,
     transition: ?struct { weight: f64, from: DelayTable } = null,
 
     pub fn term(self: *const Delays, signal: types.Signal, component: types.Component) f64 {
-        const now = self.record.delay(signal, component) orelse 0;
+        const now = self.air[gnss.spec.slot(signal)].delay_s.get(component);
         const t = self.transition orelse return now;
         return now + (t.from.terms[gnss.spec.slot(signal)].get(component) - now) * t.weight;
     }
@@ -92,13 +93,14 @@ pub const Delays = struct {
 };
 
 pub const DelaySnapshot = struct {
-    record: selection.Record,
+    air: []const gnss.air.Row,
+    freq: ?types.FreqId,
     shift_s: f64,
     from: ?DelayTable,
     blend_until: GpsTime,
 
     pub fn at(self: *const DelaySnapshot, t: GpsTime) Delays {
-        var out: Delays = .{ .record = self.record, .shift_s = self.shift_s };
+        var out: Delays = .{ .air = self.air, .freq = self.freq, .shift_s = self.shift_s };
         const remaining = self.blend_until.secondsSince(t);
         if (self.from) |from| if (remaining > 0) {
             out.transition = .{ .weight = remaining / blend_s, .from = from };
@@ -184,7 +186,7 @@ pub const Track = struct {
             return false;
         };
         const switched = !std.meta.eql(cur.identity, next.identity);
-        if (switched or !cur.record.sameDelays(next.record) or cur.delay_shift_s != next.delay_shift_s) {
+        if (switched or !sameDelays(cur.air, next.air) or cur.delay_shift_s != next.delay_shift_s) {
             self.delays_from = self.tableAt(t);
             if (switched) {
                 self.previous_residual = self.residualAt(t);
@@ -228,7 +230,7 @@ pub const Track = struct {
 
     pub fn delaySnapshot(self: *const Track) DelaySnapshot {
         const cur = self.current.?;
-        return .{ .record = cur.record, .shift_s = cur.delay_shift_s, .from = self.delays_from, .blend_until = self.delay_blend_until };
+        return .{ .air = cur.air, .freq = cur.record.freq(), .shift_s = cur.delay_shift_s, .from = self.delays_from, .blend_until = self.delay_blend_until };
     }
 
     pub fn delaysAt(self: *const Track, t: GpsTime) Delays {
@@ -257,6 +259,11 @@ pub const Track = struct {
         };
     }
 };
+
+fn sameDelays(a: []const gnss.air.Row, b: []const gnss.air.Row) bool {
+    for (a, b) |x, y| if (x.origin != y.origin or !std.meta.eql(x.delay_s, y.delay_s)) return false;
+    return true;
+}
 
 fn propagate(source: *selection.Source, t: GpsTime) State {
     return switch (source.*) {

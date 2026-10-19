@@ -198,7 +198,7 @@ pub const Replay = struct {
         const rx = geo.receiver.atMs(&self.b.trajectory, r.ms);
         for (self.tracks, self.sights) |*track, *sight| {
             _ = track.advanceTo(self.b, t);
-            sight.* = if (track.record()) |record| .{ .record = record, .el_rad = track.look(rx, t).el_rad } else null;
+            sight.* = if (track.ephemeris.current) |current| .{ .air = current.air, .freq = current.record.freq(), .el_rad = track.look(rx, t).el_rad } else null;
         }
         try self.seq.replan(self.sights, r);
         for (self.seq.changes.items) |c| self.changes.appendAssumeCapacity(.{ .epoch = r, .change = c });

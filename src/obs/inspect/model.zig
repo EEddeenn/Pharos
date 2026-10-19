@@ -233,7 +233,7 @@ pub const Result = struct { model: ?Model = null, navigation: ?Navigation = null
 pub fn project(b: *const bundle.Bundle, ephemeris: *const provider.Track, state: ?provider.State, sat: types.SatId, signal: types.Signal, t: GpsTime, needs: Needs) Result {
     return .{
         .model = if (needs.model) modelValue(b, ephemeris, state, sat, signal, t) else null,
-        .navigation = if (needs.navigation) if (ephemeris.current) |current| navigation(current.record, signal) else .{ .availability = .unavailable, .reason = .no_available_record } else null,
+        .navigation = if (needs.navigation) if (ephemeris.current) |current| navigation(current, signal) else .{ .availability = .unavailable, .reason = .no_available_record } else null,
     };
 }
 
@@ -276,7 +276,7 @@ fn modelValue(b: *const bundle.Bundle, ephemeris: *const provider.Track, sampled
 }
 
 fn componentDelay(delays: provider.Delays, signal: types.Signal, component: types.Component) ComponentDelay {
-    if (delays.record.delay(signal, component) == null) return .{ .availability = .unavailable, .reason = .missing_group_delay };
+    if (delays.air[gnss.spec.slot(signal)].origin == .assumed) return .{ .availability = .unavailable, .reason = .missing_group_delay };
     return .{ .availability = .available, .term_s = delays.term(signal, component), .code_s = delays.code(signal, component) };
 }
 
@@ -305,15 +305,18 @@ fn ionosphere(configuration: bundle.ionosphere.Configuration, system: types.Syst
     return out;
 }
 
-fn navigation(record: shared.track.selection.Record, signal: types.Signal) Navigation {
-    return switch (record) {
+fn navigation(current: shared.track.selection.Selection, signal: types.Signal) Navigation {
+    const row = current.air[gnss.spec.slot(signal)];
+    // The record's own reasons alone: the allocation is the channel's `broadcasts`.
+    const serves = row.status == .on_air or row.status == .not_allocated;
+    return switch (current.record) {
         .kepler => |reference| blk: {
             const attributes = reference.attributesFor(signal);
             break :blk .{
                 .availability = .available,
                 .family = reference.record.source().family(),
                 .kepler = .of(reference),
-                .health = .{ .status = attributes.signalStatus(signal), .serves_signal = reference.serves(signal), .family = @as(gnss.records.NavSource, attributes).family() },
+                .health = .{ .status = row.health, .serves_signal = serves, .family = @as(gnss.records.NavSource, attributes).family() },
                 .accuracy = accuracy(attributes, signal),
             };
         },
@@ -321,7 +324,7 @@ fn navigation(record: shared.track.selection.Record, signal: types.Signal) Navig
             .availability = .available,
             .family = .gnav,
             .glonass = .of(g),
-            .health = .{ .status = gnss.health.flagged(!g.health), .serves_signal = record.serves(signal), .family = .gnav },
+            .health = .{ .status = row.health, .serves_signal = serves, .family = .gnav },
             .accuracy = if (g.ft) |ft| .{ .family = .gnav, .ft_index = ft } else .{ .family = .gnav, .availability = .unavailable, .reason = .accuracy_not_stated },
         },
     };

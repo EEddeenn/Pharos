@@ -1,4 +1,3 @@
-const std = @import("std");
 const core = @import("../core.zig");
 const gnss = @import("../gnss.zig");
 const bundle = @import("../bundle.zig");
@@ -26,39 +25,6 @@ pub const Record = union(enum) {
             .glonass => |g| g.freq,
         };
     }
-
-    pub fn serves(self: Record, signal: types.Signal) bool {
-        return switch (self) {
-            .kepler => |k| k.serves(signal),
-            .glonass => true,
-        };
-    }
-
-    pub fn delay(self: Record, signal: types.Signal, component: types.Component) ?f64 {
-        return switch (self) {
-            .kepler => |k| k.delay(signal, component),
-            .glonass => |g| gnss.delay.forGlonass(g, signal),
-        };
-    }
-
-    pub fn sameDelays(self: Record, other: Record) bool {
-        const own = self.system();
-        if (other.system() != own) return false;
-        for (std.meta.tags(types.Signal)) |signal| {
-            if (signal.system() != own) continue;
-            for (std.meta.tags(types.Component)) |component| {
-                if (!std.meta.eql(self.delay(signal, component), other.delay(signal, component))) return false;
-            }
-        }
-        return true;
-    }
-
-    fn system(self: Record) types.System {
-        return switch (self) {
-            .kepler => |k| k.record.sat.system,
-            .glonass => |g| g.sat.system,
-        };
-    }
 };
 
 const Identity = union(enum) { record: bundle.plan.Ref, product };
@@ -68,6 +34,7 @@ pub const Selection = struct {
     source: Source,
     identity: Identity,
     record: Record,
+    air: []const gnss.air.Row,
     delay_shift_s: f64 = 0,
     phase_centre: ?bundle.antex.PhaseCentre = null,
 };
@@ -86,7 +53,7 @@ pub fn resolve(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime, span: Span
     if (set.precise) |product| {
         const clock_ref = set.clockReference(sat.system);
         const pair = clock_ref.pair();
-        const shift = clock_ref.offset(record.delay(pair[0], .data), record.delay(pair[1], .data)) orelse return null;
+        const shift = clock_ref.offset(binding.air[gnss.spec.slot(pair[0])].given(), binding.air[gnss.spec.slot(pair[1])].given()) orelse return null;
         const handle = product.handle(
             sat,
             span.from,
@@ -99,6 +66,7 @@ pub fn resolve(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime, span: Span
             .source = .{ .precise = handle },
             .identity = .product,
             .record = record,
+            .air = binding.air,
             .delay_shift_s = shift,
             .phase_centre = centre,
         };
@@ -119,6 +87,7 @@ pub fn resolve(b: *const bundle.Bundle, sat: types.SatId, t: GpsTime, span: Span
         },
         .identity = .{ .record = ref },
         .record = record,
+        .air = binding.air,
         .phase_centre = centre,
     };
 }

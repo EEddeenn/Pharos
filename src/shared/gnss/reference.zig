@@ -45,11 +45,6 @@ pub const Kepler = struct {
         return @import("delay.zig").forGroupDelays(self.group_delay, self.record.source(), self.record.sat.prn(), signal, component);
     }
 
-    pub fn serves(self: Kepler, signal: types.Signal) bool {
-        if (signal.system() != self.record.sat.system or self.delay(signal, .data) == null) return false;
-        return self.attributesFor(signal).servesSignal(signal);
-    }
-
     pub fn attributesFor(self: Kepler, signal: types.Signal) records.SourceExtra {
         const family = spec.get(signal).family;
         inline for (std.meta.tags(records.NavSource)) |source| {

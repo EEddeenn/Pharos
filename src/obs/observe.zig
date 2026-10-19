@@ -126,11 +126,11 @@ pub const Evaluator = struct {
         const sat_id = self.geometry.frame().tracks[index].sat;
         const span = self.spans[index];
         const delays = ready.delaysAt(sat.t_rx);
-        const freq = delays.record.freq();
+        const freq = delays.freq;
         const cn0_dbhz = power.cn0(sat_id, sat.el_rad);
         const first = used.*;
         for (self.signals[span.first..span.end]) |signal| {
-            if (!delays.record.serves(signal)) continue;
+            if (delays.air[gnss.spec.slot(signal)].status != .on_air) continue;
             var pseudorange_m: [gnss.spec.max_observables]f64 = @splat(0);
             for (gnss.spec.get(signal).observables, 0..) |observable, i| {
                 pseudorange_m[i] = geo.observation.channelTravel(sat, signal, freq, delays.code(signal, observable.component)) * core.constants.light_speed;

@@ -41,10 +41,6 @@ pub const Track = struct {
         return if (self.knots) |*k| .{ .sat = self.sat, .knots = k } else null;
     }
 
-    pub fn record(self: *const Track) ?track.selection.Record {
-        return if (self.ephemeris.current) |c| c.record else null;
-    }
-
     pub fn look(self: *Track, rx: receiver.Frame, t: GpsTime) geometry.Look {
         const state = self.ephemeris.stateAt(t);
         return geometry.look(&self.ephemeris, rx, t, self.omegaEarth(), .{ .pos = state.pos, .vel = state.vel });

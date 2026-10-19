@@ -61,13 +61,17 @@ pub fn frameFor(signal: Signal, sat: SatId) Frame {
     return row.frameFor(sat.system == .bds and bds_records.isGeo(sat.prn()));
 }
 
-pub const max_per_system: usize = blk: {
-    var counts = std.EnumArray(types.System, usize).initFill(0);
-    for (std.meta.tags(Signal)) |s| counts.getPtr(s.system()).* += 1;
-    var most: usize = 0;
-    for (counts.values) |n| most = @max(most, n);
-    break :blk most;
+const counts = blk: {
+    var out = std.EnumArray(types.System, usize).initFill(0);
+    for (std.meta.tags(Signal)) |s| out.getPtr(s.system()).* += 1;
+    break :blk out;
 };
+
+pub const max_per_system: usize = std.mem.max(usize, &counts.values);
+
+pub fn signalCount(system: types.System) usize {
+    return counts.get(system);
+}
 
 pub fn slot(signal: Signal) usize {
     return slots[@backingInt(signal)];

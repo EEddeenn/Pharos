@@ -71,10 +71,6 @@ pub const Ready = struct {
     corrections: *const [2]Corrections,
     delays: *const provider.DelaySnapshot,
 
-    pub fn record(self: Ready) track_module.selection.Record {
-        return self.delays.record;
-    }
-
     pub fn delaysAt(self: Ready, t: GpsTime) provider.Delays {
         return self.delays.at(t);
     }
