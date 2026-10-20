@@ -176,7 +176,7 @@ none, so the two tools' files match.
 ## Position files
 
 The position file holds the receiver alone at its interval: the truth of
-the solved trajectory. ECEF, LLA and KML are observation output formats.
+its trajectory. ECEF, LLA and KML are observation output formats.
 A bundle that declares only position output keeps the ionosphere
 inactive and needs no ionosphere coefficients.
 
@@ -238,17 +238,18 @@ Missing required coefficients are rejected while packing.
 |---|---|
 | `The bundle declares no observation or position file: pharos-run generates its samples` | a bundle without either block |
 | `The bundle declares no <kind> file: <option> is ignored` | a warning: `--observation` or `--created` without an observation block, `--position` without a position block |
-| `The wall clock reads <n> s, outside 0..253402300799` | no `--created`, and a clock outside the range; no file is created |
+| `The wall clock must read from 0 to 253402300799 s, got <n>` | no `--created`, and a clock outside the range; no file is created |
 | `<path>: <message>` | an invalid bundle's diagnostic ([the bundle](scenarios.md#the-bundle)) |
-| `Cannot create the <kind> file: <error>` | the file cannot be prepared: `OutOfMemory` |
+| `Cannot create the <kind> file: out of memory` | the file cannot be prepared |
 | `No satellite of a listed signal flies a record from <T> s into the run: nothing is transmitted from there on` | a warning: the records end before the run |
 | `Cannot write <path>: <error>` | the observation or position file cannot be created, written or flushed |
 | `<bundle.phb> is required` | no bundle on the command line |
 | `<option> requires a path` | `--observation` or `--position` at the end, or before an argument that begins with `-` |
 | `<option> requires a value` | `--created` or `--seek` at the end |
-| `--created expects 0..253402300799 seconds, got <x>` | a creation time other than decimal digits, or outside the range |
-| `--seek expects 0..18446744073709551615, got <x>` | an epoch other than decimal digits |
-| `--seek <n> lies beyond the <kind> file's last epoch <m>` | a file's last epoch comes before the one given; that file is not written |
+| `--created must be from 0 to 253402300799 seconds, got <x>` | a creation time other than decimal digits, or outside the range |
+| `--seek must be from 0 to 18446744073709551615, got <x>` | an epoch other than decimal digits |
+| `--seek <n> cannot select the <kind> file's epochs: no epoch of the run is left from it` | the run ends before the one given; that file is not written |
+| `--seek <n> cannot select the <kind> file's epochs: the file has no epoch from it on` | a file's last epoch comes before the one given; that file is not written |
 
 The exit status is 0 on success, a dry run included, and 1 on any
 failure.

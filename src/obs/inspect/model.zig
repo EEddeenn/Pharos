@@ -97,10 +97,11 @@ pub const GroupDelay = struct {
     units: @TypeOf(group_delay_units) = group_delay_units,
 };
 
+/// Each term null where the satellite's model gives none that is finite.
 pub const Clock = struct {
-    bias_s: f64,
-    drift_s_per_s: f64,
-    relativistic_correction_s: f64,
+    bias_s: ?f64,
+    drift_s_per_s: ?f64,
+    relativistic_correction_s: ?f64,
     units: @TypeOf(clock_units) = clock_units,
 };
 
@@ -256,9 +257,10 @@ fn modelValue(b: *const bundle.Bundle, ephemeris: *const provider.Track, sampled
         .glonass => .glonass,
         .precise => .precise,
     };
-    out.position_ecef_m = state.pos.toArray();
-    out.velocity_ecef_m_per_s = state.vel.toArray();
-    out.clock = .{ .bias_s = state.clock_bias_s, .drift_s_per_s = state.clock_drift, .relativistic_correction_s = state.rel_s };
+    // A model fed values far outside what a satellite does can give numbers that are not finite: none is written.
+    out.position_ecef_m = finiteVector(state.pos.toArray());
+    out.velocity_ecef_m_per_s = finiteVector(state.vel.toArray());
+    out.clock = .{ .bias_s = finite(state.clock_bias_s), .drift_s_per_s = finite(state.clock_drift), .relativistic_correction_s = finite(state.rel_s) };
     if (ephemeris.current_at) |at| out.selection_refreshed_at = .of(at.t);
     out.next_selection_refresh_at = .of(ephemeris.nextInstant(b, sat));
     if (ephemeris.previous != null and t.lessThan(ephemeris.orbit_blend_until)) out.orbit_blend_until = .of(ephemeris.orbit_blend_until);
@@ -277,6 +279,15 @@ fn modelValue(b: *const bundle.Bundle, ephemeris: *const provider.Track, sampled
         .blend_until = if (delays.transition != null) .of(ephemeris.delay_blend_until) else null,
     };
     return out;
+}
+
+fn finite(x: f64) ?f64 {
+    return if (std.math.isFinite(x)) x else null;
+}
+
+fn finiteVector(v: [3]f64) ?[3]f64 {
+    for (v) |x| if (!std.math.isFinite(x)) return null;
+    return v;
 }
 
 fn componentDelay(delays: provider.Delays, signal: types.Signal, component: types.Component) ComponentDelay {

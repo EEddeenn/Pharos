@@ -19,7 +19,7 @@ flowchart LR
 |---|---|
 | [Overview](overview.md) | what Pharos is, the four tools and their files, the sixteen signals, the console and option conventions, reproducibility |
 | [Quick start](quick-start.md) | building, then one run to a sample file and one to an observation file |
-| [Trajectories](trajectories.md) | `pharos-traj`: trajectory plans, joint solving and verification, internal `.pht` products, `build`, `static`, `info`, `check`, `export` |
+| [Trajectories](trajectories.md) | `pharos-traj`: trajectory plans, their segments and limits, the stored path and its `.pht` file, `build`, `static`, `info`, `check`, `export` |
 | [Scenarios](scenarios.md) | `pharos-pack`: the command line, every scenario key, the diagnostics, the bundle |
 | [Navigation data](navigation-data.md) | file kinds, record checks and selection, health, time offsets, leap seconds, ionosphere sets, antennas, precise products |
 | [Samples](samples.md) | `pharos-run`: the run, seeking, the sample file, the `.tag` sidecar, the manifest, dumps, gain, noise |
@@ -29,7 +29,7 @@ flowchart LR
 
 | C API page | Library |
 |---|---|
-| [pharos_traj.h](c-api/traj.md) | trajectories: solve a plan, inspect its report, read and check `.pht`, export KML |
+| [pharos_traj.h](c-api/traj.md) | trajectories: build a plan, inspect its path, read and check `.pht`, export KML, describe guides |
 | [pharos_pack.h](c-api/pack.md) | a scenario packed into bundle bytes, from files or from memory |
 | [pharos_run.h](c-api/run.md) | the IF samples of a bundle, pulled block by block from any epoch |
 | [pharos_obs.h](c-api/obs.md) | one bundle source for observation or position output in batches and the run's truth at any epoch |

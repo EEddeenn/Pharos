@@ -9,8 +9,8 @@ GPS, Galileo, BDS and GLONASS, each with its navigation message.
 
 ```mermaid
 flowchart LR
-    plan["trajectory.json<br/>geometry, events, sections, rules"] --> traj(["pharos-traj"])
-    traj --> pht["internal .pht trajectory"]
+    plan["trajectory.json<br/>places, guides, start, segments, limits"] --> traj(["pharos-traj"])
+    traj --> pht[".pht trajectory"]
     scenario["scenario JSON"] --> pack(["pharos-pack"])
     pht --> pack
     nav["navigation files<br/>RINEX, almanac, ANTEX,<br/>SP3, RINEX clock"] --> pack
@@ -23,7 +23,7 @@ flowchart LR
 
 | Tool | Reads | Writes | Page |
 |---|---|---|---|
-| `pharos-traj` | a trajectory plan JSON, static coordinates or an internal `.pht` file | a verified `.pht` trajectory, or a KML line | [trajectories](trajectories.md) |
+| `pharos-traj` | a trajectory plan JSON, static coordinates or a `.pht` file | the `.pht` of the built path, or a KML line | [trajectories](trajectories.md) |
 | `pharos-pack` | a scenario JSON and the files it names | a `.phb` bundle | [scenarios](scenarios.md), [navigation data](navigation-data.md) |
 | `pharos-run` | a bundle | the IF sample file, its `.tag` sidecar, dumps | [samples](samples.md) |
 | `pharos-obs` | a bundle | a RINEX observation file, a position file | [observations](observations.md) |
@@ -122,7 +122,7 @@ version, one build mode and one machine writes the same bytes.
 
 | Tool | Output is a function of |
 |---|---|
-| `pharos-traj` | the trajectory plan, the internal `.pht` file or the static arguments |
+| `pharos-traj` | the trajectory plan, the `.pht` file or the static arguments |
 | `pharos-pack` | the scenario and the files it names |
 | `pharos-run` | the bundle, the seed, the noise mode, the gain and the host's epoch-bound commands |
 | `pharos-obs` | the bundle, the observation file's creation time and a C host's commands |
@@ -149,7 +149,7 @@ with its bundle layout ([the bundle](scenarios.md#the-bundle)).
 
 | Input | Size limit |
 |---|---|
-| trajectory plan JSON or internal `.pht` file | 1 GiB |
+| trajectory plan JSON or `.pht` file | 1 GiB |
 | scenario JSON | 64 MiB |
 | navigation, antenna or product file | 256 MiB |
 | trajectory loaded by `pharos-pack` | 1 GiB |
@@ -164,7 +164,7 @@ with its bundle layout ([the bundle](scenarios.md#the-bundle)).
 | `<option> requires a value` | a value option at the end of the line |
 | `<option> requires a path` | a path option at the end of the line, or before an argument that begins with `-` |
 | `<option> expects <what>, got <value>` | a value the option cannot take |
-| `<option> expects <min>..<max>, got <value>` | an integer option given other than decimal digits, or outside its range |
+| `<option> must be from <min> to <max>, got <value>` | an integer option given other than decimal digits, a number option given no number, or either outside its range; the option's unit, where it has one, follows `<max>` |
 | `Cannot read <file>: <error>` | an input that cannot be read |
 | `Cannot read <file>: the file is <x> MiB; this input may be at most <n> MiB` | an input over its size limit |
 | `Cannot read <file>: this input may be at most <n> MiB` | the same, when the size cannot be read |

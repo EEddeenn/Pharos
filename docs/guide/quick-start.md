@@ -20,7 +20,7 @@ flowchart LR
 
 ## Build
 
-Pharos needs Zig 0.16 and nothing else. One command builds the four
+Pharos needs Zig 0.17 and nothing else. One command builds the four
 tools, the four libraries and the four headers.
 
 ```bash
@@ -83,9 +83,9 @@ Here `pharos` is `b.dependency("pharos", .{ .target = target, .optimize = optimi
 
 ## The trajectory
 
-`drive.json` is a trajectory plan: a five-second journey between two
-points, starting and ending at rest. Geometry, timing and motion rules
-are solved together ([trajectory plans](trajectories.md#plan-structure)).
+`drive.json` is a trajectory plan: from rest at A to rest at B, 47 m
+north-east, in five seconds, a through of one place
+([trajectory plans](trajectories.md#the-plan)).
 
 ```json
 {
@@ -93,22 +93,12 @@ are solved together ([trajectory plans](trajectories.md#plan-structure)).
   "version": 1,
   "name": "drive",
   "coordinates": { "datum": "WGS84", "altitude": "EGM96" },
-  "geometry": {
-    "points": [
-      { "id": "A", "position": { "latitude": 30.5292, "longitude": 114.3642, "altitude": 40 } },
-      { "id": "B", "position": { "latitude": 30.5295, "longitude": 114.36455, "altitude": 40 } }
-    ]
-  },
-  "events": [{ "id": "start" }, { "id": "finish" }],
-  "sections": [{ "id": "drive", "from": "start", "to": "finish" }],
-  "rules": [
-    { "id": "start-position", "kind": "hard", "scope": { "event": "start" }, "quantity": "position", "eq": { "point": "A" } },
-    { "id": "finish-position", "kind": "hard", "scope": { "event": "finish" }, "quantity": "position", "eq": { "point": "B" } },
-    { "id": "finish-time", "kind": "hard", "scope": { "event": "finish" }, "quantity": "time", "eq": 5 },
-    { "id": "start-rest", "kind": "hard", "scope": { "event": "start" }, "quantity": "velocityEcef", "eq": [0, 0, 0] },
-    { "id": "finish-rest", "kind": "hard", "scope": { "event": "finish" }, "quantity": "velocityEcef", "eq": [0, 0, 0] }
+  "places": [
+    { "id": "A", "latitude": 30.5292, "longitude": 114.3642, "altitude": 40 },
+    { "id": "B", "latitude": 30.5295, "longitude": 114.36455, "altitude": 40 }
   ],
-  "initialGuess": { "eventTimes": { "start": 0, "finish": 5 } }
+  "start": { "at": "A", "speed": 0 },
+  "segments": [{ "through": { "places": [{ "at": "B", "time": 5 }], "end": "rest" } }]
 }
 ```
 
@@ -116,9 +106,9 @@ are solved together ([trajectory plans](trajectories.md#plan-structure)).
 ./zig-out/bin/pharos-traj build drive.json
 ```
 
-This prints the solve report and writes the internal `drive.pht` product
-after verification. An optional `pharos-traj export drive.pht` writes
-`drive.kml` for viewing the result.
+This writes `drive.pht` and prints `Trajectory drive (drive.pht): 3 knots
+over 5 s`. An optional `pharos-traj export drive.pht` writes `drive.kml`
+for viewing the path.
 
 ## To a sample file
 

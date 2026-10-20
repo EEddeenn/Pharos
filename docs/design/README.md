@@ -20,7 +20,7 @@ flowchart LR
 |---|---|
 | [Architecture](architecture.md) | principles, products, the cut at the bundle, layers, the tree, central types, extension points |
 | [Data flow](data-flow.md) | the stages, their inputs and outputs, and the rate of each |
-| [Trajectories](trajectories.md) | trajectory plans, joint timing and state solving, independent verification, the knot interpolant and receiver domain |
+| [Trajectories](trajectories.md) | trajectory plans read and built segment by segment, the least-jerk solve, the stored path's knots, the limits' checks, the knot interpolant and receiver domain |
 | [Navigation](navigation.md) | the one clock, the readers, the selection schedule, blends, almanacs, precise products, correction streams, health |
 | [Synthesis](synthesis.md) | code tables, the two kernel paths, the carrier, noise, quantisation and the gain, embedded data |
 | [Engine](engine.md) | the run lifecycle, windows, workers, seeking, commands, events, the C ABIs, determinism |

@@ -74,7 +74,7 @@ is taken up at a type 10, so a cycle never mixes two sets.
 |---|---|
 | a MEO or IGSO satellite with a record, no EOP | `pharos-pack`: `missing_field` on `ephemeris`: `B-CNAV3 at <n> s into the run: B-CNAV3 on B2b (a BDS record) and GNAV on G1/G2 (any system's) require an available EOP record in the navigation data` |
 | the same with an EOP but no BDT-UTC | `missing_field` on `ephemeris`: `B-CNAV3 at <n> s into the run: the selected BeiDou navigation message requires available, encodable BDUT parameters` |
-| navigation data outside the B-CNAV3 fields at a set's epoch | `out_of_range` on `ephemeris`: `B-CNAV3 at <n> s into the run: the navigation data cannot be encoded into its message set (<Error>)` |
+| navigation data outside the B-CNAV3 fields at a set's epoch | `out_of_range` on `ephemeris`: `B-CNAV3 at <n> s into the run: the navigation data cannot be encoded into its message set (<error>)` |
 | a record of another type outside the fields | `unfit_record` on `ephemeris`: `<sat> <type> record of <toc> GPST: <field> outside its CNV3 field, sent there as unavailable while it is selected` |
 | a satellite without B-CNAV3 frames | no channel in the samples; the observation file still lists it |
 | B2b power | the I component alone, 3.01 dB below the scenario's power ([signals](signals.md)) |

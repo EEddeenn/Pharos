@@ -227,7 +227,7 @@ at a time.
 
 | Library | Own statuses | Object |
 |---|---|---|
-| `pharos_traj` | program, input | a trajectory: built, read, imported or at rest |
+| `pharos_traj` | input | a trajectory: built from a plan, read from a `.pht`, or at rest |
 | `pharos_pack` | scenario, load, bundle | a pack with diagnostics and summary, or an owned navigation-description result |
 | `pharos_run` | bundle, nav, io, busy | a run: pull, seek, submit, events, file loop, manifest and tag text |
 | `pharos_obs` | bundle, nav | a shared bundle source; observation or position outputs in bounded batches; truth queries at any epoch; commands submitted to each output or truth |

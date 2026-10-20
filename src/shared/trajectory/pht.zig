@@ -42,7 +42,7 @@ pub fn read(arena: std.mem.Allocator, bytes: []const u8, scope: diagnostics.Scop
         try knots.append(arena, value);
     }
     result.knots = knots.items;
-    if (count) |given| if (given != knots.items.len) return scope.fail(.invalid_format, .{ .line = 1 }, "the header says {d} knots; the file has {d}", .{ given, knots.items.len });
+    if (count) |given| if (given != knots.items.len) return scope.fail(.invalid_format, .{ .line = 1 }, "the header says {d} knot{s}; the file has {d}", .{ given, if (given == 1) "" else "s", knots.items.len });
     if (result.invalid()) |bad| {
         const code: diagnostics.Code = switch (bad.reason) {
             error.NoKnots, error.FirstKnotNotAtZero, error.TimeGoesBack, error.TimeGivenThrice, error.PositionJump => .invalid_format,
@@ -152,7 +152,27 @@ fn knot(line: []const u8) error{BadKnot}!Knot {
     };
 }
 
-pub fn write(w: *std.Io.Writer, traj: Trajectory) std.Io.Writer.Error!void {
+pub const WriteError = std.Io.Writer.Error || error{TooLarge};
+
+/// Refused, as `error.TooLarge`, where the text would pass `max_bytes`, which every reader refuses: a knot's line is
+/// as long as the shortest exact forms of its numbers, which `max_knots` does not bound.
+pub fn write(w: *std.Io.Writer, traj: Trajectory) WriteError!void {
+    var counted: std.Io.Writer.Discarding = .init(&.{});
+    writeHeader(&counted.writer, traj) catch unreachable;
+    var total = counted.fullCount();
+    if (total > max_bytes) return error.TooLarge;
+    try writeHeader(w, traj);
+    // A number's shortest exact form takes at most 327 bytes (a subnormal's): a line, at most 3282.
+    var buffer: [4096]u8 = undefined;
+    for (traj.knots) |k| {
+        const line = std.mem.print(&buffer, "[{d},{d},{d},{d},{d},{d},{d},{d},{d},{d}]\n", .{ k.t, k.pos.x, k.pos.y, k.pos.z, k.vel.x, k.vel.y, k.vel.z, k.acc.x, k.acc.y, k.acc.z }) catch unreachable;
+        total += line.len;
+        if (total > max_bytes) return error.TooLarge;
+        try w.writeAll(line);
+    }
+}
+
+fn writeHeader(w: *std.Io.Writer, traj: Trajectory) std.Io.Writer.Error!void {
     try w.writeAll(header_start);
     try w.print(",\"knots\":{d}", .{traj.knots.len});
     if (traj.name.len > 0) {
@@ -160,7 +180,4 @@ pub fn write(w: *std.Io.Writer, traj: Trajectory) std.Io.Writer.Error!void {
         try std.json.Stringify.value(traj.name, .{}, w);
     }
     try w.writeAll(header_end);
-    for (traj.knots) |k| {
-        try w.print("[{d},{d},{d},{d},{d},{d},{d},{d},{d},{d}]\n", .{ k.t, k.pos.x, k.pos.y, k.pos.z, k.vel.x, k.vel.y, k.vel.z, k.acc.x, k.acc.y, k.acc.z });
-    }
 }

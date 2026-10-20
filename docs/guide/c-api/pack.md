@@ -122,7 +122,7 @@ entry of `files` whose name is the same text.
 flowchart LR
     name["a name in the scenario<br/>../data/brdm_2026232.rnx"] --> match{"an entry of files<br/>with that name?"}
     match -- "yes" --> bytes["its bytes, read in place"]
-    match -- "no" --> fail["E_IO: ../data/brdm_2026232.rnx:<br/>cannot read the file (FileNotFound)"]
+    match -- "no" --> fail["E_IO: ../data/brdm_2026232.rnx:<br/>cannot read the file (file not found)"]
 ```
 
 | Rule | Detail |

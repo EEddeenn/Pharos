@@ -62,6 +62,11 @@ pub const Parameters = struct {
         if (!(self.ecc >= 0 and self.ecc <= 0.5)) return "ecc";
         const a = self.sqrt_a * self.sqrt_a;
         if (!(a >= 1e7 and a <= 5e7)) return "sqrt_a";
+        // The angles' fields wrap any value, but beyond a turn none was broadcast, and near the largest doubles the
+        // orbit's sines of twice them overflow.
+        if (!(@abs(self.m0) <= core.constants.two_pi)) return "m0";
+        if (!(@abs(self.w) <= core.constants.two_pi)) return "w";
+        if (!(@abs(self.omega0) <= core.constants.two_pi)) return "omega0";
         return null;
     }
 

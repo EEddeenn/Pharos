@@ -1,13 +1,13 @@
 # Pharos
 
-A GNSS IF signal simulator in Zig 0.16: a scenario in, quantised IF samples
+A GNSS IF signal simulator in Zig 0.17: a scenario in, quantised IF samples
 (IQ2, IQ4, IQ8, IQ16) or RINEX observation and position files out, for
 sixteen signals of GPS, Galileo, BeiDou and GLONASS. Four tools share one
 core:
 
 | Tool | Does |
 |---|---|
-| `pharos-traj` | solves trajectory plans, verifies and writes internal trajectories (`.pht`), and exports KML |
+| `pharos-traj` | builds trajectory plans segment by segment, checks them against their limits, writes their paths (`.pht`) and exports KML |
 | `pharos-pack` | reads a scenario JSON and the navigation data it names, validates them and packs a bundle (`.phb`) |
 | `pharos-run` | generates the IF samples from a bundle |
 | `pharos-obs` | writes the observation and position files of a bundle |

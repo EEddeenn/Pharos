@@ -1,330 +1,275 @@
 # Trajectories
 
-A trajectory plan describes a receiver's journey with geometry, events,
-sections and rules. The authored file is `trajectory.json`. Pharos solves
-its timing, positions and motion together, verifies the candidate and
-writes internal `.pht` knots for the packer. The observer may write LLA
-or ECEF position logs; those logs are not trajectory authoring inputs.
+The trajectory part turns a plan into a path the way the rest of Pharos
+is built: a defined input contract, a defined transform, layers with
+clear boundaries. A plan is read into typed segments, built forward into
+motion, cut into the knots of a stored path, and checked against the
+receiver's domain and its own limits. Nothing is searched; the one
+segment that is solved, `through`, is a linear problem with one answer.
+The plan's keys and their rules are in the
+[trajectory guide](../guide/trajectories.md).
 
 ```mermaid
 flowchart LR
-    json["TrajectoryPlan JSON"] --> read["parse and resolve references"]
-    read --> rules["prepared rules and geometry"]
-    read --> mesh["scaled state and duration variables"]
-    rules --> problem["numerical layout and evaluator"]
-    mesh --> problem
-    problem --> nlp["joint constrained solve"]
-    nlp --> candidate["physical candidate path"]
-    rules --> verify["independent interval verification"]
-    candidate --> verify
-    verify -->|refine| mesh
-    verify -->|accepted| pht["internal .pht knots"]
-    candidate --> inspect["path, metrics and rule reports"]
-    verify --> inspect
-    pht --> pack["pharos-pack"]
-    pht --> kml["KML visualization"]
+    text["trajectory.json"] --> read["plan.read<br/>the structure"]
+    read --> resolve["plan.resolve<br/>the meaning"]
+    resolve --> plan["model.Plan"]
+    plan --> build["path.build<br/>segments, stretches, knots"]
+    build --> source["source<br/>the domain, the limits"]
+    source --> result["source.Result"]
+    result --> pht[".pht"]
+    result --> inspect["inspect"]
+    result --> stats["stats"]
+    result --> kml["kml"]
 ```
 
-## Solve boundaries
+## Layers
 
-| Entry | Owns |
+| File | Owns | Over |
+|---|---|---|
+| `plan/model.zig` | the plan as read: places in ECEF, angles in radians, times in seconds from the start, segments, events, limits | |
+| `plan/read.zig` | the key tables, which are also the JSON Schema's source; the plan read whole, or its guides alone | model, resolve |
+| `plan/resolve.zig` | names made indices, the rules between segments, the events, the limits; the guides of a plan being written | model, geometry |
+| `track.zig` | ground tracks of constant geodesic curvature, geodesics to a place | |
+| `guide.zig` | a guide's path and its ground track by length over the ground; its outline for a map | track, measure |
+| `motion.zig` | a run's motion in time: its ground run by the speed's step, at its height | track, guide, through |
+| `through.zig` | the least-jerk solve | |
+| `frame.zig` | the local frame of a point in motion, and a state read in it | |
+| `measure.zig` | lengths from speeds | |
+| `path.zig` | the build: segments, stretches, the knots, the segments' lengths | all of the above |
+| `check.zig` | the limits held against the stored path; its extremes | frame |
+| `source.zig` | a plan's text made a path, held against the domain and the limits | plan, path, check |
+| `inspect.zig`, `stats.zig`, `kml.zig`, `static.zig` | what a caller reads of a path; a receiver at rest | source, check |
+| `capi/`, `cli/` | the C API and the command | the files above |
+
+The PHT, its interpolation, the receiver's domain and the geoid are the
+shared code's (`src/shared/trajectory.zig` and its directory,
+`src/shared/core/geoid.zig`), used as they are: the PHT is the boundary
+`pharos-pack` reads, and through the bundle `pharos-run` and
+`pharos-obs`.
+
+## Reading
+
+`plan.read` reads the text through its key tables: required keys,
+counts, types, ranges, unknown keys. A fault there is reported with every
+other the stage finds, and the plan goes no further. `plan.resolve` then
+reads its meaning: names to places, guides and segments; each segment's
+keys against its kind; the rules between a segment and the one before it
+(`Before`: at rest, free or moving, with a direction or not, at which
+place, on which guide); the times the text gives; the events; the
+limits. Every fault of this stage is reported too. What only numbers
+decide is left to the build.
+
+`plan.read.parseGeometry` reads only the coordinates, places and guides
+of a plan that may be incomplete, each place and guide on its own, for
+`describe_geometry`: a guide with a fault is not whole, and the others are
+still described.
+
+## Building
+
+`path.build` walks the segments in order, each from the `State` the one
+before leaves: its time, position, velocity and acceleration (left to the
+segment where the start is free or a through comes before), its foot on
+the ellipsoid, its direction over the ground, its speed, its altitude with
+its rates, and the guide an along left.
+
+| Segment | Built as |
 |---|---|
-| `solve.kernel` | scalar and automatic differentiation forms of physical quantities and cell evaluation; `kernel/domain` and `kernel/autodiff` hold their implementation |
-| `solve.rules` | prepared geometry, authored checks and their residual meanings, shared by optimization and verification |
-| `solve.mesh` | scaled variables, connectivity and bounds; `mesh/seed` initializes the path and `mesh/presolve` applies exact hard constraints |
-| `solve.problem` | the numerical layout for one mesh and its evaluator; `problem/prepare` builds rows and batches, and `problem/evaluate` owns mutable evaluation storage |
-| `solve.nlp` | constrained optimization through value and derivative requests |
-| `solve.candidate` | physical path state, coefficients, event times, distances and sampling |
-| `solve.verify` | checks over the candidate and prepared rules; `verify/polynomial` supplies interval bounds |
+| `stay` | one knot at rest at its end |
+| `straight`, `turn` | a run: a track from the state's foot and direction, of curvature 0 or the turn's, by the speed's step, at the segment's own height |
+| `along` | a run: a part of the guide's path from where it begins to its `to`, by the speed's step, at the heights of the guide's places |
+| `through` | solved: its places' positions and heights at their times, its ends held where the plan states them |
 
-`solve.build` joins these stages and controls refinement. Rule semantics
-are prepared once for the resolved plan. Each mesh gets its own numerical
-layout, sparse derivative structure and evaluation workspace.
+A through before a run is solved after the run is made ready from the
+through's last place, so that the through ends in the run's first state.
 
-## One authored model
+### Runs
 
-`plan.read` reads the raw JSON shape, and `plan.resolve` turns identifiers
-into typed references. `plan.model.Plan` owns the resulting geometry,
-events, sections, rules and initial guess. The generated
-`trajectory.schema.json` comes from the same reader. It describes field
-shapes and values; reference integrity and physical validity are reader
-and solver checks.
+A run's speed is a step from v0 to v1 over its duration T, its length
+s(t) = v0 t + (v1 − v0) T (5/2 u^4 − 3 u^5 + u^6) with u = t / T: the
+acceleration and jerk are nothing at both ends. `motion.Timing` takes the
+length the shape fixes, or the one the time and speeds give; its time at
+a length is found by halving.
 
-| Part | Meaning |
+`track.zig` integrates a track over the WGS84 ellipsoid by its length s:
+
+    F'' = k_n n + k (T × n),   n = D F / |D F|,   k_n = -(T · D T) / |D F|,   D = diag(1/a^2, 1/a^2, 1/b^2)
+
+with T = F' its unit tangent and k the geodesic curvature (0 for a
+straight), by classical Runge-Kutta steps of at most 10 km and at most a
+32nd of the radius, each step's point put back onto the ellipsoid; between
+nodes the track is the quintic Hermite of F, T and F''. It is defined
+everywhere, the poles included. A straight `to` a place is a geodesic
+found by Newton's method on its initial azimuth and its length, at most
+32 iterations, settled where it ends within a nanometre of the place or
+the rounding of its steps; a turn `onto` a course steps until its azimuth
+has turned by the angle, the last step found by halving.
+
+`guide.zig` builds a guide's pieces in ECEF: a polyline's legs and the
+arcs that round its corners, or a Bezier's cubics. Its ground track is the
+pieces' foot on the ellipsoid by length over the ground: eight-point
+Gauss-Legendre over each piece's parts, a part halved until its length
+agrees with its halves' to a nanometre or its rounding, in at most 1024
+parts and 40 halvings; the parameter of a length by Newton's method kept
+within its part. A gentle corner's legs run on along their chords into
+its arc, evenly in their parameter, to meet at its place.
+
+A run's point is its ground's foot lifted along the ellipsoid's normal to
+its height: for a straight or a turn, its own quintic in time in the
+plan's altitude (`motion.Vertical`), the geoid's height added over
+EGM96; for an along, the heights of its guide's places by least jerk in
+ground length (`motion.Profile`, a one-axis `through.solve`).
+
+### Joints and stretches
+
+Each run is cut into stretches at its joints: an along where its guide's
+pieces meet and at its heights' places, a straight or a turn over EGM96
+where its track crosses a line of the geoid's 0.25° grid (each crossing
+found by halving, and the polar caps' edges too). A joint says how the
+motion goes on: smoothly, with a step of acceleration (a segment's start,
+a polyline's tangent points, a straight meeting a turn), or with a step of
+velocity (a Bezier joint, the geoid's slope, a gentle corner). A step is
+two knots at one time and one position. Over EGM96 each stretch is read
+in the geoid's cell of its middle.
+
+A polyline corner whose arc would change the velocity by less than
+1e-4 m/s and last under 10 ms is no arc: inside an along by the arc's
+ends' velocities and time, at an along's end or start by the speed the
+two alongs share there. A corner whose arc takes no time steps the
+velocity too, and marks the build out of the domain where v^2/R passes
+1000 m/s^2.
+
+### The through
+
+`through.zig` solves the path of least
+
+    J = sum over the pieces k of  ∫ |jerk|^2 dt  +  (10^-6 / h_k^2) ∫ |acceleration|^2 dt
+
+between knots at the places, each piece the quintic Hermite of its knots'
+states, on four axes: the ECEF track P and the height h*. The positions
+are held, and so are the velocity and acceleration where the segment's
+ends state them; each axis is one banded system. Each piece takes its
+positions as their own difference, each knot's unknowns are scaled by the
+shorter of its gaps, the held values are eliminated, and the band of
+half-width 3 is factored as L D L'. The solution is then checked: its
+residual taken in f128 of the exact piece integrals, and the correction
+applied, until no piece moves by more than a nanometre or the rounding of
+its own velocities and accelerations, in at most 4 corrections; a plan
+that does not settle is refused, with its places.
+
+The path is the track at that height: Q = P + (h* − h_P) up, with h_P
+and up the height and the normal of P. It passes every place, and P's foot
+is Q's.
+
+### The knots
+
+`path.cut` cuts each stretch, and each piece of a through, by halving:
+level by level, every piece whose knots' quintic lies farther than 1 µm
+from the built motion at a quarter, a half and three quarters of it; then,
+once none does, every piece whose knots' bound of the receiver's domain
+fails, while halving shortens the share of the stretch where it fails.
+The domain is tested first: where the built motion leaves it, the time is
+found by halving, nothing more is cut, and the path is kept as cut, out
+of the domain from that time. The knots are counted before they are
+taken, at most `max_bytes / 256` of a PHT, 4,194,304.
+
+### Lengths
+
+Each segment's length and end speed are in the plan's terms, over the
+ground: a run's from its timing; a through's from `measure.told` of each
+piece between two places, and its end ground speed. `measure.told` cuts
+a path where its speed is least inside it, found where the speed's rate
+turns from falling to rising between 16 even steps, then by halving; a
+rate that moves the speed by less than its tolerance over a step neither
+falls nor rises, and two minima closer than a sixteenth of it are cut as
+one. Each part is settled by eight-point Gauss-Legendre,
+halved while its length disagrees with its halves' by more than a
+billionth of it, in at most 16 parts. The cut keeps a reversal's kink, at
+which Gauss-Legendre settles only as the square of a part's length, out
+of every part. A through's piece is read on its track P, whose foot is the
+path's. `inspect`'s `distance3d` reads each stored piece the same way, by
+its speed in space.
+
+## Checking
+
+`source.build` reads the plan, builds it, and holds the result against
+the receiver's domain (where the build marked it out, or where the shared
+check of every knot and the bound between knots fails) and against each
+limit. A path out of the domain or that breaks a limit is kept, to be
+inspected, and is not written as a PHT.
+
+`check.zig` holds each limit against the stored path's pieces, read as
+the path moves at its height:
+
+| Quantity | Read |
 |---|---|
-| coordinates | WGS84 positions with altitude above EGM96 or the ellipsoid |
-| geometry | named points, piecewise cubic Bezier or polyline guides, and circular or convex polygon regions |
-| events | ordered boundaries with shared position, velocity and acceleration according to C0, C1 or C2 continuity |
-| sections | the chain between consecutive events |
-| rules | hard equalities and ranges, soft targets, or minimization and maximization objectives |
-| initial guess | starting event times and states for the numerical solve |
+| `speed3d`, `acceleration3d`, `jerk3d` | their exact extremes on each piece, from the Bernstein form of their squares, refined by halving |
+| the six of the local frame | at 16 points a piece, each part halved at most 6 times while it bends by more than the resolution where it could pass the bound or the worst |
 
-A geometric guide has no effect until a rule refers to it. A stop uses
-position or speed constraints; a dwell is a stationary section between
-two events. Arrival time, duration, speed and geometry constraints enter
-the same optimization problem. The model has no separate motion program
-or route compiler.
-
-Rules may select one event side, a section, an interval between events,
-a fixed time, a fixed time range, or the whole trajectory. Values can be
-constants, named points or another event's compatible quantity with a
-factor and offset. `scale` normalizes a physical quantity; `weight`
-sets the strength of a soft rule. Initial guesses do not impose rules.
-The complete field and unit reference is in the
-[trajectory guide](../guide/trajectories.md).
-
-## Transcription
-
-Each section has a mesh of polynomial cells. A node carries ECEF
-position, velocity and acceleration. Cell position is quintic Hermite.
-Section durations are positive optimization variables. Event times are
-cumulative sums of those durations, with the first event fixed at zero.
-
-Variables use a local ECEF origin and physical scales. At an event,
-position variables are shared. C1 also shares velocity; C2 also shares
-acceleration. These settings govern translational continuity. Course
-and turn-rate variables are shared across events for all three settings.
-Optimization interpolates local position offsets and adds the ECEF
-origin to the resulting position, preserving precision in short
-displacements and their derivatives. Verification evaluates the emitted
-ECEF knot representation.
-
-Course and turn rate become active when the plan supplies an initial
-course or uses `course`, `turnRate`, `turnRadius`, a forward quantity or
-`lateralAcceleration`, including through an event-value reference. Course
-then uses cubic Hermite interpolation. Alignment constraints keep
-horizontal velocity along the solved forward direction, and signed
-forward speed permits reverse motion. For a plan using only translation
-quantities, inspection derives course and turn rate from horizontal
-velocity where it is nonzero; at rest it retains the initialized course
-state.
-
-An exact presolve fixes literal hard event position, velocity and
-acceleration values, zero speed and acceleration, and section durations
-in the variable bounds. Fixed event times can determine a remaining
-section duration. Zero-speed interval rules share position variables
-and fix derivatives to zero throughout the covered cells. Conflicting
-fixed values mark the candidate infeasible before iterative solving.
-These simplifications come from hard rules; initial guesses remain
-starting values.
-
-`rules.prepare` resolves physical checks, curve points and region frames
-once. `problem.prepare` places those checks on the current mesh as
-equality and inequality rows and soft objective terms. Geometric curve
-rules introduce progress variables and progress ordering. Fixed time
-scopes include their dependence on the current section durations. A
-scope requiring a later time also requires the trajectory to cover
-that time.
-
-`problem.Layout` records each row's participating columns, the sparse
-Jacobian structure and batches of related terms. Event-value references
-include dependencies on the referenced event. State and duration
-variables participate in the same Jacobian and are adjusted in the same
-solve. `problem.Workspace` holds the mutable state used to evaluate that
-layout.
-
-## Evaluation
-
-| Component | Evaluation role |
-|---|---|
-| `kernel.Scalar` | `f64` values for objective and constraint evaluation, candidate sampling and verification |
-| `kernel.Differential` | `Dual` values carrying derivatives with respect to optimization variables, for the gradient and sparse Jacobian |
-| `kernel.autodiff` | arithmetic on derivative lanes in SIMD groups selected for the target, with a scalar fallback |
-
-Both kernel forms use the Hermite coefficients defined in
-`shared.trajectory.hermite` and the physical quantities in
-`kernel/domain`. EGM96 grid interpolation and polar blending share the
-compile-time `shared.core.geoid.Evaluator`; `kernel/domain` supplies the
-motion chain rule. A derivative pass seeds up to 32 participating
-variables at a time. SIMD groups operate on those derivative lanes; the
-lane count does not set the number of path samples.
-
-Within a scalar evaluation, cell coefficients and physical state at each
-sample are reused across terms. Derivative batches reuse them within each
-seeded block. The layout records the quantities needed at each sample,
-so its physical point prepares the required local frame, altitude,
-heading and motion derivatives once. These caches are reset for each
-value or derivative request. Each request builds the scalar prefix of
-event times once for its current variables. Batches retain duration seeds
-as `{ slot, section }`; an event time's derivatives use that prefix and
-only the active duration lanes from preceding sections.
-
-The numerical solver receives `nlp.Layout` for bounds and sparse row
-structure, plus a concrete evaluator type with two methods:
-
-| Method | Output |
-|---|---|
-| `values(x, nlp.Values)` | objective and constraint values |
-| `derivatives(x, nlp.Derivatives)` | objective gradient and sparse Jacobian values |
-
-The evaluator methods return `error.Domain` when the requested values or
-derivatives are invalid. Calls resolve through the concrete type at
-compile time. `problem.Workspace` supplies the trajectory evaluator.
-
-## Physical quantities
-
-ECEF vector derivatives come directly from the polynomial. The local
-frame is derived from the current WGS84 position. Moving-frame
-calculus includes changes of the east, north and up axes, so forward
-acceleration and jerk are derivatives of signed forward speed rather
-than projections of ECEF acceleration and jerk alone.
-
-Altitude, climb rate and vertical acceleration use the plan's declared
-altitude datum. For EGM96, the geoid's spatial derivatives contribute to
-altitude derivatives. Course is clockwise from north; turn rate is its
-time derivative. Lateral acceleration is signed across the course.
-Turn radius is signed forward speed divided by turn rate in radians/s.
-A hard radius equality uses the product form
-`forwardSpeed = radius * turnRate` inside the optimizer. Independent
-verification checks the physical radius residual at every nonzero turn
-rate, so a small product residual near zero is not sufficient. An exact
-zero forward speed and zero turn rate pair is accepted as a stationary
-extension. Radius ranges, targets and objectives use the ratio and
-require a nonzero turn rate.
-
-The frame calculation supports the poles. The EGM96 surface uses a
-smooth local cap near each pole and blends into the tabulated surface.
-There is no latitude clipping or longitude adjustment in the authored
-plan.
-
-## Numerical solve
-
-The implementation is pure Zig and runs on native and WebAssembly
-targets. `solve.nlp` uses an augmented Lagrangian for hard constraints,
-with projected limited-memory BFGS steps and an Armijo line search.
-BFGS acts on free variables and resets its history when the active
-bounds change. A projected-gradient step is the fallback when the BFGS
-direction cannot make progress. Constraint multipliers and the penalty
-are updated after an inner solve meets its stationarity tolerance.
-Variable bounds preserve positive durations and bounded curve progress.
-A feasible point whose objective is stationary under those bounds can
-also converge with zero constraint multipliers.
-
-Each Armijo trial first evaluates the objective and constraints with the
-scalar kernel. Only a trial with finite merit and sufficient decrease
-requests derivatives. Acceptance also requires valid derivatives; a
-failed derivative evaluation sends the line search to a shorter step.
-
-Default convergence tolerances are `1e-7` for primal feasibility and
-complementarity and `1e-6` for projected stationarity. The numerical
-budgets are 40 outer iterations, 300 inner iterations per outer pass,
-and 30,000 evaluations per solve. These are stopping criteria for a
-local method. They do not establish a global optimum or prove that an
-unresolved plan is impossible.
-
-| Report field | Meaning |
-|---|---|
-| `status` | `converged`, `iterationLimit`, `infeasible`, `numericalFailure` or `verificationFailed` |
-| `feasible` | no detected hard constraint or receiver-domain violation, and no conflicting fixed values; interval verification may remain unresolved |
-| `verified` | the numerical solve converged and independent verification accepted the candidate |
-| `iterations` | accumulated inner iterations across mesh passes |
-| `objective` | final normalized soft objective |
-| `maxViolation` | maximum normalized violation reported by independent checks, including hard rules, continuity and domain constraints |
-| `stationarity` | final projected stationarity measure |
-
-The failed candidate and individual rule reports remain inspectable.
-An `infeasible` status means the current solve did not produce an
-accepted feasible candidate; it is not an unsatisfiability proof.
-Only a verified result can be serialized as `.pht` by the source build
-API or written by the CLI build command.
-
-## Verification and refinement
-
-`verify.check` takes `rules.Prepared` and a physical `candidate.Candidate`.
-It evaluates authored checks over the candidate independently of the
-optimizer's row assembly, using the shared residual definitions in
-verification mode. The candidate also supplies curve progress samples
-for ordering and endpoint checks. Verification covers continuity, both
-event sides and the intervals selected by each rule.
-
-Polynomial quantities use Bernstein bounds;
-nonpolynomial quantities use adaptive interior checks. This is numerical
-validation with bounded polynomial subproblems, not a formal certificate
-for every nonlinear physical expression.
-
-The mesh starts with two cells per section. When the candidate meets
-the constraints at the optimizer's collocation points, an independent
-verification failure may flag sections for doubling and solve again
-from the previous candidate. A candidate that still violates those
-collocation constraints stops without refinement. There are at most six
-mesh passes, reaching at most 64 cells in a repeatedly flagged section.
-Verification uses a normalized tolerance of `1e-5`. Refinement does not
-change the authored rules or relax their scales.
-
-The final `.pht` trajectory also passes the shared receiver-domain
-checker. Its knots and the intervening polynomial must stay within the
-physical domain below. Domain checking is separate from the plan's
-user-supplied limits.
+The pieces are read in the order of an exact bound of each, highest first,
+while a bound can pass the tolerance or top the worst found: the bound
+comes from the Bernstein bounds of the motion's squares and the turn of
+the frame over the piece. The extremes are found to a tenth of the
+tolerance; the ends of the stretches beyond the bounds by halving, to 40
+halvings of a piece or the rounding of its parameter. A piece under 10 ms
+reads its knots. A
+knot reads the geoid's cell of its own piece, a millimetre into it, so the
+two knots of a grid crossing read their own sides. `check.extremes` reads
+`info_get`'s and `pharos-traj check`'s numbers as limits of 0.
 
 ## The knot interpolant
 
-A solved trajectory is a sequence of time, position, velocity and
-acceleration knots. Between neighbouring knots it is the quintic
-Hermite polynomial matching both endpoint states.
+A stored path is a sequence of knots: time, position, velocity and
+acceleration. Between neighbouring knots it is the quintic Hermite
+polynomial matching both states.
 
 | Case | Rule |
 |---|---|
 | between two knots | the quintic through both positions, velocities and accelerations |
-| a time given twice | a velocity or acceleration step at one continuous position |
-| before the first or after the last knot | constant acceleration from the endpoint |
-| time | seconds from the first knot at zero |
+| a time given twice | a velocity or acceleration step at one position |
+| a time given three times | refused |
+| before the first or after the last knot | constant acceleration from the end knot |
+| time | seconds from the first knot, at zero |
 | number of epochs | duration in milliseconds, rounded down after a rise of eight ulps |
 | lookup | a binary search for the two knots, with no stepping or history |
 
-Relative time lets the same trajectory run under any scenario start.
-The eight-ulp rise makes a decimal duration include its final epoch.
-State lookup has no history, so epochs can be evaluated in any order.
+Relative time lets one path fly under any scenario start. The eight-ulp
+rise makes a decimal duration include its final epoch. State lookup has
+no history, so epochs can be evaluated in any order.
 
 ## The receiver domain
 
 | Quantity | Domain |
 |---|---|
-| distance from the geocentre | 6350 km to 200,000 km |
+| distance from the geocentre | 6,350 km to 200,000 km |
 | speed | at most 20,000 m/s |
 | acceleration | at most 1000 m/s^2 |
 | knot time | first at zero, none past 10^7 s |
 
-The path can leave the range of its endpoint knots. The shared checker
-therefore bounds each Hermite piece using its endpoint values and the
-largest magnitudes of its basis functions. The acceleration has an
-additional bound relative to constant acceleration; the tighter bound
-counts. An interval whose bound leaves the domain is refused.
+A path can leave the range of its end knots. The shared check therefore
+bounds each Hermite piece by its end states and the largest magnitudes of
+its basis functions; the acceleration has a second bound against
+constant acceleration, and the tighter counts. A piece whose bound leaves
+the domain is refused when a PHT is read, and halved while a path is
+built.
 
 ## Inspection and other products
 
 | Storage | Lifetime |
 |---|---|
-| parsed plan and `solve.Result` | the caller's result allocator |
-| prepared rules and geometry | one build call |
-| mesh, numerical layout, evaluator and verification storage | one mesh pass |
-| numerical solver workspace | one `nlp.solve` call |
-| path copied for refinement | until the next mesh has been seeded |
+| the plan and `source.Result` | the result allocator of `source.build` |
+| the solves, tracks and guides | one build |
+| the limits' scratch | one limit |
+| the inspection's lengths | one inspection, its count and its text |
 
 `source.build(allocator, result_allocator, text, diags)` uses `allocator`
-for temporary arenas and `result_allocator` for the parsed plan and final
-`solve.Result`. That result retains the plan, a `candidate.Path`, the
-emitted trajectory, the solver report and per-rule reports. The path
-owns its physical nodes, cell coefficients, section durations, event
-times and accumulated distances. Each mesh pass releases its temporary
-storage before the next pass or return.
-
-`inspect.of(arena, result, sample_count)` projects this result into events,
-sections, samples and rule reports. It uses uniform time samples and
-adds both sides of events and every emitted knot. Duplicate identical
-samples are removed. Sampling density does not change the solved path.
-An ordered cursor reuses the current path cell while producing samples.
-Inspection arrays use `arena`; their identifiers refer to the retained
-plan, whose storage must remain alive.
-
-Inspection altitude uses the plan's declared datum. Course comes from
-the authored orientation state or is derived from velocity. The
-simple C `pharos_traj_state` record always reports altitude above EGM96
-and the position, velocity and acceleration available in `.pht`.
-A `.pht` read or static factory result has no authored plan to inspect.
-[The C API](../guide/c-api/traj.md) defines retained buffers and candidate
-access after an unsuccessful solve.
-
-The static factory creates one knot at zero and, for positive duration,
-a second identical state at the end. `check` reports sampled dynamics,
-altitude and derivative steps of an internal product. `export` creates
-KML for visualization.
+for its scratch and `result_allocator` for the plan and the result: the
+knots, each segment's first knot, end, length and end speed, and each
+limit's check. `inspect.Lengths.of` tells the path's length to each knot
+and to each sample once, for both writes of an inspection
+([inspection](../guide/c-api/traj.md#inspection)); `inspect.write` writes
+the JSON with them straight to its writer. `stats.of` gives `info_get`'s
+record, which the C object keeps after the first call. `static.build`
+makes one knot at rest, and a second at the end for a positive duration.
+`kml.zig` draws the stored path as its KML line
+([trajectories](../guide/trajectories.md#limits-and-messages)).

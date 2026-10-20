@@ -447,9 +447,10 @@ pub fn loadBundle(io: Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, path
 }
 
 pub fn reportTrajectory(console: Console, traj: *const Trajectory, file: []const u8) void {
+    const plural = if (traj.knots.len == 1) "" else "s";
     if (traj.name.len > 0) {
-        console.info("Trajectory {f} ({f}): {d} knots over {f} s", .{ Escaped{ .text = traj.name }, Escaped{ .text = file }, traj.knots.len, Number{ .value = traj.duration() } });
-    } else console.info("Trajectory {f}: {d} knots over {f} s", .{ Escaped{ .text = file }, traj.knots.len, Number{ .value = traj.duration() } });
+        console.info("Trajectory {f} ({f}): {d} knot{s} over {f} s", .{ Escaped{ .text = traj.name }, Escaped{ .text = file }, traj.knots.len, plural, Number{ .value = traj.duration() } });
+    } else console.info("Trajectory {f}: {d} knot{s} over {f} s", .{ Escaped{ .text = file }, traj.knots.len, plural, Number{ .value = traj.duration() } });
 }
 
 pub fn reportSpan(console: Console, span: bundle.Span, leap: civil.Leap) void {

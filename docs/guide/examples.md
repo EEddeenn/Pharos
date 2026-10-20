@@ -74,8 +74,8 @@ PRNs.
 | `observation_nequick_precise` | dual-frequency observations on the precise product, per-band phase centres, NeQuick G |
 | `observation_bdgim` | BDS observations with BDGIM, from the RINEX 4 coefficients |
 | `observation_bds_klobuchar` | `B1I` and `B3I` observations with the BDS Klobuchar model, from the RINEX 4 D1D2 coefficients |
-| `position_kml_trajectory` | a plan with approach, dwell and departure sections (`wuhan_segments`), written as a KML line |
-| `position_lla_plan` | a northbound trajectory plan (`wuhan_north`), written as an LLA position file |
+| `position_kml_trajectory` | a plan of a through, a stay and a through (`wuhan_segments`), written as a KML line |
+| `position_lla_plan` | a northbound plan (`wuhan_north`), written as an LLA position file |
 
 In `l2_band_gps_l2c_glonass_g2`, a satellite whose record has no CNAV
 flag word, and no `messages.gps` integrity declaration, sends message
@@ -86,21 +86,21 @@ B-CNAV1 of the MEO and IGSO satellites.
 
 ## Trajectories
 
-The JSON files in `examples/trajectories/` are trajectory plans. Build
-them with `pharos-traj` to solve and verify the corresponding internal
-`.pht` products ([trajectories](trajectories.md)). The static scenarios
-fly the first seconds of `wuhan_static.pht` with `duration`.
+The JSON files in `examples/trajectories/` are trajectory plans, and
+each `.pht` beside one is what `pharos-traj build` writes of it
+([trajectories](trajectories.md)). The static scenarios fly the first
+seconds of `wuhan_static.pht` with `duration`.
 
 | File | Made by | Content |
 |---|---|---|
 | `wuhan_static.pht` | `pharos-traj static --lla 30.5292,114.3642,40 --duration 600 --name wuhan_static -o wuhan_static.pht` | a receiver at rest for 600 s |
-| `wuhan_drive.pht` | `pharos-traj build wuhan_drive.json` | a 5 s journey north-east, starting and ending at rest |
-| `wuhan_segments.pht` | `pharos-traj build wuhan_segments.json` | a 35 s journey with a 5 s dwell between approach and departure |
-| `wuhan_north.pht` | `pharos-traj build wuhan_north.json` | a 60 s northbound journey with a 40 m/s speed ceiling |
-| `wuhan_route.pht` | `pharos-traj build wuhan_route.json` | a 40 s journey following a Bezier guide within 0.5 m, with a 30 m/s speed ceiling |
+| `wuhan_drive.pht` | `pharos-traj build wuhan_drive.json` | a through from rest at A to rest at B, 47.27 m north-east, in 5 s |
+| `wuhan_segments.pht` | `pharos-traj build wuhan_segments.json` | a through from rest to rest at B, 110.86 m north, at 15 s; a stay to 20 s; a through to rest at C, 110.86 m on, at 35 s |
+| `wuhan_north.pht` | `pharos-traj build wuhan_north.json` | a through from a free start to B, 1.8 km north, at 60 s: 30 m/s |
+| `wuhan_route.pht` | `pharos-traj build wuhan_route.json` | an along a Bezier guide, 160.41 m, in 40 s from a free start: 4.01 m/s |
 
-Every JSON example uses the same plan model: named geometry, events,
-sections and rules. LLA and KML files are observation outputs.
+Each plan holds places, a start and segments; `wuhan_route` adds a
+guide. LLA and KML files are observation outputs.
 
 ## Data
 

@@ -4,7 +4,7 @@ Pharos writes six kinds of file: trajectories, bundles, sample files with
 their `.tag`, dumps, observation files and position files. A C host also
 gets a manifest as text. The build writes the JSON Schemas of the two
 JSON inputs: trajectory plans and scenarios. A trajectory plan is the
-authored source; `.pht` is its solved internal product. Observation and
+source; `.pht` is the path built of it. Observation and
 position files are text other tools read. The bundle is a binary cache
 that builds with the same bundle layout read.
 
@@ -27,22 +27,21 @@ flowchart LR
 ## The trajectory plan
 
 `trajectory.json` is a UTF-8 JSON object with `format` set to
-`"pharos.trajectory-plan"` and `version` set to `1`. It contains an
-explicit coordinate reference, named geometry, ordered events and
-sections, and hard constraints, soft targets or objectives in `rules`.
-Optional initial guesses seed the solve. Timing and motion are solved
-together; verification gates `.pht` serialization. The full authoring
-model is in [trajectories](../guide/trajectories.md#plan-structure).
+`"pharos.trajectory-plan"` and `version` set to `1`. It holds its
+coordinate reference, named places and guides, the start, the segments
+one after another, and the limits that check the built path. A path that
+leaves the receiver's domain or breaks a limit is not written as a
+`.pht`. The full model is in
+[trajectories](../guide/trajectories.md#the-plan).
 
 ## The .pht trajectory file
 
-A `.pht` file is the internal solved trajectory in UTF-8 JSON Lines:
-a header line, then one line per knot. Time is relative, so one file
-flies under any start.
+A `.pht` file is a stored path in UTF-8 JSON Lines: a header line, then
+one line per knot. Time is relative, so one file flies under any start.
 
 | Line | Content |
 |---|---|
-| first | a JSON object: `format` "pht", `version` 1, `name` (optional), `frame` "ECEF", `interpolation` "quintic-hermite", `columns` |
+| first | a JSON object: `format` "pht", `version` 1, `knots` (the count; always written, checked where given), `name` (optional), `frame` "ECEF", `interpolation` "quintic-hermite", `columns` |
 | each further line | one knot: [t, x, y, z, vx, vy, vz, ax, ay, az] |
 | units | seconds from the first knot; WGS 84 ECEF metres, m/s and m/s^2 |
 
@@ -216,7 +215,8 @@ The KML file is a KML 2.2 document with one placemark. Its line string
 carries `absolute` altitudes above the geoid, KML's vertical datum. It is
 written in three pieces, head, coordinates and foot, so a writer can
 stream it. `pharos-traj export` writes the same form under the
-trajectory's name.
+trajectory's name, its line through the stored path
+([trajectories](../guide/trajectories.md#limits-and-messages)).
 
 ## The JSON Schemas
 
@@ -267,16 +267,13 @@ same combination rule.
 | Rule | Reader | Schema |
 |---|---|---|
 | a key another kind takes | read, checked, then dropped with the warning `the <word> <key> takes no <name>` | allowed in every branch |
-| an unknown key in a table-based object | dropped with the warning `unknown key, ignored` | allowed by default |
-
-Trajectory value references have their own structural rules: their
-schemas prohibit additional properties, and the reader rejects unknown
-reference fields.
+| an unknown key | an error naming the object's keys, such as `samples.extra: unknown key; the keys here are format, sampleFreq, centerFreq` | refused: every object has `additionalProperties` false |
 
 Everything is written inline, with no `$ref`. The schemas describe field
 types, units, defaults and structural conditions. Cross-references,
 calendar dates and physical feasibility still require the readers and
-solver; schema validation alone does not establish a valid trajectory.
+the build: a plan the schema accepts may still be refused when read,
+when built, or for its domain or its limits.
 
 | A consumer | Needs |
 |---|---|
@@ -311,7 +308,9 @@ solver; schema validation alone does not establish a valid trajectory.
 | `invalid_json`, `wrong_type`, `missing_field` or `invalid_format` at line 1 | the first line is not a JSON object with `format` "pht" |
 | `invalid_format`: `unsupported PHT version <n>; expected 1` | the `version` is not 1 |
 | `unknown_key`, `missing_field`, `wrong_type` or `invalid_format` at line 1 | a header key is unknown, missing or of the wrong value; the diagnostic names it |
-| `invalid_format` at the knot's physical line | the line is not ten JSON numbers in brackets |
+| `invalid_format` at line 1: `the header says <n> knots; the file has <m>` | the knot count disagrees |
+| `invalid_format` at the knot's physical line | the line is not ten JSON numbers in brackets; or no knot, a first knot not at 0 s, a time that goes back, three knots at one time, two knots at one time at different positions |
+| `out_of_range` at the knot's physical line | a value that is not finite, a time past 10^7 s, a position, speed or acceleration outside the receiver's domain, or a path from the knot before that may leave it |
 
 The trajectory reader reports `InvalidInput` after adding its diagnostic
 to the caller's scope. Allocation failures remain `OutOfMemory`.

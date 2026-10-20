@@ -67,16 +67,6 @@ pub const Jet = struct {
         return .{ .value = value, .first = first, .second = (a.second * 0.5 - first * first) / value };
     }
 
-    pub fn sinCos(a: Jet) struct { sine: Jet, cosine: Jet } {
-        const sine = @sin(a.value);
-        const cosine = @cos(a.value);
-        const squared = a.first * a.first;
-        return .{
-            .sine = .{ .value = sine, .first = cosine * a.first, .second = cosine * a.second - sine * squared },
-            .cosine = .{ .value = cosine, .first = -sine * a.first, .second = -sine * a.second - cosine * squared },
-        };
-    }
-
     pub fn atan2(y: Jet, x: Jet) Jet {
         // Scaled first, so that the squares of a small velocity neither underflow nor lose digits.
         const by = 1 / @max(@abs(x.value), @abs(y.value));
@@ -108,7 +98,7 @@ fn dot(a: Vector, b: Vector) Jet {
     return a[0].mul(b[0]).add(a[1].mul(b[1])).add(a[2].mul(b[2]));
 }
 
-fn unit(v: Vector) Vector {
+pub fn unit(v: Vector) Vector {
     const magnitude = dot(v, v).sqrt();
     return .{ v[0].div(magnitude), v[1].div(magnitude), v[2].div(magnitude) };
 }
@@ -174,11 +164,19 @@ fn courseDeg(rad: f64) f64 {
     return if (wrapped >= 360) 0 else wrapped + 0;
 }
 
-/// A state of the path read in its local frame. The quantities of the direction of travel are null where the
-/// horizontal velocity is nothing: there they have no value.
+/// The horizontal speed below which a velocity has no direction of travel: under a millimetre a second the direction
+/// is the rounding of the velocity, not a direction.
+pub const moving_mps = 1e-3;
+
+/// A state of the path read in its local frame, as it moves at its height: the acceleration along the horizontal
+/// direction of travel ĥ and across it (along ĥ × up, + to the right), the jerk along it, the turn rate as the
+/// lateral acceleration over the horizontal speed; the altitude in the plan's reference with its first and second
+/// rates. The quantities of the direction of travel are null where the horizontal speed is below `moving_mps`:
+/// there they have no value.
 pub const Reading = struct {
     altitude_m: f64,
     climb_mps: f64,
+    vertical_acceleration_mps2: f64,
     speed_mps: f64,
     horizontal_speed_mps: f64,
     acceleration_mps2: f64,
@@ -189,35 +187,76 @@ pub const Reading = struct {
     forward_jerk_mps3: ?f64,
     lateral_acceleration_mps2: ?f64,
 
-    pub fn of(state: shared_trajectory.State, datum: Altitude) Reading {
+    /// Over EGM96, `cell` is the geoid's cell the state is read in (`Cells.of`); without one, the cell where the state
+    /// is.
+    pub fn of(state: shared_trajectory.State, datum: Altitude, cell: ?*const core.geoid.Cell) Reading {
         const frame: Frame = .at(positionJet(state.pos, state.vel, state.acc));
-        const velocity: Vector = .{
-            .{ .value = state.vel.x, .first = state.acc.x, .second = state.jerk.x },
-            .{ .value = state.vel.y, .first = state.acc.y, .second = state.jerk.y },
-            .{ .value = state.vel.z, .first = state.acc.z, .second = state.jerk.z },
-        };
-        const east = dot(frame.east, velocity);
-        const north = dot(frame.north, velocity);
         const height = switch (datum) {
             .ellipsoid => frame.height,
-            .egm96 => frame.height.sub(core.geoid.Evaluator(Jet, Jet.Arithmetic).height(frame.up)),
+            .egm96 => frame.height.sub(if (cell) |c| geoidHeight(c, frame.up) else core.geoid.Evaluator(Jet, Jet.Arithmetic).height(frame.up)),
         };
-        const moving = east.value != 0 or north.value != 0;
-        const heading = Jet.atan2(east, north);
-        const trig = heading.sinCos();
-        const forward = east.mul(trig.sine).add(north.mul(trig.cosine));
+        const east = values(frame.east);
+        const north = values(frame.north);
+        const horizontal = std.math.hypot(state.vel.dot(east), state.vel.dot(north));
+        const moving = horizontal >= moving_mps;
+        const ahead: [2]f64 = .{ state.vel.dot(east) / horizontal, state.vel.dot(north) / horizontal };
+        const forward = state.acc.dot(east) * ahead[0] + state.acc.dot(north) * ahead[1];
+        const lateral = state.acc.dot(east) * ahead[1] - state.acc.dot(north) * ahead[0];
         return .{
             .altitude_m = height.value,
             .climb_mps = height.first,
+            .vertical_acceleration_mps2 = height.second,
             .speed_mps = state.vel.norm(),
-            .horizontal_speed_mps = std.math.hypot(east.value, north.value),
+            .horizontal_speed_mps = horizontal,
             .acceleration_mps2 = state.acc.norm(),
             .jerk_mps3 = state.jerk.norm(),
-            .course_deg = if (moving) courseDeg(heading.value) else null,
-            .turn_rate_degps = if (moving) constants.rad2deg(heading.first) else null,
-            .forward_acceleration_mps2 = if (moving) forward.first else null,
-            .forward_jerk_mps3 = if (moving) forward.second else null,
-            .lateral_acceleration_mps2 = if (moving) east.first * trig.cosine.value - north.first * trig.sine.value else null,
+            .course_deg = if (moving) courseDeg(std.math.atan2(ahead[0], ahead[1])) else null,
+            .turn_rate_degps = if (moving) finite(constants.rad2deg(lateral / horizontal)) else null,
+            .forward_acceleration_mps2 = if (moving) finite(forward) else null,
+            .forward_jerk_mps3 = if (moving) finite(state.jerk.dot(east) * ahead[0] + state.jerk.dot(north) * ahead[1]) else null,
+            .lateral_acceleration_mps2 = if (moving) finite(lateral) else null,
         };
     }
 };
+
+/// The geoid's cells the points of a stored path are read in over EGM96, the last one kept while the points stay in
+/// it.
+pub const Cells = struct {
+    last: ?core.geoid.Cell = null,
+
+    /// The cell a point at the time t of the piece from k0 to k1 is read in: the one it lies in; at a knot, the one its
+    /// piece lies in next to it, a millimetre in (or at a shorter piece's middle), so that the two knots at a grid line
+    /// read their own sides.
+    pub fn of(self: *Cells, k0: shared_trajectory.Knot, k1: shared_trajectory.Knot, t: f64, pos: core.coord.Ecef) *const core.geoid.Cell {
+        if (k1.t == k0.t or (t != k0.t and t != k1.t)) return self.at(pos);
+        const in = @min(0.5, knot_inset_m / k1.pos.sub(k0.pos).norm()) * (k1.t - k0.t);
+        return self.at(shared_trajectory.between(k0, k1, if (t == k0.t) k0.t + in else k1.t - in).pos);
+    }
+
+    fn at(self: *Cells, pos: core.coord.Ecef) *const core.geoid.Cell {
+        const p = core.coord.ecefToLla(pos);
+        if (self.last == null or !self.last.?.contains(p.lat_rad, p.lon_rad)) self.last = .at(p.lat_rad, p.lon_rad);
+        return &self.last.?;
+    }
+};
+
+/// Far above the rounding of a position, far below the 61 m a grid step of the geoid spans at its polar caps.
+const knot_inset_m = 1e-3;
+
+/// A vector's values, without their rates.
+fn values(v: Vector) core.coord.Ecef {
+    return .{ .x = v[0].value, .y = v[1].value, .z = v[2].value };
+}
+
+/// The geoid's height by a cell, with its rates as the normal moves.
+fn geoidHeight(cell: *const core.geoid.Cell, up: Vector) Jet {
+    const local = cell.surface(values(up));
+    const n1: core.coord.Ecef = .{ .x = up[0].first, .y = up[1].first, .z = up[2].first };
+    const n2: core.coord.Ecef = .{ .x = up[0].second, .y = up[1].second, .z = up[2].second };
+    return .{ .value = local.height, .first = local.rate(n1), .second = local.curvature(n1, n2) };
+}
+
+/// A rate of a path far outside the receiver's domain can overflow: it then has no value.
+fn finite(x: f64) ?f64 {
+    return if (std.math.isFinite(x)) x else null;
+}

@@ -174,7 +174,7 @@ record are described in [data](data.md).
 | tau_GPS | below 2^-9 s in magnitude: 22 bits of 2^-30 s |
 | no usable GLUT or GLGP (pharos-pack, `missing_field` on `ephemeris`) | GNAV at n s into the run: GLONASS navigation requires available, constant GLUT and GLGP time offsets |
 | no usable EOP record (pharos-pack, `missing_field` on `ephemeris`) | GNAV at n s into the run: B-CNAV3 on B2b (a BDS record) and GNAV on G1/G2 (any system's) require an available EOP record in the navigation data |
-| a word the set cannot encode (pharos-pack, `out_of_range` on `ephemeris`) | GNAV at n s into the run: the navigation data cannot be encoded into its message set (Error) |
-| pharos-run creating a run without them | Cannot create the run: MissingTimeOffset (reason above), or MissingEarthOrientation |
-| pharos-run reaching a superframe without them | Epoch n of m could not be generated: MissingTimeOffset or MissingEarthOrientation (reason) |
+| a word the set cannot encode (pharos-pack, `out_of_range` on `ephemeris`) | GNAV at n s into the run: the navigation data cannot be encoded into its message set (error) |
+| pharos-run creating a run without them | Cannot create the run: the reason above, of the time offsets or of the EOP record |
+| pharos-run reaching a superframe without them | Epoch n of m could not be generated: the same reason |
 | the C API in either case | `PHAROS_RUN_E_NAV` |
