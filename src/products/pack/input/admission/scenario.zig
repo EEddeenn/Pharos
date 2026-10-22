@@ -1,0 +1,277 @@
+const std = @import("std");
+const d1d2_integrity = @import("domain/messages/bds/d1d2/integrity");
+const glonass = @import("domain/signals/glonass");
+const time = @import("domain/time/gps");
+const signal_payload = @import("domain/signals/payload");
+const bds_records = @import("domain/navigation/records/bds");
+const gnss_types = @import("domain/gnss_types");
+const allocation = @import("domain/signals/allocation");
+const names = @import("phb/model/names");
+const selection = @import("simulation/model/signals");
+const signal_catalog = @import("domain/signals/catalog");
+const Samples = @import("simulation/model/config").Samples;
+const Request = @import("products/pack/input/scenario/request").Request;
+const Diagnostics = @import("base/diagnostics").Diagnostics;
+const Range = @import("base/math/range").Range;
+const Number = @import("base/text/number").Number;
+
+const Error = std.mem.Allocator.Error;
+
+const usual_noise_floor_dbm_hz: Range = .{ .min = -200, .max = -100 };
+const usual_init_cn0_dbhz: Range = .{ .min = 0, .max = 60 };
+
+pub fn admit(s: *const Request, diags: *Diagnostics) Error!void {
+    const start_year = s.start.toUtc(.table).year;
+    if (start_year < 2000 or start_year > 2099) try diags.err(.out_of_range, "time", "the scenario start must be from 2000 through 2099, got {f}", .{s.start.printed(.table)});
+    try validateTrajectory(s, diags);
+    try validateNavFiles(s, diags);
+    try validatePrecise(s, diags);
+    try validateOutputs(s, diags);
+    try validatePower(s, diags);
+    try validateEffect(s, diags);
+}
+
+fn validateTrajectory(s: *const Request, diags: *Diagnostics) Error!void {
+    if (s.trajectory_file.len == 0) try diags.err(.missing_field, "trajectory", "must be non-empty", .{});
+}
+
+fn validateNavFiles(s: *const Request, diags: *Diagnostics) Error!void {
+    if (s.nav_files.len == 0 and (s.samples != null or s.observation != null)) {
+        try diags.err(.missing_field, "ephemeris", "the samples and the observation file need at least one navigation file", .{});
+    }
+    var index = std.EnumArray(names.NavKind, usize).initFill(0);
+    for (s.nav_files) |f| {
+        const i = index.get(f.kind);
+        index.set(f.kind, i + 1);
+        if (f.path.len == 0) {
+            const path = try diags.arena.print("{s}[{d}].name", .{ names.NavKind.words.get(f.kind), i });
+            try diags.err(.missing_field, path, "must be non-empty", .{});
+        }
+    }
+    if (s.antenna) |a| if (a.len == 0) {
+        try diags.err(.missing_field, "antenna", "must be non-empty", .{});
+    };
+}
+
+fn validatePrecise(s: *const Request, diags: *Diagnostics) Error!void {
+    const p = s.precise orelse return;
+    for (p.orbit, 0..) |path, i| if (path.len == 0) {
+        try diags.err(.missing_field, try diags.arena.print("precise.orbit[{d}]", .{i}), "must be non-empty", .{});
+    };
+    for (p.clock, 0..) |path, i| if (path.len == 0) {
+        try diags.err(.missing_field, try diags.arena.print("precise.clock[{d}]", .{i}), "must be non-empty", .{});
+    };
+}
+
+fn validateOutputs(s: *const Request, diags: *Diagnostics) Error!void {
+    if (s.samples == null and s.observation == null and s.position == null) {
+        try diags.err(.no_output, "", "no samples, observation or position block", .{});
+    }
+    if (s.samples) |x| {
+        if (x.format == .iq2 and x.sample_rate.samplesPerEpoch() % 2 != 0) {
+            try diags.err(.odd_sample_count, "samples.sampleFreq", "IQ2 packs two samples per byte; {d} samples per millisecond is odd", .{x.sample_rate.samplesPerEpoch()});
+        }
+        if (s.signals.count() == 0) try diags.err(.no_signal, "signals", "no signal is listed", .{});
+        var it = s.signals.iterator();
+        while (it.next()) |signal| try validateBand(x, signal, diags);
+    }
+    if (s.observation != null and s.samples == null and s.signals.count() == 0) try diags.err(.no_signal, "signals", "no signal is listed", .{});
+}
+
+fn validateBand(x: Samples, signal: gnss_types.Signal, diags: *Diagnostics) Error!void {
+    const row = signal_catalog.get(signal);
+    if (row.carrier == .fixed) {
+        const carrier = row.carrierHz(null);
+        if (!x.inBand(carrier)) try diags.warn(.band_excluded, "signals", "{s} at {d} MHz lies outside the sampled band and will not be generated", .{ signal.name(), mhz(carrier) });
+        return;
+    }
+    const plan = glonass;
+    var inside: ?[2]i32 = null;
+    var k: i5 = plan.plan_k_min;
+    while (k <= plan.plan_k_max) : (k += 1) {
+        if (!x.inBand(row.carrierHz(.{ .k = k }))) continue;
+        if (inside) |*run| run[1] = k else inside = .{ k, k };
+    }
+    const run = inside orelse {
+        const low = row.carrierHz(.{ .k = plan.plan_k_min });
+        const high = row.carrierHz(.{ .k = plan.plan_k_max });
+        try diags.warn(.band_excluded, "signals", "{s} from {d} to {d} MHz (k from {d} to {d}) lies outside the sampled band and will not be generated", .{ signal.name(), mhz(low), mhz(high), plan.plan_k_min, plan.plan_k_max });
+        return;
+    };
+    if (run[0] == plan.plan_k_min and run[1] == plan.plan_k_max) return;
+    var outside: std.ArrayList(u8) = .empty;
+    if (run[0] > plan.plan_k_min) try printRun(diags.arena, &outside, plan.plan_k_min, run[0] - 1);
+    if (run[1] < plan.plan_k_max) {
+        if (outside.items.len > 0) try outside.appendSlice(diags.arena, " and ");
+        try printRun(diags.arena, &outside, run[1] + 1, plan.plan_k_max);
+    }
+    var kept: std.ArrayList(u8) = .empty;
+    try printRun(diags.arena, &kept, run[0], run[1]);
+    try diags.warn(.band_excluded, "signals", "{s} channels k {s} lie outside the sampled band and will not be generated (k {s} inside)", .{ signal.name(), outside.items, kept.items });
+}
+
+fn printRun(arena: std.mem.Allocator, out: *std.ArrayList(u8), a: i32, b: i32) Error!void {
+    if (a == b) try out.print(arena, "{d}", .{a}) else try out.print(arena, "from {d} to {d}", .{ a, b });
+}
+
+fn mhz(hz: u64) f64 {
+    return @as(f64, @floatFromInt(hz)) / 1e6;
+}
+
+fn validatePower(s: *const Request, diags: *Diagnostics) Error!void {
+    const p = &s.power;
+    if (!usual_noise_floor_dbm_hz.holds(p.noise_floor_dbm_hz)) {
+        try diags.warn(.out_of_range, "power.noiseFloor", "the noise floor is usually {f} dBm/Hz, got {f}", .{ usual_noise_floor_dbm_hz, Number{ .value = p.noise_floor_dbm_hz, .outside = usual_noise_floor_dbm_hz } });
+    }
+    if (!usual_init_cn0_dbhz.holds(p.init_cn0_dbhz)) {
+        try diags.warn(.out_of_range, "power.initPower", "the initial C/N0 is usually {f} dB-Hz, got {f}", .{ usual_init_cn0_dbhz, Number{ .value = p.init_cn0_dbhz, .outside = usual_init_cn0_dbhz } });
+    }
+}
+
+fn validateEffect(s: *const Request, diags: *Diagnostics) Error!void {
+    var listed = s.signals.iterator();
+    while (listed.next()) |signal| {
+        if (!transmitted(signal, s.start)) try diags.warn(.no_effect, "signals", "{s} is transmitted by no satellite at the start", .{signal.name()});
+    }
+    for (gnss_types.System.all) |system| {
+        const first = allocation.start(system) orelse continue;
+        if (!s.start.lessThan(first) or !listsSystem(s, system)) continue;
+        const u = first.toUtc(.table);
+        try diags.warn(.out_of_range, "time", "the {s} satellite allocation starts on {d}-{d:0>2}-{d:0>2}; an earlier start takes its first state", .{ system.displayName(), u.year, u.month, u.day });
+    }
+    try gpsMessagesEffect(s, diags);
+    if (s.has != null) try serviceEffect(s, diags, "has", "HAS MT1", .e6);
+    if (s.ppp_b2b != null) {
+        try serviceEffect(s, diags, "pppB2b", "PPP-B2b", .b2b);
+        if (s.samples != null and s.signals.contains(.b2b) and pppCarriersMasked(s)) {
+            try diags.warn(.no_effect, "pppB2b", "PPP-B2b is carried by the BDS-3 GEO satellites, which are all masked out", .{});
+        }
+    }
+    if (s.messages.d2.len > 0) try d2Effect(s, diags);
+    for (gnss_types.System.all) |system| {
+        if (listsSystem(s, system)) {
+            if (allMasked(s, system)) {
+                try diags.warn(.no_effect, "maskOut", "every {s} satellite transmitting a listed signal at the start is masked out; the run has no {s} channel", .{ system.displayName(), system.displayName() });
+            }
+            continue;
+        }
+        if (s.mask_out.get(system).count() > 0) {
+            try diags.warn(.no_effect, "maskOut", "{s} satellites are masked out but no {s} signal is listed", .{ system.displayName(), system.displayName() });
+        }
+        for (s.power.schedule) |e| if (e.target.system() == system) {
+            try diags.warn(.no_effect, "power.signalPower", "an entry sets {s} power but no {s} signal is listed", .{ system.displayName(), system.displayName() });
+            break;
+        };
+    }
+}
+
+fn gpsMessagesEffect(s: *const Request, diags: *Diagnostics) Error!void {
+    const list = s.messages.gps;
+    if (list.len == 0) return;
+    if (s.samples == null) {
+        try diags.warn(.no_effect, "messages.gps", "GPS messages are transmitted in the samples and there is no samples block", .{});
+        return;
+    }
+    var integrity = false;
+    var text = false;
+    var configuration = false;
+    var ism = false;
+    var differential = false;
+    for (list) |p| {
+        integrity = integrity or p.content.integrity != null;
+        text = text or p.content.text != null;
+        configuration = configuration or p.content.configuration != null;
+        ism = ism or p.content.ism != null;
+        differential = differential or p.content.differential != null;
+    }
+    const lnav = selection.carries(s.signals, s.start, .lnav);
+    const cnav = selection.carries(s.signals, s.start, .cnav);
+    const cnav2 = selection.carries(s.signals, s.start, .cnav2);
+    if (integrity and !(lnav or cnav or cnav2)) try diags.warn(.no_effect, "messages.gps", "the integrity declaration is carried by L1CA, L2C, L5 and L1C, none of which is listed", .{});
+    if (text and !(lnav or cnav or cnav2)) try diags.warn(.no_effect, "messages.gps", "the text is carried by L1CA, L2C, L5 and L1C, none of which is listed", .{});
+    if (configuration and !(lnav or cnav2)) try diags.warn(.no_effect, "messages.gps", "the configuration codes are carried by L1CA and L1C, neither of which is listed", .{});
+    if (ism and !(cnav or cnav2)) try diags.warn(.no_effect, "messages.gps", "the ISM is carried by L2C, L5 and L1C, none of which is listed", .{});
+    if (differential) {
+        if (!(cnav or cnav2)) {
+            try diags.warn(.no_effect, "messages.gps", "the differential corrections are carried by L2C, L5 and L1C, none of which is listed", .{});
+        } else if (s.precise == null) {
+            try diags.warn(.no_effect, "messages.gps", "the signals fly with the broadcast records, so there is no differential correction to broadcast", .{});
+        }
+    }
+}
+
+fn serviceEffect(s: *const Request, diags: *Diagnostics, path: []const u8, service: []const u8, signal: gnss_types.Signal) Error!void {
+    if (s.samples == null) {
+        try diags.warn(.no_effect, path, "{s} is transmitted in the samples and there is no samples block", .{service});
+    } else if (!s.signals.contains(signal)) {
+        try diags.warn(.no_effect, path, "{s} is carried on {s}, which is not listed", .{ service, signal.name() });
+    }
+}
+
+fn transmitted(signal: gnss_types.Signal, start: time.GpsTime) bool {
+    var sats = signal.system().satellites();
+    while (sats.next()) |sat| if (allocation.transmits(sat, signal, start)) return true;
+    return false;
+}
+
+fn allMasked(s: *const Request, system: gnss_types.System) bool {
+    const masked = s.mask_out.get(system);
+    var sats = system.satellites();
+    var transmitting = false;
+    while (sats.next()) |sat| {
+        if (selection.transmits(s.signals, s.mask_out, s.start, sat)) return false;
+        if (masked.contains(sat) and selection.listedSignal(s.signals, s.start, sat) != null) transmitting = true;
+    }
+    return transmitting;
+}
+
+fn pppCarriersMasked(s: *const Request) bool {
+    const masked = s.mask_out.get(.bds);
+    const payload = signal_payload.at(s.start);
+    var sats = gnss_types.System.bds.satellites();
+    while (sats.next()) |sat| {
+        if (payload.carries(sat, .ppp_b2b) and !masked.contains(sat)) return false;
+    }
+    return true;
+}
+
+fn d2Effect(s: *const Request, diags: *Diagnostics) Error!void {
+    const listed = s.signals.contains(.b1i) or s.signals.contains(.b2i) or s.signals.contains(.b3i);
+    if (s.samples == null or !listed) {
+        try diags.warn(.no_effect, "messages.bds.d2", "the D2 augmentation is transmitted by the GEO satellites' B1I, B2I and B3I in the samples", .{});
+        return;
+    }
+    const masked = s.mask_out.get(.bds);
+    var sats = gnss_types.System.bds.satellites();
+    const carried = while (sats.next()) |sat| {
+        if (sendsD2(s, sat) and !masked.contains(sat)) break true;
+    } else false;
+    if (!carried) try diags.warn(.no_effect, "messages.bds.d2", "no GEO satellite outside maskOut transmits a listed B1I, B2I or B3I at the start (the BDS allocation) to carry the D2 augmentation", .{});
+    if (!s.signals.contains(.b2i)) return;
+    const integrity = d1d2_integrity;
+    for (s.messages.d2, 0..) |publication, i| if (publication.content.integrity) |declared| {
+        var low: usize = 0;
+        var high = false;
+        for (declared.sv, 1..) |entry, id| if (entry != null) {
+            if (id > integrity.basic_ids) high = true else low += 1;
+        };
+        if (high or low > integrity.basic_packets) {
+            const path = try diags.arena.print("messages.bds.d2[{d}].integrity.satellites", .{i});
+            try diags.warn(.no_effect, path, "B2I describes satellites from 1 to 30 only, at most 18 (BDS-SIS-ICD 2.1 5.3.3.5); the others are described on B1I and B3I only", .{});
+        }
+    };
+}
+
+fn sendsD2(s: *const Request, sat: gnss_types.SatId) bool {
+    if (!bds_records.isGeo(sat.prn())) return false;
+    for ([_]gnss_types.Signal{ .b1i, .b2i, .b3i }) |signal| {
+        if (s.signals.contains(signal) and allocation.transmits(sat, signal, s.start)) return true;
+    }
+    return false;
+}
+
+fn listsSystem(s: *const Request, system: gnss_types.System) bool {
+    var it = s.signals.iterator();
+    while (it.next()) |signal| if (signal.system() == system) return true;
+    return false;
+}
